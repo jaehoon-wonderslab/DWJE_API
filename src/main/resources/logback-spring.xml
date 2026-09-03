@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    덕우전자 AX 시스템 API 로깅 정책
+
+    - local/dev : DEBUG 레벨까지 상세 출력 (실행 쿼리 및 파라미터 확인)
+    - prod      : WARN/ERROR 및 추적 가능 수준의 로그만 파일로 기록
+-->
+<configuration>
+
+    <property name="LOG_PATTERN"
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"/>
+    <property name="LOG_DIR" value="${LOG_DIR:-./logs}"/>
+
+    <!-- 콘솔 출력 -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!-- 접속 로그 파일 (AccessLogFilter) -->
+    <appender name="FILE_ACCESS" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/access.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/access.%d{yyyy-MM-dd}.log.gz</fileNamePattern>
+            <maxHistory>90</maxHistory>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!-- 오류 로그 파일 -->
+    <appender name="FILE_ERROR" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/error.log</file>
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+            <level>WARN</level>
+        </filter>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/error.%d{yyyy-MM-dd}.log.gz</fileNamePattern>
+            <maxHistory>180</maxHistory>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!--
+      알려진 프로파일이 아닐 때의 최소 설정.
+
+      root 를 springProfile 블록 안에만 두면, 프로파일을 주지 않았거나 이름을 잘못 준 경우
+      appender 가 하나도 붙지 않아 **기동 실패 메시지까지 버려진다.**
+      실제로 기본 프로파일을 없앤 직후 exit=1 인데 화면에 배너까지만 찍히고 아무 사유도
+      남지 않았다. 원인을 알 방법이 없는 상태다.
+      그래서 어느 블록에도 걸리지 않으면 콘솔로만이라도 남긴다.
+    -->
+    <springProfile name="!local &amp; !dev &amp; !prod">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+
+    <!-- 로컬/개발 환경 : DEBUG 상세 출력 -->
+    <springProfile name="local,dev">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+        <logger name="com.dwje.api" level="DEBUG"/>
+        <!-- 실행 쿼리 및 바인딩 파라미터 로그 -->
+        <logger name="org.springframework.jdbc.core.JdbcTemplate" level="DEBUG"/>
+        <logger name="org.springframework.jdbc.core.StatementCreatorUtils" level="TRACE"/>
+        <logger name="com.dwje.api.access" level="INFO" additivity="false">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="FILE_ACCESS"/>
+        </logger>
+    </springProfile>
+
+    <!-- 운영 환경 : 에러 추적 중심 -->
+    <springProfile name="prod">
+        <root level="WARN">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="FILE_ERROR"/>
+        </root>
+        <logger name="com.dwje.api" level="INFO"/>
+        <!-- SQL 파라미터 등 민감 디버그 로그는 운영에서 OFF -->
+        <logger name="org.springframework.jdbc" level="WARN"/>
+        <logger name="com.dwje.api.access" level="INFO" additivity="false">
+            <appender-ref ref="FILE_ACCESS"/>
+        </logger>
+    </springProfile>
+
+</configuration>

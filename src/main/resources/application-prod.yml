@@ -1,0 +1,52 @@
+# =====================================================================================
+#  운영(배포) 환경 설정 — 보안 정보는 전부 환경변수로 주입한다.
+#
+#  키는 최상위마다 한 번만 쓴다. spring: / app: 를 두 번 쓰면 SnakeYAML 이
+#  DuplicateKeyException 을 던져 이 프로파일로는 기동 자체가 되지 않는다.
+# =====================================================================================
+spring:
+  config:
+    activate:
+      on-profile: prod
+  datasource:
+    driver-class-name: org.postgresql.Driver
+    url: jdbc:postgresql://prod-db.dwje.internal:5432/dwjedb
+    username: dwje_prod
+    password: "${PROD_DB_PASSWORD}"
+    hikari:
+      pool-name: dwje-prod-pool
+      maximum-pool-size: 40
+      minimum-idle: 10
+      connection-timeout: 10000
+      max-lifetime: 1800000
+      connection-init-sql: "SET search_path TO ax, mes, vec, common, public"
+
+  # --- 메일 발송 (이메일 인증) ---
+  mail:
+    host: "${PROD_MAIL_HOST}"
+    port: 587
+    username: "${PROD_MAIL_USERNAME}"
+    password: "${PROD_MAIL_PASSWORD}"
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.starttls.enable: true
+
+server:
+  tomcat:
+    threads:
+      max: 400
+
+app:
+  jwt:
+    secret: "${PROD_JWT_SECRET}"
+  security:
+    email-verification:
+      # 운영·개발은 실제 메일을 보낸다. LOG 모드는 인증 코드가 로그에 남으므로 쓰면 안 된다.
+      sender-mode: SMTP
+
+# 운영에서는 API 문서를 노출하지 않는다.
+springdoc:
+  swagger-ui:
+    enabled: false
+  api-docs:
+    enabled: false

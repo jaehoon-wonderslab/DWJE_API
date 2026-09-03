@@ -1,0 +1,19 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="dwje-api [dev]" type="SpringBootApplicationConfigurationType"
+                 factoryName="Spring Boot" nameIsGenerated="false">
+    <option name="ACTIVE_PROFILES" value="dev" />
+    <option name="MAIN_CLASS_NAME" value="com.dwje.api.DwjeApiApplicationKt" />
+    <module name="dwje-api.main" />
+    <option name="SPRING_BOOT_MAIN_CLASS" value="com.dwje.api.DwjeApiApplicationKt" />
+    <envs>
+      <env name="DEV_DB_PASSWORD" value="" />
+      <env name="DEV_JWT_SECRET" value="" />
+      <env name="DEV_MAIL_HOST" value="" />
+      <env name="DEV_MAIL_USERNAME" value="" />
+      <env name="DEV_MAIL_PASSWORD" value="" />
+    </envs>
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>

@@ -1,0 +1,84 @@
+package com.dwje.api.common.util
+
+/**
+ * 데이터 접근 권한 항목 (7종) — ax.tb_sys_data_field.field_key
+ *
+ * API 목록 명세 「공통 규약 / 4. 데이터 접근 권한 항목」과 1:1 대응한다.
+ */
+object DataField {
+    /** 생산·출하 수량 — 투입·양품·불량·출하 수량, 실적 집계 */
+    const val QTY = "qty"
+
+    /** 수율·불량률 — 제품별 수율, 공정 불량률, 달성률, LRR(%) */
+    const val YIELD = "yield"
+
+    /** 단가·금액 — 품목 단가, 가공비, 폐기 금액, 원가 */
+    const val PRICE = "price"
+
+    /** 고객사·거래처 — 고객사명, 거래처, 계약 조건 */
+    const val CUSTOMER = "customer"
+
+    /** 출하 계획 — 연간·월별 출하 계획 수량 */
+    const val PLAN = "plan"
+
+    /** 금형·설비 상세 — 금형 이력, 설비 파라미터, 공정 조건 */
+    const val MOLD = "mold"
+
+    /** 작업자 정보 — 사번, 작업자명, 근태·배치 */
+    const val WORKER = "worker"
+
+    /** 전체 항목 목록 (정렬 순서 = 명세 표기 순서) */
+    val ALL = listOf(QTY, YIELD, PRICE, CUSTOMER, PLAN, MOLD, WORKER)
+}
+
+/**
+ * 시스템 메뉴(화면) ID 상수 — ax.tb_sys_menu.menu_id
+ *
+ * 컨트롤러의 메뉴 접근 권한 판정에 사용한다.
+ */
+object MenuId {
+    const val AI_CHAT = "ai-chat"
+    const val DASH_AI = "dash-ai"
+    const val DASH_PROC = "dash-proc"
+    const val DASH_KPI = "dash-kpi"
+    const val PROD_MONITOR = "prod-monitor"
+    const val PROD_RESULT = "prod-result"
+    const val PROD_DAILY = "prod-daily"
+    const val DAILY_HISTORY = "daily-history"
+    const val PROD_DOWN = "prod-down"
+    const val QC_DEFECT = "qc-defect"
+    const val QC_AOI = "qc-aoi"
+    const val QC_REPORT = "qc-report"
+    const val REPORT_FORMS = "report-forms"
+    const val ALERT_LIST = "alert-list"
+    const val SYS_ACCOUNT = "sys-account"
+    const val SYS_MENU = "sys-menu"
+    const val SYS_DATA = "sys-data"
+    const val ALERT_COND = "alert-cond"
+    const val SYS_RECIP = "sys-recip"
+    const val SYS_GLOSS = "sys-gloss"
+    const val SYS_RANK = "sys-rank"
+    const val CHAT_HISTORY = "chat-history"
+    const val SYS_AUDIT = "sys-audit"
+    const val BASE_MODEL = "base-model"
+    const val AI_AGENT = "ai-agent"
+    const val SYS_METRIC = "sys-metric"
+    const val SYS_DL = "sys-dl"
+    const val SYS_SYNC = "sys-sync"
+    const val SYS_MODEL_VER = "sys-model-ver"
+
+    // 보고서 화면 (RP-01~07) — resources/db/V5__report_menu.sql 로 tb_sys_menu 에 등록된다.
+    const val RPT_PRESS_MORNING = "rpt-press-morning"
+    const val RPT_PLATING_MORNING = "rpt-plating-morning"
+    const val RPT_SHIP_PLAN = "rpt-ship-plan"
+    const val RPT_YIELD_MODEL = "rpt-yield-model"
+    const val RPT_LRR_CUSTOMER = "rpt-lrr-customer"
+    const val RPT_SCRAP = "rpt-scrap"
+    const val RPT_SCRAP_NEW = "rpt-scrap-new"
+
+    /** 보고서 화면 전체 — 출력·인쇄처럼 "보고서별 열람 권한"이면 되는 API 에 사용한다. */
+    val ALL_REPORT_SCREENS = arrayOf(
+        RPT_PRESS_MORNING, RPT_PLATING_MORNING, RPT_SHIP_PLAN,
+        RPT_YIELD_MODEL, RPT_LRR_CUSTOMER, RPT_SCRAP, RPT_SCRAP_NEW
+    )
+}

@@ -1,0 +1,107 @@
+# =====================================================================================
+#  덕우전자 AX 시스템 API — 공통 설정
+#  프로파일 : local / dev / prod — **기본값 없음. 반드시 지정해야 한다**
+#  실행     : ./gradlew bootRun --args='--spring.profiles.active=local'
+# =====================================================================================
+spring:
+  application:
+    name: dwje-api
+  jackson:
+    default-property-inclusion: non_null
+    time-zone: Asia/Seoul
+    serialization:
+      write-dates-as-timestamps: false
+  mvc:
+    problemdetails:
+      enabled: false
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+server:
+  port: 8080
+  servlet:
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+  tomcat:
+    connection-timeout: 20000
+    threads:
+      max: 200
+  compression:
+    enabled: true
+    mime-types: application/json,text/html,text/plain
+    min-response-size: 2048
+
+# --- 업무 공통 설정 -------------------------------------------------------------------
+app:
+  # MESDB_M 분리 후 실적 데이터는 전건 PL01 (모바일 사업부)
+  default-plant-cd: PL01
+  # 로그인 연속 실패 잠금 임계값
+  login-fail-limit: 5
+  # 데이터 접근 권한 기반 응답 마스킹 사용 여부
+  masking-enabled: true
+  # 보고서 다운로드 이력 보존 연수
+  download-retention-years: 3
+  security:
+    password:
+      # 비밀번호 해시 알고리즘
+      #   PBKDF2_SHA512 : PBKDF2-HMAC-SHA512 (기본). 솔트 + 반복 확장 (RFC 8018)
+      #   SHA512        : 솔트 1회 SHA-512. 기존 시스템 해시와 값을 맞춰야 할 때만 사용
+      algorithm: PBKDF2_SHA512
+      # OWASP 2023 권고 반복 횟수. 낮추면 대입 공격에 약해지고, 높이면 로그인이 느려진다.
+      iterations: 210000
+      salt-bytes: 16
+      # 비밀번호 정책
+      min-length: 8
+      require-mixed-types: true
+    email-verification:
+      # 발송 방식 — LOG(로컬: 코드를 로그로 출력) | SMTP(실제 메일 발송)
+      sender-mode: LOG
+      from-address: no-reply@dwje.co.kr
+      code-length: 6
+      expire-minutes: 5          # 인증 코드 유효 시간
+      max-attempts: 5            # 코드 검증 시도 상한
+      resend-wait-sec: 60        # 재발송 대기
+      daily-send-limit: 10       # 이메일당 일일 발송 상한
+      token-expire-minutes: 10   # 검증 후 발급되는 1회용 토큰 유효 시간
+  jwt:
+    issuer: dwje-api
+    access-token-validity-sec: 3600      # 1시간
+    refresh-token-validity-sec: 604800   # 7일
+
+# --- API 문서 -------------------------------------------------------------------------
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+    # 엔드포인트가 200건을 넘어 기본값(list)으로 두면 태그가 모두 펼쳐져 화면이 무거워진다.
+    # none = 태그만 접힌 채 표시 → 필요한 도메인만 펼쳐 본다.
+    doc-expansion: none
+    # 엔드포인트 검색창. 이 규모에서 원하는 API 를 찾으려면 사실상 필수다.
+    filter: true
+    # Authorize 로 넣은 토큰을 새로고침 후에도 유지한다(localStorage).
+    # 토큰을 매번 다시 붙여넣지 않아도 된다.
+    persist-authorization: true
+    # 'Try it out' 을 매번 누르지 않아도 되도록 기본 활성화한다.
+    try-it-out-enabled: true
+    # 응답 소요 시간을 함께 표시한다.
+    display-request-duration: true
+    # 스키마가 69종이라 하단 Schemas 섹션은 접어 둔다.
+    default-models-expand-depth: -1
+  api-docs:
+    path: /v3/api-docs
+  # 공통 응답 래퍼(ApiResponse)가 모든 API 에 동일하게 걸리므로 스키마를 한 번만 정의한다.
+  writer-with-order-by-keys: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never

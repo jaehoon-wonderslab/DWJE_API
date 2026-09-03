@@ -1,0 +1,39 @@
+# =====================================================================================
+#  사내 테스트(개발) 서버 설정
+#
+#  키는 최상위마다 한 번만 쓴다. spring: / app: 를 두 번 쓰면 SnakeYAML 이
+#  DuplicateKeyException 을 던져 이 프로파일로는 기동 자체가 되지 않는다.
+# =====================================================================================
+spring:
+  config:
+    activate:
+      on-profile: dev
+  datasource:
+    driver-class-name: org.postgresql.Driver
+    url: jdbc:postgresql://dev-db.dwje.internal:5432/dwjedb
+    username: dwje_dev
+    password: "${DEV_DB_PASSWORD}"
+    hikari:
+      pool-name: dwje-dev-pool
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 10000
+      connection-init-sql: "SET search_path TO ax, mes, vec, common, public"
+
+  # --- 메일 발송 (이메일 인증) ---
+  mail:
+    host: "${DEV_MAIL_HOST}"
+    port: 587
+    username: "${DEV_MAIL_USERNAME}"
+    password: "${DEV_MAIL_PASSWORD}"
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.starttls.enable: true
+
+app:
+  jwt:
+    secret: "${DEV_JWT_SECRET}"
+  security:
+    email-verification:
+      # 운영·개발은 실제 메일을 보낸다. LOG 모드는 인증 코드가 로그에 남으므로 쓰면 안 된다.
+      sender-mode: SMTP

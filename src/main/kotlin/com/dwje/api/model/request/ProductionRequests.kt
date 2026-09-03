@@ -1,0 +1,92 @@
+package com.dwje.api.model.request
+
+import jakarta.validation.constraints.NotBlank
+
+/**
+ * 보고서 항목 보정 요청 — PUT /api/v1/production/daily-reports/{reportId}
+ *
+ * @param sections 섹션·항목 값 목록
+ * @param remark   보정 사유
+ */
+data class ReportCorrectionRequest(
+    val sections: List<ReportSectionInput> = emptyList(),
+    val remark: String? = null
+)
+
+/**
+ * 보고서 섹션 입력
+ *
+ * @param section 섹션 구분 (HEADER / RESULT / CONDITION / CAUSE / TRACE / ACTION / BODY)
+ * @param fields  항목 목록
+ */
+data class ReportSectionInput(
+    val section: String = "BODY",
+    val fields: List<ReportFieldInput> = emptyList()
+)
+
+/**
+ * 보고서 항목 입력
+ *
+ * @param fieldCode 항목 코드
+ * @param fieldNm   항목명
+ * @param value     항목 값
+ * @param origin    기입 출처 (MES / AI / MANUAL)
+ */
+data class ReportFieldInput(
+    val fieldCode: String? = null,
+    val fieldNm: String? = null,
+    val value: String? = null,
+    val origin: String? = null
+)
+
+/**
+ * 보고서 초안 재생성 요청 — POST /api/v1/production/daily-reports/draft/regenerate
+ *
+ * @param targetDate 대상 일자 (YYYY-MM-DD)
+ */
+data class ReportRegenerateRequest(
+    val targetDate: String? = null
+)
+
+/**
+ * 보고서 복제 요청 — POST /api/v1/production/daily-reports/{reportId}/copy
+ *
+ * @param targetDate 복제 대상 일자
+ */
+data class ReportCopyRequest(
+    @field:NotBlank(message = "복제할 대상 일자를 입력해 주세요.")
+    val targetDate: String
+)
+
+/**
+ * 비가동 사유 등록 요청 — POST /api/v1/production/downtimes
+ *
+ * @param eqptCd   설비 코드
+ * @param stopAt   정지 시각 (yyyy-MM-dd HH:mm:ss)
+ * @param resumeAt 재가동 시각
+ * @param reasonCd 비가동 사유 코드 (DOWN_REASON)
+ * @param remark   비고
+ */
+data class DowntimeCreateRequest(
+    @field:NotBlank(message = "설비를 선택해 주세요.")
+    val eqptCd: String,
+
+    @field:NotBlank(message = "정지 시각을 입력해 주세요.")
+    val stopAt: String,
+
+    val resumeAt: String? = null,
+
+    @field:NotBlank(message = "비가동 사유를 선택해 주세요.")
+    val reasonCd: String,
+
+    val remark: String? = null
+)
+
+/**
+ * 비가동 사유 수정 요청 — PUT /api/v1/production/downtimes/{downtimeId}
+ */
+data class DowntimeUpdateRequest(
+    val reasonCd: String? = null,
+    val remark: String? = null,
+    val resumeAt: String? = null
+)

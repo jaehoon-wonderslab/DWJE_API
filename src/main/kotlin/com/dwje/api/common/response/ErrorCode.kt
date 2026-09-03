@@ -1,0 +1,40 @@
+package com.dwje.api.common.response
+
+import org.springframework.http.HttpStatus
+
+/**
+ * API 목록 명세 「공통 규약 / 2. 에러 코드」 정의
+ *
+ * @param code   비즈니스 에러 코드
+ * @param status 매핑되는 HTTP 상태 코드
+ * @param defaultMessage 기본 메시지
+ */
+enum class ErrorCode(
+    val code: String,
+    val status: HttpStatus,
+    val defaultMessage: String
+) {
+    /** 미인증 · 세션 만료 */
+    AUTH_UNAUTHENTICATED("E-AUTH-001", HttpStatus.UNAUTHORIZED, "인증이 필요합니다. 다시 로그인해 주세요."),
+
+    /** 메뉴 접근 권한 없음 */
+    AUTH_MENU_DENIED("E-AUTH-002", HttpStatus.FORBIDDEN, "해당 화면에 접근할 권한이 없습니다."),
+
+    /** 데이터 접근 권한 없음 */
+    AUTH_DATA_DENIED("E-AUTH-003", HttpStatus.FORBIDDEN, "해당 데이터 항목을 조회할 권한이 없습니다."),
+
+    /** 필수 항목 누락 */
+    VALID_REQUIRED("E-VALID-001", HttpStatus.BAD_REQUEST, "필수 항목이 누락되었습니다."),
+
+    /** 중복 값 (아이디 · 부서명 · 용어 등) */
+    VALID_DUPLICATED("E-VALID-002", HttpStatus.BAD_REQUEST, "이미 등록된 값입니다."),
+
+    /** 업무 규칙 위반 */
+    RULE_VIOLATION("E-RULE-001", HttpStatus.CONFLICT, "업무 규칙에 위배되어 처리할 수 없습니다."),
+
+    /** 대상 없음 */
+    NOT_FOUND("E-NOTFOUND", HttpStatus.NOT_FOUND, "요청하신 대상을 찾을 수 없습니다."),
+
+    /** 서버 오류 */
+    SERVER_ERROR("E-SERVER", HttpStatus.INTERNAL_SERVER_ERROR, "시스템 오류가 발생했습니다. 관리자에게 문의하세요.")
+}
