@@ -303,6 +303,25 @@ class MetricStandardRepository(
         return jdbcTemplate.queryForObject(sql, params, Int::class.java) ?: 0
     }
 
+    /**
+     * 지표의 최신 측정값을 조회한다. (기준 수정 직후 판정 등급 재계산용)
+     *
+     * @return 측정값 (측정 이력이 없으면 null)
+     */
+    fun findLatestValue(metricId: Int): BigDecimal? {
+        val sql = """
+            SELECT mv.metric_value
+            FROM ax.tb_met_metric_value mv
+            WHERE mv.metric_id = :metricId
+            ORDER BY mv.measured_at DESC
+            LIMIT 1
+        """.trimIndent()
+
+        return jdbcTemplate.query(sql, MapSqlParameterSource("metricId", metricId)) { rs, _ ->
+            rs.getBigDecimal("metric_value")
+        }.firstOrNull()
+    }
+
     /** 지표 기준 단건 조회 */
     fun findStandard(metricId: Int): Map<String, Any?>? {
         val sql = """

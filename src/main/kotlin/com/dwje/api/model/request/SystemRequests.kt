@@ -1,5 +1,6 @@
 package com.dwje.api.model.request
 
+import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.NotBlank
 
 /**
@@ -90,4 +91,31 @@ data class DataPermRequest(
     val fieldKey: String,
 
     val allowed: Boolean = true
+)
+
+/**
+ * 다운로드 이력 기록 요청 — POST /api/v1/download-logs
+ *
+ * 화면이 클라이언트 측에서 파일을 만들어 내려받은 뒤 이력만 남길 때 보낸다.
+ * 예전에는 `Map` 으로 받아 키 오타가 조용히 무시됐다(예: `rowCount` 를 보내면 0건으로 기록).
+ * 타입 DTO 라 모르는 키는 400 으로 돌아가고 받는 키 목록이 안내된다.
+ *
+ * @param reportId 보고서 정의 ID (선택)
+ * @param reportNm 내려받은 대상 이름 — 비우면 "보고서"
+ * @param menuId   화면 ID (선택)
+ * @param format   파일 형식 — xls | xlsx | csv | pdf (비우면 xls)
+ * @param scope    조회 조건 요약 (선택)
+ * @param rowCnt   내려받은 행 수 (0 이상)
+ * @param blindCnt blind 처리된 셀 수 (0 이상)
+ */
+data class DownloadLogRecordRequest(
+    val reportId: String? = null,
+    val reportNm: String? = null,
+    val menuId: String? = null,
+    val format: String? = null,
+    val scope: String? = null,
+    @field:Min(0, message = "rowCnt 는 0 이상이어야 합니다.")
+    val rowCnt: Int? = null,
+    @field:Min(0, message = "blindCnt 는 0 이상이어야 합니다.")
+    val blindCnt: Int? = null
 )

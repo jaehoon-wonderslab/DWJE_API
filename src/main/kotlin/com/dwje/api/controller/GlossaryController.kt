@@ -1,9 +1,11 @@
 package com.dwje.api.controller
 
 import com.dwje.api.common.response.ApiResponse
+import com.dwje.api.model.request.FamilyOrderRequest
 import com.dwje.api.model.request.GlossaryNormalizeRequest
 import com.dwje.api.model.request.GlossaryTermRequest
 import com.dwje.api.model.request.GlossaryVariantRequest
+import com.dwje.api.model.request.ProductOrderRequest
 import com.dwje.api.service.GlossaryService
 import com.dwje.api.service.ProductRankService
 import io.swagger.v3.oas.annotations.Operation
@@ -149,11 +151,10 @@ class ProductRankController(
     /** 제품군 순위 변경 (No.180) */
     @Operation(summary = "제품군 순위 변경", description = "제품군 순위를 변경하고 제품 전체 순위를 재계산한다.")
     @PutMapping("/families/order")
-    fun updateFamilyOrder(@Valid @RequestBody request: Map<String, Any?>): ApiResponse<Map<String, Any?>> {
-        @Suppress("UNCHECKED_CAST")
-        val orders = (request["orders"] as? List<Map<String, Any?>>) ?: emptyList()
-        return ApiResponse.ok(productRankService.updateFamilyOrder(orders), "제품군 순위가 변경되었습니다.")
-    }
+    fun updateFamilyOrder(
+        @Valid @RequestBody request: FamilyOrderRequest
+    ): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(productRankService.updateFamilyOrder(request.orders), "제품군 순위가 변경되었습니다.")
 
     /** 기본 순서 복원 (No.183) */
     @Operation(summary = "기본 순서 복원", description = "제품군 순위와 제품 순서를 기본값으로 되돌린다.")
@@ -174,12 +175,12 @@ class ProductRankController(
     @PutMapping("/families/{familyCd}/products/order")
     fun updateProductOrder(
         @PathVariable familyCd: String,
-        @Valid @RequestBody request: Map<String, Any?>
-    ): ApiResponse<Map<String, Any?>> {
-        @Suppress("UNCHECKED_CAST")
-        val orders = (request["orders"] as? List<Map<String, Any?>>) ?: emptyList()
-        return ApiResponse.ok(productRankService.updateProductOrder(familyCd, orders), "제품 순서가 변경되었습니다.")
-    }
+        @Valid @RequestBody request: ProductOrderRequest
+    ): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(
+            productRankService.updateProductOrder(familyCd, request.orders),
+            "제품 순서가 변경되었습니다."
+        )
 
     /** 현재 순위 상위 N 조회 (No.184) */
     @Operation(summary = "현재 순위 상위 N 조회", description = "현재 순위 기준 상위 N 제품을 반환한다.")

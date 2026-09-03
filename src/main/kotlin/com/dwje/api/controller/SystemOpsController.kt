@@ -2,6 +2,7 @@ package com.dwje.api.controller
 
 import com.dwje.api.common.response.ApiResponse
 import com.dwje.api.model.request.ConnectionTestRequest
+import com.dwje.api.model.request.DownloadLogRecordRequest
 import com.dwje.api.model.request.MetricStandardRequest
 import com.dwje.api.model.request.SchemaDriftResolveRequest
 import com.dwje.api.model.request.StateChangeRequest
@@ -161,17 +162,21 @@ class DownloadLogController(
      *
      * 프론트에서 클라이언트 측 내려받기를 수행한 경우 이력을 남기기 위해 호출한다.
      */
-    @Operation(summary = "다운로드 이력 기록", description = "클라이언트 측 내려받기 이력을 기록한다.")
+    @Operation(
+        summary = "다운로드 이력 기록",
+        description = "클라이언트 측 내려받기 이력을 기록한다. " +
+            "받는 키는 reportId · reportNm · menuId · format · scope · rowCnt · blindCnt 이며 그 외 키는 400."
+    )
     @PostMapping
-    fun record(@Valid @RequestBody request: Map<String, Any?>): ApiResponse<Map<String, Any?>> {
+    fun record(@Valid @RequestBody request: DownloadLogRecordRequest): ApiResponse<Map<String, Any?>> {
         val logId = downloadLogService.record(
-            reportId = request["reportId"] as? String,
-            reportNm = (request["reportNm"] as? String) ?: "보고서",
-            menuId = request["menuId"] as? String,
-            format = (request["format"] as? String) ?: "xls",
-            scope = request["scope"] as? String,
-            rowCnt = (request["rowCnt"] as? Number)?.toInt() ?: 0,
-            blindCnt = (request["blindCnt"] as? Number)?.toInt() ?: 0
+            reportId = request.reportId,
+            reportNm = request.reportNm?.takeIf { it.isNotBlank() } ?: "보고서",
+            menuId = request.menuId,
+            format = request.format?.takeIf { it.isNotBlank() } ?: "xls",
+            scope = request.scope,
+            rowCnt = request.rowCnt ?: 0,
+            blindCnt = request.blindCnt ?: 0
         )
         return ApiResponse.ok(mapOf("logId" to logId), "다운로드 이력이 기록되었습니다.")
     }

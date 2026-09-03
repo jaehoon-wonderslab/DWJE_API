@@ -181,7 +181,8 @@ class MetricStandardService(
         )
 
         val after = metricStandardRepository.findStandard(stdId)
-        return mapOf("success" to true, "level" to judgeLevel(after))
+        val level = judgeLevel(after, metricStandardRepository.findLatestValue(stdId))
+        return mapOf("success" to true, "level" to level, "direction" to after?.get("direction"))
     }
 
     /** 지표 적용/해제 (No.219) */
@@ -295,10 +296,38 @@ class MetricStandardService(
     }
 
     /**
-     * 현재 기준으로 판정 등급을 산출한다.
+     * 수정된 기준으로 최신 측정값의 판정 등급을 산출한다. (PUT 응답 `level`)
+     *
+     * 예전에는 값을 보지 않고 항상 NORMAL 을 돌려주는 스텁이었다 — 화면이 "저장 시 판정 재계산" 을
+     * 기대하는 자리라 실제로 계산한다. 방향은 [MetricDirection] 규칙을 그대로 쓴다.
+     *
+     * | direction | CRIT            | WARN            |
+     * |-----------|-----------------|-----------------|
+     * | low       | value >= crit   | value >= warn   |
+     * | high      | value <= crit   | value <= warn   |
+     *
+     * 측정 이력이 없거나(신규 지표) 방향을 판별할 수 없으면(warn == crit) 목록 API 와 같은 규칙으로 NORMAL.
+     * 목록의 `level` 은 수집기가 기록한 `judge_cd` 를 쓰므로, 다음 수집 전까지는 두 값이 다를 수 있다.
      */
-    private fun judgeLevel(standard: Map<String, Any?>?): String {
+    private fun judgeLevel(standard: Map<String, Any?>?, currentValue: BigDecimal?): String {
         if (standard == null) return "UNKNOWN"
-        return "NORMAL"
+        if (currentValue == null) return "NORMAL"
+
+        val warn = (standard["warn"] as? Number)?.let { BigDecimal.valueOf(it.toDouble()) } ?: return "NORMAL"
+        val crit = (standard["critical"] as? Number)?.let { BigDecimal.valueOf(it.toDouble()) } ?: return "NORMAL"
+
+        return when (MetricDirection.of(warn, crit)) {
+            MetricDirection.LOW -> when {
+                currentValue >= crit -> "CRIT"
+                currentValue >= warn -> "WARN"
+                else -> "NORMAL"
+            }
+            MetricDirection.HIGH -> when {
+                currentValue <= crit -> "CRIT"
+                currentValue <= warn -> "WARN"
+                else -> "NORMAL"
+            }
+            else -> "NORMAL"
+        }
     }
 }

@@ -182,6 +182,16 @@ class ReportController(
     ): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(scrapReportService.updateDraft(draftId, request), "초안이 저장되었습니다.")
 
+    /** 초안 삭제 — 위저드 취소 (신규, API 목록 외) */
+    @Operation(
+        summary = "폐기 보고서 초안 삭제",
+        description = "위저드를 중단할 때 남은 초안을 삭제한다(소프트 삭제). " +
+            "없는 초안은 404, 이미 발행·확정된 보고서는 409 로 거부한다."
+    )
+    @DeleteMapping("/scrap/drafts/{draftId}")
+    fun deleteScrapDraft(@PathVariable draftId: Long): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(scrapReportService.deleteDraft(draftId), "초안이 삭제되었습니다.")
+
     /** 수기 폐기 행 추가 (No.118 — 2단계) */
     @Operation(summary = "수기 폐기 행 추가", description = "MES 전표에 없는 불용재고·반품분을 수기 행으로 추가한다.")
     @PostMapping("/scrap/drafts/{draftId}/manual-rows")

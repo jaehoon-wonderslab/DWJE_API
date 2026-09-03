@@ -179,6 +179,39 @@ class ScrapReportService(
     }
 
     /**
+     * 초안을 삭제한다. (위저드 취소 — 신규 요청, API 목록 외)
+     *
+     * 위저드 2단계 이후 중단하면 초안이 남아 목록에 빈 문서로 쌓인다. 화면의 "취소" 가 이 API 를 부른다.
+     *
+     * - 초안이 없거나 폐기 보고서가 아니면 404
+     * - 이미 발행(PUBLISHED)·확정(CONFIRMED)된 문서는 409 — 문서번호가 채번된 보고서는 취소 대상이 아니다
+     * - 그 외(DRAFT · SAVED · REJECTED)는 소프트 삭제. 자식 행은 그대로 두고 조회에서만 빠진다
+     */
+    @Transactional
+    fun deleteDraft(draftId: Long): Map<String, Any?> {
+        val principal = authorizationService.requireMenu(MenuId.RPT_SCRAP_NEW)
+
+        val doc = reportDocRepository.findDoc(draftId)
+            ?: throw ResourceNotFoundException("초안을 찾을 수 없습니다. [draftId=$draftId]")
+        if (doc["kind"] != DOC_KIND) {
+            throw ResourceNotFoundException("폐기 보고서 초안이 아닙니다. [draftId=$draftId]")
+        }
+        if (doc["state"] == "PUBLISHED" || doc["state"] == "CONFIRMED") {
+            throw BusinessRuleException(
+                "이미 생성된 보고서는 취소할 수 없습니다. [docNo=${doc["docNo"] ?: "-"}, state=${doc["state"]}]"
+            )
+        }
+
+        val deleted = reportDocRepository.softDeleteDoc(draftId, DOC_KIND, principal.userId)
+        if (deleted == 0) {
+            throw ResourceNotFoundException("초안을 찾을 수 없습니다. [draftId=$draftId]")
+        }
+
+        log.info("폐기 보고서 초안 삭제 : draftId={} state={} by={}", draftId, doc["state"], principal.userId)
+        return mapOf("success" to true, "draftId" to draftId)
+    }
+
+    /**
      * 초안을 수정한다. (No.117)
      */
     @Transactional

@@ -5,13 +5,12 @@
 
 > **이 문서는 손으로 고치지 않는다.** 컨트롤러의 `@RequestBody` 타입과
 > `model/request/*.kt` 의 `data class` 프로퍼티에서 뽑은 것이다.
-> `RequestBodyContractTest` 가 아래 `Map` 본문 목록이 코드와 맞는지 검사한다 —
-> 이 문서를 처음 쓴 날 용어 API 4개를 DTO 로 바꾸고 문서를 갱신하지 않아
-> 같은 날 안에 숫자가 어긋났다. 그래서 검사를 붙였다.
+> `RequestBodyContractTest` 가 `Map` 본문 개수가 코드와 맞는지 검사한다 —
+> 이 문서를 처음 쓴 날 용어 API 4개를 DTO 로 바꾸고 갱신하지 않아 같은 날 안에 틀렸다.
 
 - 본문을 받는 엔드포인트 **83개**
-- 타입 DTO **80개** — 모르는 키는 400
-- `Map` 본문 **3개** — 모르는 키를 **조용히 버린다**
+- 타입 DTO **83개** — 모르는 키는 400
+- `Map` 본문 **0개** — **전부 타입 DTO 로 전환 완료**
 
 ## 왜 켰는가
 
@@ -24,17 +23,20 @@
 | `PUT /metrics/standards/{stdId}` | `{field,value}` | 200 — 아무 값도 안 바뀜 |
 | `POST /alert-conditions` | 표시명·다른 키 이름 | 400 이지만 어느 값인지 알 수 없음 |
 
-## A. `Map` 본문 3개 — 설정과 무관하게 조용히 무시
+## A. `Map` 본문 0개
 
-`Map<String, Any?>` 로 받아 Jackson 이 거를 근거가 없다. 서버가 아는 키만 읽고 나머지는 버린다.
-화면이 값을 만들어 보내는 자리라 오타 경로가 좁아 남겨 둔 것이다.
-사용자가 직접 입력하는 폼(용어·유사어)은 타입 DTO 로 전환했다.
+**없다.** 본문을 받는 엔드포인트 전부가 타입 DTO 다.
 
-- `POST /api/v1/download-logs`
-- `PUT /api/v1/products/families/order`
-- `PUT /api/v1/products/families/{familyCd}/products/order`
+`Map` 본문은 키를 자유롭게 받아 모르는 키를 조용히 버리므로,
+`FAIL_ON_UNKNOWN_PROPERTIES` 로도 막히지 않는 사각지대였다.
+2026-09-01 에 7개였고 2026-09-03 에 0개가 됐다 —
+용어·유사어 4개, 제품군·제품 순서 2개, 다운로드 이력 1개 순서로 전환했다.
 
-## B. 타입 DTO 80개 — 선언 키만 허용
+> 순서 변경 2개는 바깥 키(`orders`)뿐 아니라 **안쪽 항목까지 조용히 버렸다.**
+> 키·타입이 어긋난 항목만 빠지고 200 이 나가서, 10개를 보냈는데 3개만 반영되고도
+> 화면은 성공으로 읽었다. 지금은 어긋난 항목이 하나라도 있으면 400 이다.
+
+## B. 타입 DTO 83개 — 선언 키만 허용
 
 ### `AiAskRequest`
 
@@ -208,6 +210,12 @@
 
 - `POST /api/v1/auth/switch`
 
+### `DownloadLogRecordRequest`
+
+허용 키 — `reportId`, `reportNm`, `menuId`, `format`, `scope`, `rowCnt`, `blindCnt`
+
+- `POST /api/v1/download-logs`
+
 ### `GlossaryNormalizeRequest`
 
 허용 키 — `text`
@@ -266,6 +274,18 @@
 허용 키 — `reasonCd`, `remark`, `resumeAt`
 
 - `PUT /api/v1/production/downtimes/{downtimeId}`
+
+### `FamilyOrderRequest`
+
+허용 키 — `orders`
+
+- `PUT /api/v1/products/families/order`
+
+### `ProductOrderRequest`
+
+허용 키 — `orders`
+
+- `PUT /api/v1/products/families/{familyCd}/products/order`
 
 ### `ReportFormRequest`
 

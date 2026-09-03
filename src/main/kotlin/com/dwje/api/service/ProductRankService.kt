@@ -1,5 +1,8 @@
 package com.dwje.api.service
 
+import com.dwje.api.common.exception.InvalidParameterException
+import com.dwje.api.model.request.ProductOrderEntry
+import com.dwje.api.model.request.FamilyOrderEntry
 import com.dwje.api.common.exception.ResourceNotFoundException
 import com.dwje.api.common.response.PageMeta
 import com.dwje.api.common.util.DataField
@@ -42,14 +45,25 @@ class ProductRankService(
      * @param orders familyCd to rank 매핑
      */
     @Transactional
-    fun updateFamilyOrder(orders: List<Map<String, Any?>>): Map<String, Any?> {
+    fun updateFamilyOrder(orders: List<FamilyOrderEntry>): Map<String, Any?> {
         val principal = authorizationService.requireMenu(MenuId.SYS_RANK)
 
-        val orderMap = orders.mapNotNull { o ->
-            val familyCd = o["familyCd"] as? String ?: return@mapNotNull null
-            val rank = (o["rank"] as? Number)?.toInt() ?: return@mapNotNull null
-            familyCd to rank
-        }.toMap()
+        // 예전에는 Map 항목에서 키·타입이 어긋난 것을 조용히 버렸다(mapNotNull).
+        // 10개를 보냈는데 3개만 반영되고도 200 이 나가서, 화면은 성공으로 읽고
+        // 순서는 일부만 바뀐다. 어긋난 항목이 있으면 아예 받지 않는다.
+        if (orders.isEmpty()) {
+            throw InvalidParameterException("변경할 제품군 순위를 지정해 주세요.", "orders")
+        }
+        orders.forEachIndexed { i, o ->
+            if (o.familyCd.isNullOrBlank()) {
+                throw InvalidParameterException("제품군 코드가 없습니다. [orders[$i]]", "orders")
+            }
+            if (o.rank == null) {
+                throw InvalidParameterException("순위가 없습니다. [orders[$i].familyCd=${o.familyCd}]", "orders")
+            }
+        }
+
+        val orderMap = orders.associate { it.familyCd!!.trim() to it.rank!! }
 
         val changed = productRankRepository.updateFamilyOrders(orderMap, principal.userId)
         val recalculated = productRankRepository.recalculateProductRanks(principal.userId)
@@ -95,17 +109,25 @@ class ProductRankService(
      * @param orders code to seq 매핑
      */
     @Transactional
-    fun updateProductOrder(familyCd: String, orders: List<Map<String, Any?>>): Map<String, Any?> {
+    fun updateProductOrder(familyCd: String, orders: List<ProductOrderEntry>): Map<String, Any?> {
         val principal = authorizationService.requireMenu(MenuId.SYS_RANK)
 
         val familyId = productRankRepository.findFamilyId(familyCd)
             ?: throw ResourceNotFoundException("제품군을 찾을 수 없습니다. [$familyCd]")
 
-        val orderMap = orders.mapNotNull { o ->
-            val code = o["code"] as? String ?: return@mapNotNull null
-            val seq = (o["seq"] as? Number)?.toInt() ?: return@mapNotNull null
-            code to seq
-        }.toMap()
+        if (orders.isEmpty()) {
+            throw InvalidParameterException("변경할 제품 순서를 지정해 주세요.", "orders")
+        }
+        orders.forEachIndexed { i, o ->
+            if (o.code.isNullOrBlank()) {
+                throw InvalidParameterException("제품 코드가 없습니다. [orders[$i]]", "orders")
+            }
+            if (o.seq == null) {
+                throw InvalidParameterException("순서가 없습니다. [orders[$i].code=${o.code}]", "orders")
+            }
+        }
+
+        val orderMap = orders.associate { it.code!!.trim() to it.seq!! }
 
         val changed = productRankRepository.updateProductOrders(familyCd, orderMap, principal.userId)
         val recalculated = productRankRepository.recalculateProductRanks(principal.userId)

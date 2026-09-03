@@ -263,6 +263,34 @@ class ReportDocRepository(
         return jdbcTemplate.update(sql, params)
     }
 
+    /**
+     * 문서를 소프트 삭제한다. (폐기 위저드 취소)
+     *
+     * 물리 삭제하지 않는다 — 자식 6종(field · event · image · approval · scrap_row · unmask_req)은
+     * 그대로 남고, 모든 조회가 `del_flg = 'N'` 을 걸어 목록·상세·통계에서 함께 빠진다.
+     * 이미 삭제된 문서나 다른 구분의 문서는 건드리지 않도록 구분 코드도 조건에 넣는다.
+     *
+     * @return 갱신 행 수 (0 이면 대상이 없거나 이미 삭제됨)
+     */
+    fun softDeleteDoc(docId: Long, docKindCd: String, actor: String): Int {
+        val sql = """
+            UPDATE ax.tb_rpt_doc
+               SET del_flg  = 'Y',
+                   upd_date = now(),
+                   upd_user = :actor
+             WHERE doc_id      = :docId
+               AND doc_kind_cd = :docKindCd
+               AND del_flg     = 'N'
+        """.trimIndent()
+
+        val params = MapSqlParameterSource()
+            .addValue("docId", docId)
+            .addValue("docKindCd", docKindCd)
+            .addValue("actor", actor)
+
+        return jdbcTemplate.update(sql, params)
+    }
+
     /** 문서 번호를 채번해 저장한다. (폐기 보고서 발행) */
     fun updateDocNo(docId: Long, docNo: String, stateCd: String, actor: String): Int {
         val sql = """
