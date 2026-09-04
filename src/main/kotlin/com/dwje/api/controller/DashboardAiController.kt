@@ -44,9 +44,11 @@ class DashboardAiController(
     @GetMapping("/defect-trend")
     fun defectTrend(
         @RequestParam(required = false) date: String?,
+        @Parameter(description = "시작일 (YYYY-MM-DD)") @RequestParam(required = false) from: String?,
+        @Parameter(description = "종료일 (YYYY-MM-DD)") @RequestParam(required = false) to: String?,
         @Parameter(description = "집계 구간 (예: 2h)") @RequestParam(required = false) interval: String?
     ): ApiResponse<Map<String, Any?>> {
-        val (data, mask) = dashboardAiService.getDefectTrend(date, interval)
+        val (data, mask) = dashboardAiService.getDefectTrend(date, from, to, interval)
         return ApiResponse.ok(data, mask.maskedKeys())
     }
 

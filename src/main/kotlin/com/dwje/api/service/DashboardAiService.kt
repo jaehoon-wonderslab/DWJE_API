@@ -2,6 +2,7 @@ package com.dwje.api.service
 
 import com.dwje.api.common.response.PageMeta
 import com.dwje.api.common.util.DataField
+import com.dwje.api.common.util.TimeWindow
 import com.dwje.api.common.util.withUntypedSegment
 import com.dwje.api.common.util.DateUtils
 import com.dwje.api.common.util.MaskingSupport
@@ -9,10 +10,12 @@ import com.dwje.api.common.util.MenuId
 import com.dwje.api.common.util.PageRequestParam
 import com.dwje.api.config.AppProperties
 import com.dwje.api.repository.DashboardAiRepository
+import com.dwje.api.repository.DayTargetRepository
 import com.dwje.api.repository.MetricStandardRepository
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.LocalDate
+import org.slf4j.LoggerFactory
 
 /**
  * AI 통합 대시보드 서비스 (DB-01)
@@ -23,11 +26,27 @@ import java.time.LocalDate
 class DashboardAiService(
     private val dashboardAiRepository: DashboardAiRepository,
     private val metricStandardRepository: MetricStandardRepository,
+    private val dayTargetRepository: DayTargetRepository,
     private val authorizationService: AuthorizationService,
     private val appProperties: AppProperties
 ) {
 
+    private val log = LoggerFactory.getLogger(javaClass)
+
     companion object {
+        /**
+         * 모델이 아직 붙지 않았음을 알리는 사유 코드
+         *
+         * 값을 지어내는 대신 이 코드를 내린다. 화면은 "모델 준비 중" 으로 그린다.
+         */
+        internal const val MODEL_NOT_READY = "MODEL_NOT_READY"
+
+        /** 모델에 넘기는 불량 유형 상위 건수 */
+        private const val DEFECT_TOP_N = 5
+
+        /** 모델에 넘기는 이상 후보 설비 상위 건수 */
+        private const val ANOMALY_TOP_N = 10
+
         /** 공정 품질 지수 6축 지표 코드 — 양품률·가동률·정시완료·검사정확도·이상대응·데이터정합 */
         private val QUALITY_INDEX_METRICS = listOf(
             "PROD_OK_RATE",
@@ -82,18 +101,34 @@ class DashboardAiService(
      * @param interval 집계 구간 (예: "2h")
      */
     @Transactional(readOnly = true)
-    fun getDefectTrend(date: String?, interval: String?): Pair<Map<String, Any?>, MaskingSupport> {
+    fun getDefectTrend(
+        date: String?,
+        from: String? = null,
+        to: String? = null,
+        interval: String? = null
+    ): Pair<Map<String, Any?>, MaskingSupport> {
         val (_, mask) = authorizationService.guard(MenuId.DASH_AI)
-        val target = DateUtils.parseDate(date, "date", LocalDate.now())
         val hours = parseIntervalHour(interval)
         val plantCd = appProperties.defaultPlantCd
+
+        val window = when {
+            !from.isNullOrBlank() && !to.isNullOrBlank() -> {
+                val start = DateUtils.parseDate(from, "from", LocalDate.now())
+                val end = DateUtils.parseDate(to, "to", start)
+                TimeWindow(start.atStartOfDay(), end.plusDays(1).atStartOfDay())
+            }
+            else -> {
+                val target = DateUtils.parseDate(date, "date", LocalDate.now())
+                TimeWindow.ofDay(target)
+            }
+        }
 
         // 수율·불량률 권한이 없으면 계열 데이터를 반환하지 않는다.
         if (!mask.check(DataField.YIELD)) {
             return mapOf("labels" to emptyList<String>(), "series" to emptyList<Any>(), "target" to null) to mask
         }
 
-        val overall = dashboardAiRepository.findDefectTrend(plantCd, target, hours, null)
+        val overall = dashboardAiRepository.findDefectTrend(plantCd, window, hours, null)
         val labels = overall.map { it["slot"] as String }
 
         // 전체 불량률 계열
@@ -102,7 +137,7 @@ class DashboardAiService(
         )
 
         // 주 불량유형 계열 — 슬롯별 불량 수량을 라벨 순서에 맞춰 배치한다.
-        val byType = dashboardAiRepository.findDefectTrendByType(plantCd, target, hours, null, TREND_TOP_DEFECT)
+        val byType = dashboardAiRepository.findDefectTrendByType(plantCd, window, hours, null, TREND_TOP_DEFECT)
         byType.groupBy { it["defectNm"] as String }.forEach { (name, rows) ->
             val bySlot = rows.associate { (it["slot"] as String) to it["ngQty"] }
             series.add(mapOf("name" to name, "data" to labels.map { bySlot[it] ?: 0L }))
@@ -309,239 +344,168 @@ class DashboardAiService(
     }
 
     /**
-     * AI 일일 종합 브리핑
+     * AI 일일 품질·생산 종합 브리핑 (sLLM)
+     *
+     * ## 서버의 역할
+     * 지표를 모아 **마스킹을 통과한 값만** 모델에 넘기고, 결과를 그대로 내린다.
+     * 문장을 서버가 쓰지 않는다.
+     *
+     * ## 고치기 전에 무엇이 잘못됐었나
+     * 이 함수는 지표를 읽어 **직접 문장을 만들어 내려보내고 있었다.**
+     *   - `planQty = 150000L` 상수 → 달성률 14,642% (실측)
+     *   - "타발 압력 편차(±14%) · 금형 온도 상승(48.5℃)이 원인의 58%" —
+     *     압력·온도 수집값이 이 시스템에 **없다.** 설비 지표 3값은 전부 null 이다.
+     *   - "SPM 5% 감속 · 하사점 +2μm 보정 권고" — 근거 없는 처방
+     *
+     * 그럴듯한 문장이라 화면에서는 티가 나지 않는다. 지어낸 값을 내리는 것보다
+     * **모른다고 말하는 것**이 낫다.
+     *
+     * ## 모델이 붙기 전까지
+     * `reason = "MODEL_NOT_READY"` 로 비어 있는 응답을 낸다.
+     * 화면은 그걸 받아 "모델 준비 중" 으로 그린다.
      */
     @Transactional(readOnly = true)
     fun getBriefing(date: String?): Map<String, Any?> {
-        authorizationService.requireMenu(MenuId.DASH_AI)
+        val (_, mask) = authorizationService.guard(MenuId.DASH_AI)
         val target = DateUtils.parseDate(date, "date", LocalDate.now())
-        val plantCd = appProperties.defaultPlantCd
 
-        val summary = dashboardAiRepository.findSummary(plantCd, target)
-        val lines = dashboardAiRepository.findLineProduction(plantCd, target, null)
-        val defects = dashboardAiRepository.findDefectComposition(plantCd, target, null)
-
-        val totalQty = (summary["todayQty"] as? Number)?.toLong() ?: 0L
-        val defectRate = (summary["defectRate"] as? Number)?.toDouble() ?: 0.0
-        val targetDefectRate = 3.0
-        val targetYield = 97.0
-        val currentYield = if (totalQty > 0) Math.round((100.0 - defectRate) * 100.0) / 100.0 else 98.2
-        val planQty = 150000L
-        val achievementRate = if (planQty > 0 && totalQty > 0) Math.round((totalQty.toDouble() / planQty * 100.0) * 10.0) / 10.0 else 95.2
-
-        val pressLines = lines.filter {
-            val code = (it["eqptCd"] as? String) ?: ""
-            code.startsWith("PR-", ignoreCase = true) || code.contains("프레스")
-        }.ifEmpty { lines }
-
-        val critical = pressLines.maxByOrNull { (it["defectRate"] as? Number)?.toDouble() ?: 0.0 }
-        val criticalRate = (critical?.get("defectRate") as? Number)?.toDouble() ?: 4.25
-        val criticalCd = critical?.get("eqptCd") as? String ?: "PR-03"
-        val criticalNm = critical?.get("eqptNm") as? String ?: "프레스 3호기 (PR-03)"
-        val topDefect = defects.firstOrNull()?.get("name") as? String ?: "치수 불량"
-
-        val status = when {
-            criticalRate >= 4.0 || defectRate >= targetDefectRate -> "WARN"
-            criticalRate >= 5.0 -> "CRITICAL"
-            else -> "NORMAL"
-        }
-
-        val summaryLines = listOf(
-            "금일 제1공장 평균 불량률은 ${defectRate}% (관리 목표 ${targetDefectRate}% 대비 양호)이며, 일일 계획 대비 생산 달성률은 ${achievementRate}%를 기록 중입니다.",
-            "실시간 모니터링 분석 결과, ${criticalNm} 설비에서 ${topDefect} 비중 증가로 불량률이 ${criticalRate}%까지 상승한 국소 이상 징후가 감지되었습니다.",
-            "AI 인과관계 추론(XAI) 결과, 타발 압력 편차(±14%) 및 금형 온도 상승(48.5℃)이 해당 불량 발생 원인의 58%를 차지하고 있습니다.",
-            "${criticalNm}의 SPM 타발 속도 5% 일시 감속 및 하사점(BDC) +2μm 미세 보정을 권고합니다."
+        // 모델에 넘길 지표는 지금부터 모은다 — 권한 필터를 모델보다 먼저 세워 둔다.
+        val input = collectBriefingInput(target, mask)
+        log.debug(
+            "AI 브리핑 입력 준비 : date={} 가려진 항목={} 이상후보={}건",
+            input.date, input.maskedFields, input.anomalyCandidates.size
         )
 
-        return mapOf(
-            "status" to status,
-            "overallYield" to currentYield,
-            "targetYield" to targetYield,
-            "overallDefectRate" to defectRate,
-            "targetDefectRate" to targetDefectRate,
-            "todayQty" to totalQty,
-            "planQty" to planQty,
-            "achievementRate" to achievementRate,
-            "criticalLine" to mapOf(
-                "eqptCd" to criticalCd,
-                "eqptNm" to criticalNm,
-                "defectRate" to criticalRate,
-                "primaryDefect" to topDefect,
-                "anomalyScore" to (60 + (criticalRate * 6).toInt()).coerceIn(10, 99)
-            ),
-            "summaryLines" to summaryLines,
-            "generatedAt" to java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")),
-            "engine" to "Master AI v2.4 (Qwen2.5-7B LoRA + GraphRAG)"
+        return modelNotReady(
+            mapOf(
+                "status" to null,
+                "lines" to emptyList<Any>(),
+                "generatedAt" to null,
+                "modelVer" to null
+            )
         )
     }
 
     /**
-     * AI 공정 원인 분석 및 처방 권고
+     * AI 공정 원인 분석 및 처방 권고 (XAI & Prescription, sLLM)
+     *
+     * ## 고치기 전에 무엇이 잘못됐었나
+     * 설비 목록을 `PR-01` ~ `PR-10` 으로 **만들어 내고** 있었다.
+     * 설비 마스터 1,540대 중 `PR-` 로 시작하는 코드는 **0대다.** 없는 설비다.
+     * 기여 요인(압력 118.4Ton · SPM 182 · 금형온도 48.5℃ · 하사점 +8.2μm)도
+     * 전부 상수였다. 그 값을 수집하는 경로가 이 시스템에 없다.
+     *
+     * ## 모델이 붙기 전까지
+     * `reason = "MODEL_NOT_READY"` 로 비어 있는 응답을 낸다.
      */
-    @Suppress("UNCHECKED_CAST")
     @Transactional(readOnly = true)
-    fun getCausePrescription(date: String?, eqptCd: String?): Map<String, Any?> {
-        authorizationService.requireMenu(MenuId.DASH_AI)
+    fun getCausePrescription(date: String?, processId: String?, eqptCd: String?): Map<String, Any?> {
+        val (_, mask) = authorizationService.guard(MenuId.DASH_AI)
         val target = DateUtils.parseDate(date, "date", LocalDate.now())
-        val plantCd = appProperties.defaultPlantCd
 
-        val lines = dashboardAiRepository.findLineProduction(plantCd, target, null)
-
-        val defaultList = (1..10).map { i ->
-            val code = String.format("PR-%02d", i)
-            val name = "프레스 ${i}호기 ($code)"
-            val match = lines.find { it["eqptCd"] == code }
-            val rate = (match?.get("defectRate") as? Number)?.toDouble() ?: when (i) {
-                3 -> 4.25
-                5 -> 3.42
-                9 -> 2.65
-                1 -> 1.82
-                2 -> 2.15
-                else -> 1.70 + (i * 0.08)
-            }
-            val roundedRate = Math.round(rate * 100.0) / 100.0
-            val risk = when {
-                roundedRate >= 3.5 -> "CRITICAL"
-                roundedRate >= 2.5 -> "WARN"
-                else -> "NORMAL"
-            }
-            mapOf(
-                "eqptCd" to code,
-                "eqptNm" to name,
-                "defectRate" to roundedRate,
-                "riskLevel" to risk
-            )
-        }
-
-        val selectedCode = eqptCd?.trim()?.uppercase() ?: (defaultList.maxByOrNull { it["defectRate"] as Double }?.get("eqptCd") as? String ?: "PR-03")
-        val selectedInfo = defaultList.find { it["eqptCd"] == selectedCode } ?: defaultList[2]
-        val selDefectRate = selectedInfo["defectRate"] as Double
-
-        val (primaryDefect, anomalyScore, features, prescriptions) = when (selectedCode) {
-            "PR-03" -> {
-                val feats = listOf(
-                    mapOf("factor" to "타발 압력 편차 (Peak Tonnage)", "importance" to 36.5, "measured" to "118.4 Ton (정상 105±5)", "impact" to "CRITICAL", "description" to "상하 타발 압력 불균형 및 피크 하중 초과"),
-                    mapOf("factor" to "타발 속도 (SPM)", "importance" to 22.0, "measured" to "182 SPM (정상 160~170)", "impact" to "WARN", "description" to "고속 타발에 의한 원자재 미세 슬립 현상"),
-                    mapOf("factor" to "금형 온도 (Die Temp)", "importance" to 18.2, "measured" to "48.5 ℃ (정상 35~42)", "impact" to "WARN", "description" to "연속 타발로 인한 하형 다이 열팽창"),
-                    mapOf("factor" to "하사점 변위 (BDC Offset)", "importance" to 13.8, "measured" to "+8.2 μm (정상 ±3.0)", "impact" to "WARN", "description" to "금형 하사점 정밀도 허용공차 초과"),
-                    mapOf("factor" to "피딩 텐션 (Feed Tension)", "importance" to 9.5, "measured" to "4.2 kgf (정상 4.0±0.5)", "impact" to "NORMAL", "description" to "코일 원자재 공급 장력 양호")
-                )
-                val presc = listOf(
-                    mapOf(
-                        "priority" to 1,
-                        "title" to "프레스 SPM 속도 5~10% 일시 감속 권고",
-                        "action" to "현재 182 SPM을 165 SPM으로 하향 조정하여 금형 열부하 저감 및 원자재 이송 안정화 유도",
-                        "targetFactor" to "타발 속도 (SPM)",
-                        "expectedImpact" to "치수 불량률 -1.8%p 개선 예상"
-                    ),
-                    mapOf(
-                        "priority" to 2,
-                        "title" to "하사점(BDC) 오프셋 미세 보정 및 다이 냉각 점검",
-                        "action" to "서보 프레스 BDC 위치를 -5μm 보정하고, 하형 냉각 노즐 분사압 정상 여부 점검",
-                        "targetFactor" to "하사점 변위 & 금형 온도",
-                        "expectedImpact" to "타발 치수 공차(±0.02mm) 이내 복귀"
-                    )
-                )
-                listOf("치수 불량 (DIM_NG)", 84, feats, presc)
-            }
-            "PR-05" -> {
-                val feats = listOf(
-                    mapOf("factor" to "금형 타발 누적 수 (Die Stroke)", "importance" to 34.0, "measured" to "148,000 타 (교체주기 150k)", "impact" to "CRITICAL", "description" to "펀치 핀 마모 및 다이 유격 증가"),
-                    mapOf("factor" to "금형 온도 (Die Temp)", "importance" to 26.5, "measured" to "46.2 ℃ (정상 35~42)", "impact" to "WARN", "description" to "타발 마찰열 누적에 따른 다이 과열"),
-                    mapOf("factor" to "피딩 피치 편차 (Feed Pitch)", "importance" to 19.8, "measured" to "0.08 mm (정상 ±0.03)", "impact" to "WARN", "description" to "원자재 이송 중 미세 걸림 현상"),
-                    mapOf("factor" to "타발 압력 편차 (Peak Tonnage)", "importance" to 11.5, "measured" to "108.2 Ton (정상 105±5)", "impact" to "NORMAL", "description" to "타발 압력 비교적 안정"),
-                    mapOf("factor" to "타발 속도 (SPM)", "importance" to 8.2, "measured" to "168 SPM (정상 160~170)", "impact" to "NORMAL", "description" to "표준 운전 속도 유지")
-                )
-                val presc = listOf(
-                    mapOf(
-                        "priority" to 1,
-                        "title" to "펀치 핀 마모 점검 및 에어블로 클리닝",
-                        "action" to "금형 타발 누적 14.8만 타 도달에 따른 펀치 핀 에지 마모 상태 점검 및 잔류 버(Burr) 제거",
-                        "targetFactor" to "금형 타발 누적 수 & 펀치 핀",
-                        "expectedImpact" to "절단면 버(Burr) 발생률 -2.3%p 감소"
-                    ),
-                    mapOf(
-                        "priority" to 2,
-                        "title" to "다이 윤활유 도포 노즐 분사각 정렬",
-                        "action" to "타발 마찰열 저감을 위해 2번 윤활 노즐 각도 재정렬 및 유량 10% 증대",
-                        "targetFactor" to "금형 온도 & 윤활 유량",
-                        "expectedImpact" to "금형 온도 41℃ 이하 정상화"
-                    )
-                )
-                listOf("버 / 찍힘 (BURR_NG)", 72, feats, presc)
-            }
-            "PR-09" -> {
-                val feats = listOf(
-                    mapOf("factor" to "원자재 피딩 텐션 (Feed Tension)", "importance" to 38.2, "measured" to "2.9 kgf (정상 4.0±0.5)", "impact" to "WARN", "description" to "언코일러 코일 풀림 텐션 저하"),
-                    mapOf("factor" to "하사점 변위 (BDC Offset)", "importance" to 24.1, "measured" to "+4.8 μm (정상 ±3.0)", "impact" to "WARN", "description" to "코일 휨 현상으로 인한 하사점 변위"),
-                    mapOf("factor" to "타발 속도 (SPM)", "importance" to 17.5, "measured" to "172 SPM (정상 160~170)", "impact" to "NORMAL", "description" to "정상 SPM 운전"),
-                    mapOf("factor" to "타발 압력 편차 (Peak Tonnage)", "importance" to 12.0, "measured" to "104.5 Ton (정상 105±5)", "impact" to "NORMAL", "description" to "타발 압력 정상"),
-                    mapOf("factor" to "금형 온도 (Die Temp)", "importance" to 8.2, "measured" to "38.6 ℃ (정상 35~42)", "impact" to "NORMAL", "description" to "온도 정상")
-                )
-                val presc = listOf(
-                    mapOf(
-                        "priority" to 1,
-                        "title" to "언코일러 텐션 브레이크 압력 조정",
-                        "action" to "코일 이송 텐션을 3.8 kgf 수준으로 복원하여 피딩 중 처짐 현상 방지",
-                        "targetFactor" to "원자재 피딩 텐션",
-                        "expectedImpact" to "변형/휨 불량 -1.2%p 감소"
-                    ),
-                    mapOf(
-                        "priority" to 2,
-                        "title" to "원자재 로트 표면 스크래치 육안 검사",
-                        "action" to "신규 투입된 코일 롤의 초기 권취 상태 및 오염 여부 확인",
-                        "targetFactor" to "원자재 로트 품질",
-                        "expectedImpact" to "외관 불량 유입 차단"
-                    )
-                )
-                listOf("변형 / 휨 (BEND_NG)", 63, feats, presc)
-            }
-            else -> {
-                val feats = listOf(
-                    mapOf("factor" to "타발 압력 (Peak Tonnage)", "importance" to 22.0, "measured" to "104.8 Ton (정상 105±5)", "impact" to "NORMAL", "description" to "균일 하중 타발 정상 유지"),
-                    mapOf("factor" to "타발 속도 (SPM)", "importance" to 21.5, "measured" to "165 SPM (정상 160~170)", "impact" to "NORMAL", "description" to "권장 SPM 운전"),
-                    mapOf("factor" to "금형 온도 (Die Temp)", "importance" to 20.0, "measured" to "39.2 ℃ (정상 35~42)", "impact" to "NORMAL", "description" to "냉각 상태 적정"),
-                    mapOf("factor" to "하사점 변위 (BDC Offset)", "importance" to 19.5, "measured" to "+1.2 μm (정상 ±3.0)", "impact" to "NORMAL", "description" to "공차 이내"),
-                    mapOf("factor" to "피딩 텐션 (Feed Tension)", "importance" to 17.0, "measured" to "4.1 kgf (정상 4.0±0.5)", "impact" to "NORMAL", "description" to "피딩 상태 안정")
-                )
-                val presc = listOf(
-                    mapOf(
-                        "priority" to 1,
-                        "title" to "현재 공정 파라미터 유지 및 정기 모니터링",
-                        "action" to "모든 핵심 인자가 관리 규격 내에서 안정적으로 제어 중이므로 현재 운전 조건 유지",
-                        "targetFactor" to "전체 공정 인자",
-                        "expectedImpact" to "목표 양품률(98% 이상) 지속 유지"
-                    ),
-                    mapOf(
-                        "priority" to 2,
-                        "title" to "차기 금형 예방 정비 스케줄 준수",
-                        "action" to "일일 20시 교대 시 금형 급유 라인 루틴 점검 수행",
-                        "targetFactor" to "예방 보전",
-                        "expectedImpact" to "안정적 설비 가동률 보장"
-                    )
-                )
-                listOf("미세 스크래치 (극소량)", 25, feats, presc)
-            }
-        }
-
-        val selectedEqpt = mapOf(
-            "eqptCd" to selectedCode,
-            "eqptNm" to selectedInfo["eqptNm"],
-            "model" to "A-Type High Speed Press (110T)",
-            "anomalyScore" to anomalyScore,
-            "riskLevel" to selectedInfo["riskLevel"],
-            "defectRate" to selDefectRate,
-            "primaryDefect" to primaryDefect
+        val input = collectBriefingInput(target, mask, processId)
+        log.debug(
+            "AI 원인 분석 입력 준비 : date={} processId={} eqptCd={} 이상후보={}건",
+            input.date, processId, eqptCd, input.anomalyCandidates.size
         )
 
-        return mapOf(
-            "selectedEqpt" to selectedEqpt,
-            "availableEquipments" to defaultList,
-            "featureContributions" to features,
-            "prescriptions" to prescriptions,
-            "analyzedAt" to java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+        return modelNotReady(
+            mapOf(
+                "target" to null,
+                "contributions" to emptyList<Any>(),
+                "prescriptions" to emptyList<Any>(),
+                "analyzedAt" to null,
+                "modelVer" to null
+            )
         )
     }
+
+    /**
+     * 모델이 아직 없다는 응답을 만든다.
+     *
+     * 값을 지어내지 않고 **없다고 분명히 말한다.** 화면이 "모델 준비 중" 으로 그린다.
+     */
+    private fun modelNotReady(shape: Map<String, Any?>): Map<String, Any?> =
+        shape + mapOf("reason" to MODEL_NOT_READY)
+
+    /**
+     * 모델에 넘길 지표를 모은다. — **마스킹 필터는 [AiBriefingInput.of] 안에 있다**
+     *
+     * 이 함수는 값을 읽어 오기만 하고, 어떤 값이 어떤 권한에 걸리는지는
+     * [AiBriefingInput.of] 한 곳에서 판정한다. 여기서 직접 걸러 넣으면
+     * 필터가 두 곳으로 갈라져 한쪽만 고쳐지는 일이 생긴다.
+     */
+    internal fun collectBriefingInput(
+        target: LocalDate,
+        mask: MaskingSupport,
+        processId: String? = null
+    ): AiBriefingInput {
+        val plantCd = appProperties.defaultPlantCd
+
+        val summary = dashboardAiRepository.findSummary(plantCd, target)
+        val defects = dashboardAiRepository.findDefectComposition(plantCd, target, processId)
+        val lines = dashboardAiRepository.findLineProduction(plantCd, target, processId)
+
+        val totalQty = (summary["todayQty"] as? Number)?.toLong()
+        val ngQty = (summary["ngQty"] as? Number)?.toLong()
+        val defectRate = (summary["defectRate"] as? Number)?.toDouble()
+
+        // 계획 수량은 일목표 마스터에서 온다. 없으면 null 이다 — 상수를 박지 않는다.
+        val effective: Map<String, Long> =
+            dayTargetRepository.findEffectiveTargets(plantCd, target, emptyList())
+        val planQty: Long? = if (effective.isEmpty()) null else effective.values.sum()
+
+        return AiBriefingInput.of(
+            date = target.format(DateUtils.DATE),
+            mask = mask,
+            totalQty = totalQty,
+            okQty = (summary["okQty"] as? Number)?.toLong(),
+            ngQty = ngQty,
+            defectRate = defectRate,
+            yieldRate = defectRate?.let { Math.round((100.0 - it) * 100.0) / 100.0 },
+            planQty = planQty,
+            defectComposition = defects.take(DEFECT_TOP_N).map {
+                AiBriefingInput.DefectShare(
+                    code = it["code"] as? String,
+                    label = it["label"] as? String,
+                    qty = (it["value"] as? Number)?.toLong()
+                )
+            },
+            anomalyCandidates = anomalyCandidates(lines)
+        )
+    }
+
+    /**
+     * 이상 후보 설비를 고른다. — **최소 생산량 미만은 뺀다**
+     *
+     * 생산량이 적으면 1건 불량으로도 불량률 100% 가 된다. 고치기 전에는 그런 행이
+     * 그날의 최대 이슈로 올라왔다 (실측: 1건 생산 · 1건 불량 · 불량률 100%).
+     * 모델에 그대로 넘기면 모델이 그 행을 문장에 쓴다.
+     *
+     * 하한값([AppProperties.anomalyMinQty])은 **현업 확인 전 임시값**이다.
+     * 얼마가 맞는지는 현장 감각이 필요해 설정으로 빼 두었다.
+     */
+    private fun anomalyCandidates(lines: List<Map<String, Any?>>): List<AiBriefingInput.AnomalyCandidate> {
+        val floor = appProperties.anomalyMinQty
+
+        return lines.asSequence()
+            .mapNotNull { r ->
+                val qty = (r["qty"] as? Number)?.toLong() ?: return@mapNotNull null
+                if (qty < floor) return@mapNotNull null
+
+                AiBriefingInput.AnomalyCandidate(
+                    eqptCd = r["eqptCd"] as? String,
+                    eqptNm = r["eqptNm"] as? String,
+                    qty = qty,
+                    ngQty = (r["ngQty"] as? Number)?.toLong(),
+                    defectRate = (r["defectRate"] as? Number)?.toDouble()
+                )
+            }
+            .sortedByDescending { it.defectRate ?: 0.0 }
+            .take(ANOMALY_TOP_N)
+            .toList()
+    }
+
 
     // ---------------------------------------------------------------------------------
     // 공용 보조 로직

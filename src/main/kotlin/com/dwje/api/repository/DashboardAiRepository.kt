@@ -2,6 +2,7 @@ package com.dwje.api.repository
 
 import com.dwje.api.common.util.DefectSql
 import com.dwje.api.common.util.Rs
+import com.dwje.api.common.util.TimeWindow
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Repository
@@ -119,14 +120,24 @@ class DashboardAiRepository(
         date: LocalDate,
         intervalHour: Int,
         processId: String?
+    ): List<Map<String, Any?>> =
+        findDefectTrend(plantCd, TimeWindow.ofDay(date), intervalHour, processId)
+
+    fun findDefectTrend(
+        plantCd: String,
+        window: TimeWindow,
+        intervalHour: Int,
+        processId: String?
     ): List<Map<String, Any?>> {
+        val isMultiDay = !window.from.toLocalDate().isEqual(window.toExclusive.minusDays(1).toLocalDate())
+        val slotFormat = if (isMultiDay) "MM-DD HH24시" else "HH24:MI"
         val sql = StringBuilder(
             """
             SELECT
                 to_char(
                     date_trunc('hour', lh.ins_date)
                     - make_interval(hours => (extract(hour FROM lh.ins_date)::int % :intervalHour)),
-                    'HH24:MI'
+                    '$slotFormat'
                 )                                                            AS slot,
                 min(lh.ins_date)                                             AS slot_at,
                 coalesce(sum(lh.normal), 0) + coalesce(sum(lh.defect), 0)    AS total_qty,
@@ -139,7 +150,7 @@ class DashboardAiRepository(
             """.trimIndent()
         )
 
-        val params = dayParams(plantCd, date).addValue("intervalHour", intervalHour)
+        val params = dayParams(plantCd, window).addValue("intervalHour", intervalHour)
 
         if (!processId.isNullOrBlank()) {
             sql.append(" AND lh.wc_cd = :processId")
@@ -171,7 +182,18 @@ class DashboardAiRepository(
         intervalHour: Int,
         processId: String?,
         topN: Int
+    ): List<Map<String, Any?>> =
+        findDefectTrendByType(plantCd, TimeWindow.ofDay(date), intervalHour, processId, topN)
+
+    fun findDefectTrendByType(
+        plantCd: String,
+        window: TimeWindow,
+        intervalHour: Int,
+        processId: String?,
+        topN: Int
     ): List<Map<String, Any?>> {
+        val isMultiDay = !window.from.toLocalDate().isEqual(window.toExclusive.minusDays(1).toLocalDate())
+        val slotFormat = if (isMultiDay) "MM-DD HH24시" else "HH24:MI"
         val sql = StringBuilder(
             """
             WITH top_defects AS (
@@ -190,7 +212,7 @@ class DashboardAiRepository(
                 to_char(
                     date_trunc('hour', dh.ins_date)
                     - make_interval(hours => (extract(hour FROM dh.ins_date)::int % :intervalHour)),
-                    'HH24:MI'
+                    '$slotFormat'
                 )                          AS slot,
                 min(dh.ins_date)           AS slot_at,
                 dh.defect_cd,
@@ -210,7 +232,7 @@ class DashboardAiRepository(
             """.trimIndent()
         )
 
-        val params = dayParams(plantCd, date)
+        val params = dayParams(plantCd, window)
             .addValue("intervalHour", intervalHour)
             .addValue("topN", topN)
 
@@ -330,8 +352,16 @@ class DashboardAiRepository(
      *
      * @param processId 공정 코드
      */
-    fun findDefectComposition(plantCd: String, date: LocalDate, processId: String?): List<Map<String, Any?>> {
-        val params = dayParams(plantCd, date)
+    fun findDefectComposition(plantCd: String, date: LocalDate, processId: String?): List<Map<String, Any?>> =
+        findDefectComposition(plantCd, TimeWindow.ofDay(date), processId)
+
+    /** 불량 유형 구성비 — 집계 구간을 직접 지정한다. */
+    fun findDefectComposition(
+        plantCd: String,
+        window: TimeWindow,
+        processId: String?
+    ): List<Map<String, Any?>> {
+        val params = dayParams(plantCd, window)
 
         var prodFilter = ""
         if (!processId.isNullOrBlank()) {
@@ -397,7 +427,11 @@ class DashboardAiRepository(
     /**
      * 공정별 수율을 조회한다. (No.26)
      */
-    fun findProcessYield(plantCd: String, date: LocalDate): List<Map<String, Any?>> {
+    fun findProcessYield(plantCd: String, date: LocalDate): List<Map<String, Any?>> =
+        findProcessYield(plantCd, TimeWindow.ofDay(date))
+
+    /** 공정별 수율 — 집계 구간을 직접 지정한다. */
+    fun findProcessYield(plantCd: String, window: TimeWindow): List<Map<String, Any?>> {
         val sql = """
             SELECT
                 lh.wc_cd,
@@ -417,7 +451,7 @@ class DashboardAiRepository(
             ORDER BY max(w.sort_seq) NULLS LAST, lh.wc_cd
         """.trimIndent()
 
-        return jdbcTemplate.query(sql, dayParams(plantCd, date)) { rs, _ ->
+        return jdbcTemplate.query(sql, dayParams(plantCd, window)) { rs, _ ->
             mapOf(
                 "processId" to rs.getString("wc_cd"),
                 "process" to rs.getString("wc_nm"),
@@ -907,8 +941,16 @@ class DashboardAiRepository(
      * 일자 범위 공통 파라미터 (당일 00:00 ~ 익일 00:00)
      */
     private fun dayParams(plantCd: String, date: LocalDate): MapSqlParameterSource =
+        dayParams(plantCd, TimeWindow.ofDay(date))
+
+    /**
+     * 집계 구간 파라미터 — 자정을 넘는 구간(일일 생산현황 보고)도 담을 수 있다.
+     *
+     * `dayStart`/`dayEnd` 라는 이름은 하루 단위 호출처가 많아 유지한다.
+     */
+    private fun dayParams(plantCd: String, window: TimeWindow): MapSqlParameterSource =
         MapSqlParameterSource()
             .addValue("plantCd", plantCd)
-            .addValue("dayStart", date.atStartOfDay())
-            .addValue("dayEnd", date.plusDays(1).atStartOfDay())
+            .addValue("dayStart", window.from)
+            .addValue("dayEnd", window.toExclusive)
 }
