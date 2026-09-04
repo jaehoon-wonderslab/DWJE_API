@@ -164,4 +164,25 @@ class DashboardAiController(
     @GetMapping("/agents")
     fun agents(): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(dashboardAiService.getAgents())
+
+    /**
+     * AI 일일 종합 브리핑
+     */
+    @Operation(summary = "AI 일일 종합 브리핑", description = "당일 생산·품질 현황 및 특이 이상 징후를 종합 분석한 AI 브리핑을 반환한다.")
+    @GetMapping("/briefing")
+    fun briefing(
+        @Parameter(description = "기준일 (YYYY-MM-DD)") @RequestParam(required = false) date: String?
+    ): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(dashboardAiService.getBriefing(date))
+
+    /**
+     * AI 공정 원인 분석 및 처방 권고
+     */
+    @Operation(summary = "AI 공정 원인 분석 및 처방 권고", description = "설비별 불량 유발 원인 인자 기여도(XAI)와 AI 처방 조치 가이드를 반환한다.")
+    @GetMapping("/cause-prescription")
+    fun causePrescription(
+        @Parameter(description = "기준일 (YYYY-MM-DD)") @RequestParam(required = false) date: String?,
+        @Parameter(description = "설비 코드 (예: PR-03)") @RequestParam(required = false) eqptCd: String?
+    ): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(dashboardAiService.getCausePrescription(date, eqptCd))
 }
