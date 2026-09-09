@@ -2,6 +2,7 @@ package com.dwje.api.repository
 
 import com.dwje.api.common.util.Rs
 import com.dwje.api.common.util.SqlLikeUtils
+import com.dwje.api.common.util.TimeWindow
 import com.dwje.api.common.util.safeRate
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
@@ -31,39 +32,81 @@ class ProductionRepository(
      * @param processId 공정 코드
      * @param warnLevel 경고 판정 가동률 임계값
      */
-    fun findMonitorSummary(plantCd: String, processId: String?, warnLevel: Double): Map<String, Any?> {
+    fun findMonitorSummary(
+        plantCd: String,
+        processId: String?,
+        warnLevel: Double,
+        window: TimeWindow? = null
+    ): Map<String, Any?> {
+        val metricPeriod = monitorMetricPeriod(window)
+        val throughputPeriod = monitorThroughputPeriod(window)
+        // 기준일은 /production/results 와 같은 24시간 구간이다. 화면의 기존
+        // hourlyThroughput 은 시간당 평균으로 보존하고, 결과 집계와 대조할 일 총량도 함께 준다.
+        val hourlyQty = if (window == null) {
+            "coalesce(sum(lh.normal), 0) + coalesce(sum(lh.defect), 0)"
+        } else {
+            "(coalesce(sum(lh.normal), 0) + coalesce(sum(lh.defect), 0)) / 24.0"
+        }
+        val runningCondition = if (window == null) {
+            "eqpt.uptime_rate IS NOT NULL AND eqpt.uptime_rate >= :warnLevel"
+        } else {
+            "(eqpt.uptime_rate IS NOT NULL AND eqpt.uptime_rate >= :warnLevel) " +
+                "OR (eqpt.uptime_rate IS NULL AND eqpt.total_qty > 0)"
+        }
+        val warningCondition = "eqpt.uptime_rate IS NOT NULL AND eqpt.uptime_rate < :warnLevel"
+        val stoppedCondition = if (window == null) {
+            "eqpt.uptime_rate IS NULL"
+        } else {
+            "eqpt.uptime_rate IS NULL AND eqpt.total_qty = 0"
+        }
         val sql = StringBuilder(
             """
-            WITH eqpt AS (
+            WITH production_by_eqpt AS (
+                SELECT
+                    lh.eqpt_cd,
+                    coalesce(sum(lh.normal), 0) + coalesce(sum(lh.defect), 0) AS total_qty
+                FROM mes.tb_pop_label_hist lh
+                WHERE lh.plant_cd = :plantCd
+                  AND lh.del_flg  = 'N'
+                  AND lh.eqpt_cd IS NOT NULL
+                  AND $throughputPeriod
+                GROUP BY lh.eqpt_cd
+            ),
+            eqpt AS (
                 SELECT
                     e.eqpt_cd,
+                    coalesce(prod.total_qty, 0) AS total_qty,
                     (
                         SELECT round(avg(mv.metric_value), 2)
                           FROM ax.tb_met_metric_value mv
                          INNER JOIN ax.tb_met_metric_std ms ON ms.metric_id = mv.metric_id
                          WHERE ms.metric_cd    = 'EQPT_UPTIME_RATE'
                            AND mv.eqpt_cd      = e.eqpt_cd
-                           AND mv.measured_at >= now() - interval '1 hour'
+                           AND $metricPeriod
                     ) AS uptime_rate
                 FROM mes.tb_md_eqpt e
                 INNER JOIN mes.tb_md_eqpt_by_workcenter ew
                         ON ew.plant_cd = e.plant_cd AND ew.eqpt_cd = e.eqpt_cd
+                LEFT JOIN production_by_eqpt prod ON prod.eqpt_cd = e.eqpt_cd
                 WHERE e.plant_cd = :plantCd
                   AND e.use_flg  = 'Y'
                   {PROCESS_FILTER}
             ),
             throughput AS (
-                SELECT coalesce(sum(lh.normal), 0) + coalesce(sum(lh.defect), 0) AS qty
+                SELECT
+                    $hourlyQty AS qty,
+                    coalesce(sum(lh.normal), 0) + coalesce(sum(lh.defect), 0) AS total_qty
                 FROM mes.tb_pop_label_hist lh
                 WHERE lh.plant_cd  = :plantCd
                   AND lh.del_flg   = 'N'
-                  AND lh.ins_date >= now() - interval '1 hour'
+                  AND $throughputPeriod
             )
             SELECT
-                count(*) FILTER (WHERE eqpt.uptime_rate IS NOT NULL AND eqpt.uptime_rate >= :warnLevel) AS running,
-                count(*) FILTER (WHERE eqpt.uptime_rate IS NOT NULL AND eqpt.uptime_rate <  :warnLevel) AS warning,
-                count(*) FILTER (WHERE eqpt.uptime_rate IS NULL)                                        AS stopped,
-                max(throughput.qty)                                                                     AS hourly_throughput
+                count(*) FILTER (WHERE $runningCondition) AS running,
+                count(*) FILTER (WHERE $warningCondition) AS warning,
+                count(*) FILTER (WHERE $stoppedCondition) AS stopped,
+                max(throughput.qty)                                                                     AS hourly_throughput,
+                max(throughput.total_qty)                                                               AS total_throughput
             FROM eqpt, throughput
             """.trimIndent()
         )
@@ -71,6 +114,7 @@ class ProductionRepository(
         val params = MapSqlParameterSource()
             .addValue("plantCd", plantCd)
             .addValue("warnLevel", warnLevel)
+        addMonitorWindowParams(params, window)
 
         val processFilter = if (!processId.isNullOrBlank()) {
             params.addValue("processId", processId.trim())
@@ -84,7 +128,8 @@ class ProductionRepository(
                 "running" to rs.getLong("running"),
                 "warning" to rs.getLong("warning"),
                 "stopped" to rs.getLong("stopped"),
-                "hourlyThroughput" to Rs.qty(rs, "hourly_throughput")
+                "hourlyThroughput" to Rs.qty(rs, "hourly_throughput"),
+                "totalThroughput" to Rs.qty(rs, "total_throughput")
             )
         } ?: emptyMap()
     }
@@ -92,7 +137,7 @@ class ProductionRepository(
     /**
      * 정지 상태 설비의 상세를 조회한다. (No.55 — stoppedDetail)
      */
-    fun findStoppedDetail(plantCd: String, processId: String?): List<Map<String, Any?>> {
+    fun findStoppedDetail(plantCd: String, processId: String?, window: TimeWindow? = null): List<Map<String, Any?>> {
         val sql = StringBuilder(
             """
             SELECT
@@ -100,18 +145,23 @@ class ProductionRepository(
                 e.eqpt_nm,
                 ew.wc_cd,
                 d.stop_at,
+                d.resume_at,
                 d.reason_cd,
                 c.code_nm AS reason_nm,
-                extract(epoch FROM (now() - d.stop_at)) / 60 AS elapsed_min
+                ${if (window == null) {
+                    "extract(epoch FROM (now() - d.stop_at)) / 60"
+                } else {
+                    "extract(epoch FROM (least(coalesce(d.resume_at, :toExclusive), :toExclusive) - greatest(d.stop_at, :from))) / 60"
+                }} AS elapsed_min
             FROM mes.tb_md_eqpt e
             INNER JOIN mes.tb_md_eqpt_by_workcenter ew
                     ON ew.plant_cd = e.plant_cd AND ew.eqpt_cd = e.eqpt_cd
             LEFT JOIN LATERAL (
-                SELECT dt.stop_at, dt.reason_cd
+                SELECT dt.stop_at, dt.resume_at, dt.reason_cd
                 FROM ax.tb_prod_downtime dt
                 WHERE dt.plant_cd  = e.plant_cd
                   AND dt.eqpt_cd   = e.eqpt_cd
-                  AND dt.resume_at IS NULL
+                          AND ${if (window == null) "dt.resume_at IS NULL" else "dt.stop_at < :toExclusive AND (dt.resume_at IS NULL OR dt.resume_at > :from)"}
                 ORDER BY dt.stop_at DESC
                 LIMIT 1
             ) d ON true
@@ -124,6 +174,7 @@ class ProductionRepository(
         )
 
         val params = MapSqlParameterSource("plantCd", plantCd)
+        addMonitorWindowParams(params, window)
         if (!processId.isNullOrBlank()) {
             sql.append(" AND ew.wc_cd = :processId")
             params.addValue("processId", processId.trim())
@@ -158,15 +209,21 @@ class ProductionRepository(
         processId: String?,
         state: String?,
         warnLevel: Double,
-        limit: Int,
+        window: TimeWindow?,
+        limit: Int?,
         offset: Int
     ): List<Map<String, Any?>> {
-        val sql = StringBuilder(baseMonitorSql())
-        val params = monitorParams(plantCd, lineRange, model, processId, warnLevel)
+        val sql = StringBuilder(baseMonitorSql(window))
+        val params = monitorParams(plantCd, lineRange, model, processId, warnLevel, window)
         appendMonitorStateFilter(sql, params, state)
 
-        sql.append("\nORDER BY e.eqpt_cd\nLIMIT :limit OFFSET :offset")
-        params.addValue("limit", limit).addValue("offset", offset)
+        sql.append("\nORDER BY e.eqpt_cd")
+
+        // limit 이 null 이면 전량 조회다(size=0). 인쇄·엑셀 내려받기가 전 건을 필요로 한다.
+        if (limit != null) {
+            sql.append("\nLIMIT :limit OFFSET :offset")
+            params.addValue("limit", limit).addValue("offset", offset)
+        }
 
         return jdbcTemplate.query(sql.toString(), params) { rs, _ ->
             val uptime = Rs.rate(rs, "uptime_rate")
@@ -195,10 +252,11 @@ class ProductionRepository(
         model: String?,
         processId: String?,
         state: String?,
-        warnLevel: Double
+        warnLevel: Double,
+        window: TimeWindow?
     ): Long {
-        val sql = StringBuilder("SELECT count(*) FROM (\n${baseMonitorSql()}\n")
-        val params = monitorParams(plantCd, lineRange, model, processId, warnLevel)
+        val sql = StringBuilder("SELECT count(*) FROM (\n${baseMonitorSql(window)}\n")
+        val params = monitorParams(plantCd, lineRange, model, processId, warnLevel, window)
         appendMonitorStateFilter(sql, params, state)
         sql.append("\n) t")
 
@@ -210,7 +268,12 @@ class ProductionRepository(
      *
      * 당일 생산 실적과 최근 1시간 가동률·타발 속도를 설비 단위로 결합한다.
      */
-    private fun baseMonitorSql(): String = """
+    private fun baseMonitorSql(window: TimeWindow?): String {
+        val productionPeriod = monitorProductionPeriod(window)
+        val metricPeriod = monitorMetricPeriod(window)
+        val stateWithoutMetric = if (window == null) "'STOPPED'" else
+            "CASE WHEN coalesce(prod.ok_qty, 0) + coalesce(prod.ng_qty, 0) > 0 THEN 'RUNNING' ELSE 'STOPPED' END"
+        return """
         SELECT
             e.eqpt_cd,
             e.eqpt_nm,
@@ -220,11 +283,11 @@ class ProductionRepository(
             coalesce(prod.ng_qty, 0)                            AS ng_qty,
             coalesce(prod.ok_qty, 0) + coalesce(prod.ng_qty, 0)  AS total_qty,
             m.uptime_rate,
-            m.last_measured_at,
+            coalesce(m.last_measured_at, prod.last_produced_at)  AS last_measured_at,
             s.stroke_speed,
             mold.mold_cd,
             CASE
-                WHEN m.uptime_rate IS NULL          THEN 'STOPPED'
+                WHEN m.uptime_rate IS NULL          THEN $stateWithoutMetric
                 WHEN m.uptime_rate <  :warnLevel    THEN 'WARNING'
                 ELSE 'RUNNING'
             END AS eqpt_state
@@ -232,12 +295,15 @@ class ProductionRepository(
         INNER JOIN mes.tb_md_eqpt_by_workcenter ew
                 ON ew.plant_cd = e.plant_cd AND ew.eqpt_cd = e.eqpt_cd
         LEFT JOIN LATERAL (
-            SELECT coalesce(sum(lh.normal), 0) AS ok_qty, coalesce(sum(lh.defect), 0) AS ng_qty
+            SELECT
+                coalesce(sum(lh.normal), 0) AS ok_qty,
+                coalesce(sum(lh.defect), 0) AS ng_qty,
+                max(lh.ins_date) AS last_produced_at
             FROM mes.tb_pop_label_hist lh
             WHERE lh.plant_cd  = e.plant_cd
               AND lh.eqpt_cd   = e.eqpt_cd
               AND lh.del_flg   = 'N'
-              AND lh.ins_date >= date_trunc('day', now())
+              AND $productionPeriod
         ) prod ON true
         LEFT JOIN LATERAL (
             SELECT round(avg(mv.metric_value), 2) AS uptime_rate, max(mv.measured_at) AS last_measured_at
@@ -245,7 +311,7 @@ class ProductionRepository(
             INNER JOIN ax.tb_met_metric_std ms ON ms.metric_id = mv.metric_id
             WHERE ms.metric_cd    = 'EQPT_UPTIME_RATE'
               AND mv.eqpt_cd      = e.eqpt_cd
-              AND mv.measured_at >= now() - interval '1 hour'
+              AND $metricPeriod
         ) m ON true
         LEFT JOIN LATERAL (
             SELECT round(avg(mv.metric_value), 2) AS stroke_speed
@@ -253,7 +319,7 @@ class ProductionRepository(
             INNER JOIN ax.tb_met_metric_std ms ON ms.metric_id = mv.metric_id
             WHERE ms.metric_cd    = 'PRESS_STROKE_SPM'
               AND mv.eqpt_cd      = e.eqpt_cd
-              AND mv.measured_at >= now() - interval '1 hour'
+              AND $metricPeriod
         ) s ON true
         LEFT JOIN LATERAL (
             SELECT me.mold_cd
@@ -268,6 +334,7 @@ class ProductionRepository(
           AND (:model::varchar     IS NULL OR e.model_nm = :model)
           AND (:processId::varchar IS NULL OR ew.wc_cd = :processId)
     """.trimIndent()
+    }
 
     /** 모니터링 공통 파라미터 */
     private fun monitorParams(
@@ -275,13 +342,32 @@ class ProductionRepository(
         lineRange: String?,
         model: String?,
         processId: String?,
-        warnLevel: Double
+        warnLevel: Double,
+        window: TimeWindow?
     ): MapSqlParameterSource = MapSqlParameterSource()
         .addValue("plantCd", plantCd)
         .addValue("warnLevel", warnLevel)
         .addValue("lineRange", SqlLikeUtils.startsWith(lineRange))
         .addValue("model", model?.trim()?.takeIf { it.isNotBlank() })
         .addValue("processId", processId?.trim()?.takeIf { it.isNotBlank() })
+        .also { addMonitorWindowParams(it, window) }
+
+    private fun addMonitorWindowParams(params: MapSqlParameterSource, window: TimeWindow?) {
+        window ?: return
+        params.addValue("from", window.from).addValue("toExclusive", window.toExclusive)
+    }
+
+    private fun monitorProductionPeriod(window: TimeWindow?): String =
+        if (window == null) "lh.ins_date >= date_trunc('day', now())" else
+            "lh.ins_date >= :from AND lh.ins_date < :toExclusive"
+
+    private fun monitorMetricPeriod(window: TimeWindow?): String =
+        if (window == null) "mv.measured_at >= now() - interval '1 hour'" else
+            "mv.measured_at >= :from AND mv.measured_at < :toExclusive"
+
+    private fun monitorThroughputPeriod(window: TimeWindow?): String =
+        if (window == null) "lh.ins_date >= now() - interval '1 hour'" else
+            "lh.ins_date >= :from AND lh.ins_date < :toExclusive"
 
     /** 상태 필터는 CASE 식 결과를 감싸는 서브쿼리 밖에서 적용한다. */
     private fun appendMonitorStateFilter(sql: StringBuilder, params: MapSqlParameterSource, state: String?) {
@@ -494,8 +580,8 @@ class ProductionRepository(
     /** 실적 집계 공통 파라미터 */
     private fun resultParams(filter: ResultFilter): MapSqlParameterSource = MapSqlParameterSource()
         .addValue("plantCd", filter.plantCd)
-        .addValue("from", filter.from.atStartOfDay())
-        .addValue("toExclusive", filter.to.plusDays(1).atStartOfDay())
+        .addValue("from", filter.window?.from ?: filter.from.atStartOfDay())
+        .addValue("toExclusive", filter.window?.toExclusive ?: filter.to.plusDays(1).atStartOfDay())
         .addValue("itemCd", filter.itemCd)
         .addValue("lineCd", filter.lineCd)
         .apply { if (filter.modelCd != null) addValue("modelCd", filter.modelCd) }
@@ -530,7 +616,14 @@ data class ResultFilter(
     val to: LocalDate,
     val itemCd: String? = null,
     val modelCd: String? = null,
-    val lineCd: String? = null
+    val lineCd: String? = null,
+    /**
+     * 시각 단위 집계 구간 — 지정하면 `from`/`to` 로 만든 날짜 경계를 대체한다.
+     *
+     * 일일 생산현황 보고처럼 자정을 넘는 구간(전일 20:00 ~ 당일 08:00)에 쓴다.
+     * `from`/`to` 는 기간 표기·그룹핑에 그대로 남으므로 함께 채워 보낸다.
+     */
+    val window: TimeWindow? = null
 ) {
     companion object {
         /** 공백을 정리해 조건을 만든다. 빈 문자열은 조건 없음으로 본다. */

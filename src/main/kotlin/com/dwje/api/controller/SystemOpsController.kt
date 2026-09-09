@@ -176,7 +176,9 @@ class DownloadLogController(
             format = request.format?.takeIf { it.isNotBlank() } ?: "xls",
             scope = request.scope,
             rowCnt = request.rowCnt ?: 0,
-            blindCnt = request.blindCnt ?: 0
+            blindCnt = request.blindCnt ?: 0,
+            params = request.params,
+            fileSize = request.fileSize
         )
         return ApiResponse.ok(mapOf("logId" to logId), "다운로드 이력이 기록되었습니다.")
     }

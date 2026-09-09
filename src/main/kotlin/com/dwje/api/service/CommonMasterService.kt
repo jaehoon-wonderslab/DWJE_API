@@ -27,7 +27,9 @@ class CommonMasterService(
         "rank" to "p.rank_no",
         "name" to "p.model_cd",
         "family" to "f.rank_no",
-        "seq" to "p.seq_in_family"
+        "seq" to "p.seq_in_family",
+        "createdAt" to "item_date.created_at",
+        "updatedAt" to "item_date.updated_at"
     )
 
     /**

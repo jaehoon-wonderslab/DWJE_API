@@ -146,6 +146,15 @@ class DashboardKpiController(
         val format = request?.format ?: "xls"
         val (rows, mask) = dashboardKpiService.getEvidenceRows(yearMonth)
 
+        // 파일을 먼저 만든다 — 크기를 이력에 남기고, 만들다 실패하면 'DONE' 기록도 막는다.
+        val response = exportService.export(
+            format = format,
+            fileName = "kpi_evidence_${exportService.timestamp()}",
+            headers = listOf("지표코드", "지표명", "측정일시", "측정값", "판정", "사업장", "공정", "설비", "품목", "원천", "비고"),
+            keys = listOf("metricCd", "metricNm", "measuredAt", "value", "judge", "plantCd", "wcCd", "eqptCd", "itemCd", "src", "remark"),
+            rows = rows
+        )
+
         // 다운로드 이력 및 감사 로그를 남긴다.
         downloadLogService.record(
             reportId = null,
@@ -155,15 +164,11 @@ class DashboardKpiController(
             scope = "yearMonth=${yearMonth ?: "전월"}",
             rowCnt = rows.size,
             blindCnt = mask.maskedCount(),
-            blindCells = mask.maskedKeys().associateWith { rows.size }
+            blindCells = mask.maskedKeys().associateWith { rows.size },
+            params = mapOf("yearMonth" to yearMonth, "format" to format),
+            fileSize = response.body?.contentLength()
         )
 
-        return exportService.export(
-            format = format,
-            fileName = "kpi_evidence_${exportService.timestamp()}",
-            headers = listOf("지표코드", "지표명", "측정일시", "측정값", "판정", "사업장", "공정", "설비", "품목", "원천", "비고"),
-            keys = listOf("metricCd", "metricNm", "measuredAt", "value", "judge", "plantCd", "wcCd", "eqptCd", "itemCd", "src", "remark"),
-            rows = rows
-        )
+        return response
     }
 }

@@ -23,3 +23,8 @@ Thumbs.db
 # 로컬 환경 설정 (DB 비밀번호 · JWT 시크릿)
 src/main/resources/application-local-*.yml
 .env
+
+# 기타 로컬 임시 파일 및 백업
+restore/
+package-lock.json
+

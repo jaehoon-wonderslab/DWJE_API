@@ -6,9 +6,10 @@ import com.dwje.api.common.util.DateUtils
 import com.dwje.api.common.util.MaskingSupport
 import com.dwje.api.common.util.MenuId
 import com.dwje.api.common.util.PageRequestParam
+import com.dwje.api.common.util.safeRate
 import com.dwje.api.config.AppProperties
 import com.dwje.api.repository.MetricStandardRepository
-import com.dwje.api.repository.ReportDocRepository
+import com.dwje.api.repository.DailyDecisionRepository
 import com.dwje.api.repository.ReportRepository
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -23,7 +24,7 @@ import java.time.YearMonth
 @Service
 class ReportService(
     private val reportRepository: ReportRepository,
-    private val reportDocRepository: ReportDocRepository,
+    private val dailyDecisionRepository: DailyDecisionRepository,
     private val metricStandardRepository: MetricStandardRepository,
     private val authorizationService: AuthorizationService,
     private val appProperties: AppProperties
@@ -33,6 +34,16 @@ class ReportService(
         /** 신호등 판정 임계값 — 달성률 100% 이상 정상 / 95% 이상 주의 / 그 미만 위험 */
         private const val LEVEL_NORMAL = 100.0
         private const val LEVEL_WARN = 95.0
+
+        /**
+         * 아침회의 자료의 주간 창 — 기준일 포함 7일 (기준일 -6일 00:00 ~ 기준일 24:00)
+         *
+         * 일일 생산현황 보고의 주간 누적(그 주 월요일 20:00 부터)과 **규칙이 다르다.**
+         * 두 보고서가 서로 다른 창을 쓰는 것을 알고 두는 것이고, 아침회의 자료의
+         * 주간목표는 이 창에 맞춰 `일목표 x 7` 로 낸다. 화면이 짐작하지 않도록
+         * 응답에 `weekDays` 로 함께 내린다.
+         */
+        private const val WEEK_WINDOW_DAYS = 7
 
         /** 회계연도 시작 월 (8월) */
         private const val FISCAL_START_MONTH = 8
@@ -73,22 +84,47 @@ class ReportService(
         val qtyAllowed = mask.check(DataField.QTY)
         val yieldAllowed = mask.check(DataField.YIELD)
 
-        val raw = reportRepository.findMorningMeetingRows(appProperties.defaultPlantCd, target, processCds)
+        // 공정을 지정하지 않으면 그 보고서의 기본 범위를 쓴다.
+        // PRESS 자료에 도금·코팅 공정이 섞여 올라오면 안 되고, 화면이 매번 작업장
+        // 코드를 나열해야 하면 한 곳만 빠뜨려도 조용히 어긋난다.
+        val scope = processCds.mapNotNull { it.trim().takeIf { c -> c.isNotBlank() } }
+            .ifEmpty {
+                when (menuId) {
+                    MenuId.RPT_PLATING_MORNING -> appProperties.platingWorkcenters
+                    else -> appProperties.pressWorkcenters
+                }
+            }
+
+        val raw = reportRepository.findMorningMeetingRows(appProperties.defaultPlantCd, target, scope)
 
         val rows = raw.map { r ->
-            val rate = r["rate"] as? Double ?: 0.0
-            val state = judgeSignal(rate)
+            // 목표가 없으면 달성률·상태·주간목표를 내지 않는다.
+            // 0 을 내면 못 지킨 것과 목표가 없는 것이 같은 값이 되어, 아침회의 자료가
+            // 전 행 위험으로 뜬다. 그건 자료로 쓸 수 없다.
+            val dayTarget = r["dayTarget"] as? Long
+            val rate = r["rate"] as? Double
+            val state = rate?.let { judgeSignal(it) }
+
+            val weekTarget = dayTarget?.let { it * WEEK_WINDOW_DAYS }
+            val weekActual = r["weekActual"] as? Long
+            val weekRate = if (weekTarget != null && weekTarget > 0 && weekActual != null) {
+                safeRate(weekActual.toBigDecimal(), weekTarget.toBigDecimal())
+            } else {
+                null
+            }
+
             mapOf(
                 "state" to state,
                 "processId" to r["processId"],
                 "process" to r["process"],
                 "issue" to buildIssue(r, state),
-                "dayTarget" to if (qtyAllowed) r["dayTarget"] else null,
+                "dayTarget" to if (qtyAllowed) dayTarget else null,
                 "dayActual" to if (qtyAllowed) r["dayActual"] else null,
                 "rate" to if (yieldAllowed) rate else null,
-                "weekTarget" to if (qtyAllowed) r["weekTarget"] else null,
-                "weekActual" to if (qtyAllowed) r["weekActual"] else null,
-                "weekRate" to if (yieldAllowed) r["weekRate"] else null,
+                "weekTarget" to if (qtyAllowed) weekTarget else null,
+                "weekActual" to if (qtyAllowed) weekActual else null,
+                "weekRate" to if (yieldAllowed) weekRate else null,
+                "weekDays" to WEEK_WINDOW_DAYS,
                 "impactEqptCnt" to r["impactEqptCnt"],
                 "decision" to null,
                 "dri" to null,
@@ -97,27 +133,57 @@ class ReportService(
         }.filter { stateFilter.isNullOrBlank() || it["state"] == stateFilter.uppercase() }
 
         // 합계 행 — 목표·실적 합계와 가중 평균 달성률
-        val totalTarget = raw.sumOf { (it["dayTarget"] as? Long) ?: 0L }
+        //
+        // 목표를 가진 공정이 하나도 없으면 합계 목표는 **null** 이다. 0 으로 두면
+        // 달성률이 0 이 되어 "목표를 못 지켰다" 로 읽힌다.
+        // 수량 합계는 전 공정을 더한다 — 실제로 만든 양이다.
         val totalActual = raw.sumOf { (it["dayActual"] as? Long) ?: 0L }
-        val totalWeekTarget = raw.sumOf { (it["weekTarget"] as? Long) ?: 0L }
         val totalWeekActual = raw.sumOf { (it["weekActual"] as? Long) ?: 0L }
-        val avgRate = if (totalTarget > 0) Math.round(totalActual * 10000.0 / totalTarget) / 100.0 else 0.0
-        val weekRate = if (totalWeekTarget > 0) Math.round(totalWeekActual * 10000.0 / totalWeekTarget) / 100.0 else 0.0
+
+        // 달성률은 **목표가 있는 공정만으로** 낸다.
+        // 목표는 일부 공정만 있는데 실적은 전 공정을 더하면 분모와 짝이 맞지 않아
+        // 달성률이 부풀어 오른다 (실측: 목표 2,000,000 · 전 공정 실적 3,992,507 → 199.63%).
+        val withTarget = raw.filter { it["dayTarget"] != null }
+        val totalTarget = if (withTarget.isEmpty()) null else withTarget.sumOf { it["dayTarget"] as Long }
+        val ratedActual = withTarget.sumOf { (it["dayActual"] as? Long) ?: 0L }
+        val ratedWeekActual = withTarget.sumOf { (it["weekActual"] as? Long) ?: 0L }
+        val totalWeekTarget = totalTarget?.let { it * WEEK_WINDOW_DAYS }
+
+        val avgRate = if (totalTarget != null && totalTarget > 0) {
+            Math.round(ratedActual * 10000.0 / totalTarget) / 100.0
+        } else {
+            null
+        }
+        val weekRate = if (totalWeekTarget != null && totalWeekTarget > 0) {
+            Math.round(ratedWeekActual * 10000.0 / totalWeekTarget) / 100.0
+        } else {
+            null
+        }
 
         return mapOf(
             "baseDate" to target.format(DateUtils.DATE),
+            // 서버가 실제로 어느 작업장을 집계했는지 화면이 확인할 수 있게 함께 내린다.
+            "processCds" to scope,
             "summary" to mapOf(
                 "dayTarget" to if (qtyAllowed) totalTarget else null,
                 "dayActual" to if (qtyAllowed) totalActual else null,
                 "avgRate" to if (yieldAllowed) avgRate else null,
                 "weekRate" to if (yieldAllowed) weekRate else null,
-                "issueCnt" to rows.count { it["state"] != "NORMAL" }
+                // 달성률이 몇 개 공정을 근거로 나온 값인지 밝힌다.
+                // 목표가 없는 공정은 달성률 계산에서 빠지므로 화면이 그 사실을 적어야 한다.
+                "rateProcessCnt" to withTarget.size,
+                "processCnt" to raw.size,
+                "issueCnt" to rows.count { it["state"] != null && it["state"] != "NORMAL" }
             ),
             "rows" to rows,
             "total" to mapOf(
                 "dayTarget" to if (qtyAllowed) totalTarget else null,
                 "dayActual" to if (qtyAllowed) totalActual else null,
                 "rate" to if (yieldAllowed) avgRate else null,
+                // 달성률의 분자 — 목표가 있는 공정의 실적만 더한 값.
+                // dayActual(전 공정 합계)과 다를 수 있고, 그때 rate 는 이 값을 쓴다.
+                "ratedActual" to if (qtyAllowed) ratedActual else null,
+                "rateProcessCnt" to withTarget.size,
                 "weekTarget" to if (qtyAllowed) totalWeekTarget else null,
                 "weekActual" to if (qtyAllowed) totalWeekActual else null,
                 "weekRate" to if (yieldAllowed) weekRate else null
@@ -128,28 +194,31 @@ class ReportService(
     /**
      * 금일 결정 사항·DRI 를 조회한다. (No.108)
      *
-     * 아침회의 보고서 문서에 기록된 조치 항목을 반환한다.
+     * ## 출처가 바뀌었다 (2026-09-04)
+     * 예전에는 일일 보고서 **문서**의 ACTION 섹션 항목을 읽었다. 그 섹션은 자유
+     * 텍스트라 `dri`·`due` 를 담을 자리가 없어 늘 null 이었다.
+     *
+     * 문서 관리가 제거되면서 아침회의 결과는 `ax.tb_prod_daily_decision` 에
+     * 제품별로 남는다. 그래서 이제 담당(`dri`)과 기한(`due`) 이 실제로 채워진다.
      */
     @Transactional(readOnly = true)
     fun getMorningDecisions(baseDate: String?): Map<String, Any?> {
         authorizationService.requireMenu(MenuId.RPT_PRESS_MORNING)
         val target = DateUtils.parseDate(baseDate, "baseDate", LocalDate.now())
 
-        val doc = reportDocRepository.findLatestDocByTargetDate("DAILY", target)
-            ?: return mapOf("baseDate" to target.format(DateUtils.DATE), "items" to emptyList<Any>())
-
-        // ACTION 섹션 항목을 결정 사항으로 노출한다.
-        val items = reportDocRepository.findFields(doc["docId"] as Long)
-            .filter { it["section"] == "ACTION" }
-            .map {
+        // 판정이 적힌 제품만 결정 사항으로 본다 — 일목표만 넣은 줄은 회의 결정이 아니다.
+        val items = dailyDecisionRepository.findRows(target)
+            .filterValues { it["decision"] != null }
+            .map { (product, row) ->
                 mapOf(
-                    "team" to null,
-                    "action" to it["field"],
-                    "detail" to it["value"],
-                    "dri" to null,
-                    "due" to null
+                    "team" to row["dri"],
+                    "action" to product,
+                    "detail" to row["decision"],
+                    "dri" to row["dri"],
+                    "due" to row["due"]
                 )
             }
+            .sortedBy { it["action"] as? String }
 
         return mapOf("baseDate" to target.format(DateUtils.DATE), "items" to items)
     }
@@ -400,9 +469,11 @@ class ReportService(
     /**
      * 신호등 상태에 따른 이슈 문구를 만든다.
      */
-    private fun buildIssue(row: Map<String, Any?>, state: String): String? {
+    private fun buildIssue(row: Map<String, Any?>, state: String?): String? {
         if (state == "NORMAL") return null
-        val gap = ((row["dayTarget"] as? Long) ?: 0L) - ((row["dayActual"] as? Long) ?: 0L)
+        // 목표가 없으면 "목표 대비 미달" 을 쓸 수 없다. 불량만 알린다.
+        val dayTarget = row["dayTarget"] as? Long
+        val gap = if (dayTarget == null) 0L else dayTarget - ((row["dayActual"] as? Long) ?: 0L)
         val ngQty = (row["dayNgQty"] as? Long) ?: 0L
         return buildString {
             if (gap > 0) append("목표 대비 ${gap}EA 미달")

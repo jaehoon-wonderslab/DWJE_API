@@ -1,6 +1,8 @@
 package com.dwje.api.repository
 
 import com.dwje.api.common.util.DefectSql
+import com.dwje.api.common.util.ProcessPeriod
+import com.dwje.api.common.util.ProcessPeriodRow
 import com.dwje.api.common.util.Rs
 import com.dwje.api.common.util.safeRate
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource
@@ -20,6 +22,60 @@ import java.time.LocalDate
 class DashboardProcessRepository(
     private val jdbcTemplate: NamedParameterJdbcTemplate
 ) {
+
+    /** One range scan; selected sections and all-process comparison share one DB snapshot.
+     * SUM includes collected values; groups with no collected values remain unknown.
+     * Product mapping is unique on (plant_cd, item_cd); unregistered items stay in totals.
+     */
+    fun findPeriod(
+        plantCd: String, range: ProcessPeriod, processId: String?, productCodes: List<String>
+    ): List<Pair<String, ProcessPeriodRow>> {
+        val productFilter = if (productCodes.isEmpty()) "" else "AND p.model_cd IN (:productCodes)"
+        val sql = """
+            WITH base AS MATERIALIZED (
+                SELECT date_trunc(:unit, lh.ins_date)::date AS period,
+                       lh.wc_cd, p.model_cd, p.model_nm, lh.normal, lh.defect
+                FROM mes.tb_pop_label_hist lh
+                LEFT JOIN ax.tb_prod_item_map pm
+                  ON pm.plant_cd = lh.plant_cd AND pm.item_cd = lh.item_cd
+                LEFT JOIN ax.tb_prod_product p ON p.product_id = pm.product_id
+                WHERE lh.plant_cd = :plantCd AND lh.del_flg = 'N'
+                  AND lh.ins_date >= :from AND lh.ins_date < :toExclusive
+                  $productFilter
+            ), selected AS (
+                SELECT * FROM base WHERE (:processId::varchar IS NULL OR wc_cd = :processId)
+            ), grouped AS (
+                SELECT CASE WHEN grouping(period) = 0 THEN 'periods'
+                            WHEN grouping(model_cd) = 0 THEN 'products' ELSE 'summary' END AS kind,
+                       period, model_cd, max(model_nm) AS model_nm, NULL::varchar AS wc_cd,
+                       CASE WHEN count(*) = 0 THEN 0 ELSE sum(normal) END AS ok_qty,
+                       CASE WHEN count(*) = 0 THEN 0 ELSE sum(defect) END AS ng_qty
+                FROM selected
+                GROUP BY GROUPING SETS ((), (period), (model_cd))
+                UNION ALL
+                SELECT 'processes', NULL::date, NULL::varchar, NULL::varchar, wc_cd,
+                       sum(normal),
+                       sum(defect)
+                FROM base GROUP BY wc_cd
+            )
+            SELECT g.*, w.wc_nm FROM grouped g
+            LEFT JOIN mes.tb_md_workcenter w ON w.plant_cd = :plantCd AND w.wc_cd = g.wc_cd
+            WHERE g.kind <> 'products' OR g.model_cd IS NOT NULL
+            ORDER BY g.kind, g.period, g.model_cd, w.sort_seq NULLS LAST, g.wc_cd
+        """.trimIndent()
+        val params = MapSqlParameterSource("plantCd", plantCd)
+            .addValue("from", range.from.atStartOfDay())
+            .addValue("toExclusive", range.to.plusDays(1).atStartOfDay())
+            .addValue("unit", range.unit).addValue("processId", processId)
+            .addValue("productCodes", productCodes)
+        return jdbcTemplate.query(sql, params) { rs, _ ->
+            rs.getString("kind") to ProcessPeriodRow.of(rs.getBigDecimal("ok_qty"), rs.getBigDecimal("ng_qty")).copy(
+                period = rs.getString("period"), code = rs.getString("model_cd"),
+                productNm = if (rs.getString("kind") == "products") rs.getString("model_nm") ?: rs.getString("model_cd") else null,
+                processId = rs.getString("wc_cd"), process = rs.getString("wc_nm") ?: rs.getString("wc_cd")
+            )
+        }
+    }
 
     /**
      * 공정·제품 요약 지표를 조회한다. (No.33 — 가중 평균 산출)

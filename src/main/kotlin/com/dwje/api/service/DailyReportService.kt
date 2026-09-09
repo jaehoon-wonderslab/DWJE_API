@@ -1,481 +1,186 @@
 package com.dwje.api.service
 
-import com.dwje.api.common.exception.BusinessRuleException
-import com.dwje.api.common.exception.ResourceNotFoundException
-import com.dwje.api.common.exception.SystemErrorException
-import com.dwje.api.common.response.PageMeta
+import com.dwje.api.common.exception.InvalidParameterException
 import com.dwje.api.common.security.UserContext
+import com.dwje.api.common.util.DailyReportPeriod
 import com.dwje.api.common.util.DataField
 import com.dwje.api.common.util.DateUtils
 import com.dwje.api.common.util.MaskingSupport
 import com.dwje.api.common.util.MenuId
-import com.dwje.api.common.util.PageRequestParam
+import com.dwje.api.common.util.TimeWindow
 import com.dwje.api.config.AppProperties
-import com.dwje.api.model.request.ReportCorrectionRequest
-import com.dwje.api.repository.DashboardAiRepository
-import com.dwje.api.repository.DowntimeRepository
-import com.dwje.api.repository.ProductionRepository
-import com.dwje.api.repository.ResultFilter
-import com.dwje.api.repository.ReportDocRepository
-import com.fasterxml.jackson.databind.ObjectMapper
+import com.dwje.api.model.request.DailyReportRowEntry
+import com.dwje.api.repository.DailyDecisionRepository
+import com.dwje.api.repository.DailyDecisionRow
+import com.dwje.api.repository.DayTargetRepository
+import com.dwje.api.repository.ReportRepository
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.LocalDate
-import java.time.LocalDateTime
 
 /**
- * 일일 생산현황 보고 서비스 (PR-03, PR-04)
+ * 일일 생산현황 보고 서비스 (PR-03)
  *
- * 보고 대상 기간은 전일 08:00 ~ 당일 08:00 이다.
- * AI 가 MES 실적을 집계해 초안을 만들고, 담당자가 항목을 보정한 뒤 확정한다.
+ * 집계 구간은 전일 20:00 ~ 당일 08:00 이다. (야간 교대 시작 ~ 주간 교대 시작)
+ * 화면은 대상일 하나만 고르고 구간 규칙은 서버가 갖는다. — [DailyReportPeriod]
+ *
+ * ## 문서 관리가 없다 (2026-09-04)
+ * 초안·버전·확정·반려·결재는 제거되었다. 보고서는 저장되는 문서가 아니라
+ * **조회 조건으로 매번 만들어 내려받는 산출물**이고, 남는 것은 다운로드 이력뿐이다.
+ * 무엇을 어떤 조건으로 내려받았는지는 `ax.tb_rpt_download_log.params_json` 에 남는다.
+ *
+ * 다만 아침회의에서 정한 제품별 일목표·판정·담당·기한은 산출물이 아니라 사람이
+ * 남기는 결정이라 따로 저장한다. 키는 문서가 아니라 (대상일, 제품) 이다.
  *
  * 접근 부서 : 생산관리팀 · 통합관리자
  */
 @Service
 class DailyReportService(
-    private val reportDocRepository: ReportDocRepository,
-    private val productionRepository: ProductionRepository,
-    private val dashboardAiRepository: DashboardAiRepository,
-    private val downtimeRepository: DowntimeRepository,
+    private val reportRepository: ReportRepository,
+    private val dailyDecisionRepository: DailyDecisionRepository,
+    private val dayTargetRepository: DayTargetRepository,
     private val authorizationService: AuthorizationService,
-    private val auditLogService: AuditLogService,
-    private val appProperties: AppProperties,
-    private val objectMapper: ObjectMapper
+    private val appProperties: AppProperties
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
 
-    companion object {
-        /** 보고서 문서 구분 */
-        private const val DOC_KIND = "DAILY"
-
-        /** 보고 기간 시작 시각 (전일 08:00) */
-        private const val PERIOD_START_HOUR = 8
-
-        /** 보고서 정의 ID */
-        private const val REPORT_DEF_ID = "RPT_DAILY_PROD"
-    }
-
     /**
-     * 보고서 초안을 조회한다. (No.59)
+     * 보고서 양식 본문을 조회한다. (제품 × 공정)
      *
-     * 대상 일자의 초안이 없으면 즉시 생성한다.
+     * 주간 실적은 두 값으로 낸다 — `weekQty` 는 그 주 **보고 구간들의 합**이고,
+     * `weekQtyAllShift` 는 주간 교대까지 포함한 연속 구간의 합이다.
+     * 주간목표가 일목표 × `weekDays` 라서 달성률에는 `weekQty` 만 짝이 맞는다.
+     *
+     * `processId` 를 주지 않으면 **프레스 작업장 전체**(`app.press-workcenters`)를 뜻한다.
+     * 전 공정이 아니다 — 프레스 양식에 용접·도금 제품이 섞여 올라오면 안 된다.
+     *
+     * `targetQty` 는 **저장값 > 마스터 > null** 순으로 정한다 —
+     * 작성자가 그날만 목표를 달리 잡으면(`tb_prod_daily_decision`) 그 값이
+     * 마스터(`tb_prod_day_target`)를 덮어쓴다. `targetQtyOrigin` 으로 출처를 알린다.
+     *
+     * 둘 다 없으면 null 이다. 공정 목표를 제품 실적 비율로 안분하지 않는다 —
+     * 근거 없는 숫자가 목표처럼 보인다.
      *
      * @param targetDate 대상 일자 (미지정 시 오늘)
+     * @param processId  공정 코드 (미지정 시 프레스 작업장 전체)
      */
-    @Transactional
-    fun getDraft(targetDate: String?): Pair<Map<String, Any?>, MaskingSupport> {
+    fun getSheet(targetDate: String?, processId: String?): Pair<Map<String, Any?>, MaskingSupport> {
         val (_, mask) = authorizationService.guard(MenuId.PROD_DAILY)
         val target = DateUtils.parseDate(targetDate, "targetDate", LocalDate.now())
 
-        val doc = reportDocRepository.findLatestDocByTargetDate(DOC_KIND, target)
-            ?: run {
-                val docId = generateDraft(target, version = 1)
-                reportDocRepository.findDoc(docId)
-                    ?: throw SystemErrorException("생성한 보고서 초안을 다시 읽지 못했습니다. [reportId=$docId]")
-            }
+        val day = DailyReportPeriod.of(target)
+        val weekDays = DailyReportPeriod.weekDays(target)
+        val reportWindows = DailyReportPeriod.weekWindows(target)
 
-        return buildDraftResponse(doc, mask) to mask
+        val requested = processId?.trim()?.takeIf { it.isNotBlank() }
+        val processCds = requested?.let { listOf(it) } ?: appProperties.pressWorkcenters
+
+        val rows = reportRepository.findDailySheetRows(
+            plantCd = appProperties.defaultPlantCd,
+            window = day,
+            reportWindows = reportWindows,
+            processCds = processCds
+        )
+
+        // 회의 결과가 저장돼 있으면 얹는다.
+        val saved = dailyDecisionRepository.findRows(target)
+
+        // 목표 밑값은 마스터에서 가져온다. 작성자가 그날만 달리 잡은 값이 있으면 그쪽이 이긴다.
+        val master = dayTargetRepository.findEffectiveTargets(
+            appProperties.defaultPlantCd, target, processCds
+        )
+
+        val qtyAllowed = mask.check(DataField.QTY)
+        val masked = rows.map { r ->
+            val own = saved[r["product"] as? String]
+            // 저장값 > 마스터 > 없음(null)
+            val targetQty = (own?.get("targetQty") as? Long)
+                ?: master["${r["product"]}|${r["processId"]}"]
+
+            r + mapOf(
+                "qty" to if (qtyAllowed) r["qty"] else null,
+                "okQty" to if (qtyAllowed) r["okQty"] else null,
+                "ngQty" to if (qtyAllowed) r["ngQty"] else null,
+                "weekQty" to if (qtyAllowed) r["weekQty"] else null,
+                "weekQtyAllShift" to if (qtyAllowed) r["weekQtyAllShift"] else null,
+                "weekDays" to weekDays,
+                // 작성자가 넣은 값이 있으면 그것, 없으면 마스터, 둘 다 없으면 null.
+                "targetQty" to if (qtyAllowed) targetQty else null,
+                // 목표가 어디서 온 값인지 화면이 구분해야 한다 — 마스터 값은 밑값이고
+                // 작성자가 덮어쓸 수 있다. 출처를 숨기면 누가 정한 목표인지 알 수 없다.
+                "targetQtyOrigin" to when {
+                    own?.get("targetQty") != null -> "MANUAL"
+                    master.containsKey("${r["product"]}|${r["processId"]}") -> "MASTER"
+                    else -> null
+                },
+                // 주간목표는 일목표 × 주간 일수다. 일목표가 없으면 낼 수 없다.
+                "weekTargetQty" to if (qtyAllowed) targetQty?.let { it * weekDays } else null,
+                "decision" to own?.get("decision"),
+                "dri" to own?.get("dri"),
+                "due" to own?.get("due")
+            )
+        }
+
+        return mapOf(
+            "targetDate" to target.format(DateUtils.DATE),
+            "periodFrom" to day.from.format(DateUtils.DATETIME),
+            "periodTo" to day.toExclusive.format(DateUtils.DATETIME),
+            "weekFrom" to reportWindows.first().from.format(DateUtils.DATETIME),
+            "weekDays" to weekDays,
+            "processId" to requested,
+            "processCds" to processCds,
+            "rows" to masked
+        ) to mask
     }
 
     /**
-     * 보고서 초안을 재생성한다. (No.60)
+     * 아침회의 결과(제품별 일목표·판정·담당·기한)를 저장한다.
      *
-     * 기존 문서는 보존하고 새 버전을 만든다.
+     * 보낸 제품만 갱신하므로 화면이 한 줄만 고쳐 보낼 수 있다.
+     * 문서가 없으므로 대상일이 키다 — 확정 상태 같은 것은 없고 언제든 고칠 수 있다.
      */
     @Transactional
-    fun regenerateDraft(targetDate: String?): Map<String, Any?> {
+    fun saveRows(targetDate: String?, rows: List<DailyReportRowEntry>): Map<String, Any?> {
+        val principal = UserContext.current()
         authorizationService.requireMenu(MenuId.PROD_DAILY)
         val target = DateUtils.parseDate(targetDate, "targetDate", LocalDate.now())
 
-        val previous = reportDocRepository.findLatestDocByTargetDate(DOC_KIND, target)
-        // 확정된 보고서는 재생성할 수 없다.
-        if (previous?.get("state") == "CONFIRMED") {
-            throw BusinessRuleException("이미 확정된 보고서는 재생성할 수 없습니다. 반려 후 진행하세요.")
+        if (rows.isEmpty()) {
+            throw InvalidParameterException("저장할 항목이 없습니다.", "rows")
         }
 
-        val nextVersion = ((previous?.get("version") as? Int) ?: 0) + 1
-        val docId = generateDraft(target, nextVersion)
-
-        return mapOf("reportId" to docId, "version" to nextVersion)
-    }
-
-    /**
-     * 보고서 항목을 보정한다. (No.61)
-     *
-     * @param reportId 보고서 문서 ID
-     * @param request  섹션·항목 값
-     */
-    @Transactional
-    fun correct(reportId: Long, request: ReportCorrectionRequest): Map<String, Any?> {
-        val principal = authorizationService.requireMenu(MenuId.PROD_DAILY)
-        val doc = requireEditableDoc(reportId)
-
-        // 1. 항목 코드별 보정 값을 수집한다.
-        val values = request.sections
-            .flatMap { it.fields }
-            .mapNotNull { f -> f.fieldCode?.let { it to f.value } }
-            .toMap()
-
-        val corrected = reportDocRepository.updateFieldValues(reportId, values, principal.userId)
-
-        // 2. 누적 보정 건수를 갱신한다.
-        val totalCorrection = ((doc["correctionCnt"] as? Int) ?: 0) + corrected
-        reportDocRepository.updateCorrectionCount(reportId, totalCorrection, principal.userId)
-
-        reportDocRepository.insertEvent(
-            reportId, "CORRECT", "항목 ${corrected}건 보정${request.remark?.let { " — $it" } ?: ""}",
-            principal.userId, principal.deptName
-        )
-
-        log.info("일일 생산현황 보고 항목 보정 : reportId={} 보정={}건", reportId, corrected)
-        return mapOf("reportId" to reportId, "correctionCnt" to totalCorrection)
-    }
-
-    /**
-     * 보고서를 임시 저장한다. (No.62)
-     */
-    @Transactional
-    fun save(reportId: Long, request: ReportCorrectionRequest): Map<String, Any?> {
-        val principal = authorizationService.requireMenu(MenuId.PROD_DAILY)
-        requireEditableDoc(reportId)
-
-        val values = request.sections.flatMap { it.fields }
-            .mapNotNull { f -> f.fieldCode?.let { it to f.value } }
-            .toMap()
-
-        reportDocRepository.updateFieldValues(reportId, values, principal.userId)
-        reportDocRepository.updateDocState(reportId, "SAVED", null, principal.userId)
-        reportDocRepository.insertEvent(reportId, "SAVE", "임시 저장", principal.userId, principal.deptName)
-
-        return mapOf("success" to true, "reportId" to reportId)
-    }
-
-    /**
-     * 보고서를 확정한다. (No.63 — 감사 로그 기록)
-     */
-    @Transactional
-    fun confirm(reportId: Long): Map<String, Any?> {
-        val principal = authorizationService.requireMenu(MenuId.PROD_DAILY)
-        val doc = reportDocRepository.findDoc(reportId)
-            ?: throw ResourceNotFoundException("보고서를 찾을 수 없습니다. [reportId=$reportId]")
-
-        if (doc["state"] == "CONFIRMED") {
-            throw BusinessRuleException("이미 확정된 보고서입니다.")
-        }
-
-        reportDocRepository.updateDocState(reportId, "CONFIRMED", null, principal.userId)
-        reportDocRepository.insertEvent(reportId, "CONFIRM", "보고서 확정", principal.userId, principal.deptName)
-
-        auditLogService.record(
-            logType = "AUTO_GEN",
-            menuId = MenuId.PROD_DAILY,
-            targetDesc = "일일 생산현황 보고 확정 [${doc["targetDate"]}]",
-            remark = "reportId=$reportId, version=${doc["version"]}"
-        )
-
-        val confirmed = reportDocRepository.findDoc(reportId)
-            ?: throw SystemErrorException("확정 처리 후 보고서를 다시 읽지 못했습니다. [reportId=$reportId]")
-        return mapOf(
-            "state" to confirmed["state"],
-            "confirmedAt" to confirmed["confirmedAt"],
-            "confirmedBy" to confirmed["confirmedBy"]
-        )
-    }
-
-    /**
-     * 보고서를 반려한다. (No.64)
-     *
-     * @param reason 반려 사유
-     */
-    @Transactional
-    fun reject(reportId: Long, reason: String?): Map<String, Any?> {
-        val principal = authorizationService.requireMenu(MenuId.PROD_DAILY)
-        reportDocRepository.findDoc(reportId)
-            ?: throw ResourceNotFoundException("보고서를 찾을 수 없습니다. [reportId=$reportId]")
-
-        reportDocRepository.updateDocState(reportId, "REJECTED", reason, principal.userId)
-        reportDocRepository.insertEvent(reportId, "REJECT", reason ?: "반려", principal.userId, principal.deptName)
-
-        return mapOf("state" to "REJECTED", "reason" to reason)
-    }
-
-    /**
-     * 보고서 생성 이력을 조회한다. (No.65)
-     */
-    @Transactional(readOnly = true)
-    fun getEvents(reportId: Long): Map<String, Any?> {
-        authorizationService.requireMenu(MenuId.PROD_DAILY)
-        return mapOf("events" to reportDocRepository.findEvents(reportId))
-    }
-
-    /**
-     * 보고서 이력을 조회한다. (No.66 — PR-04 이전 보고서)
-     */
-    @Transactional(readOnly = true)
-    fun getHistory(
-        from: String?,
-        to: String?,
-        state: String?,
-        page: Int?,
-        size: Int?
-    ): Pair<List<Map<String, Any?>>, PageMeta> {
-        authorizationService.requireAnyMenu(MenuId.PROD_DAILY, MenuId.DAILY_HISTORY)
-
-        val (fromDate, toDate) = DateUtils.periodOf(from, to, 90)
-        val paging = PageRequestParam.of(page, size)
-
-        val total = reportDocRepository.countDocs(DOC_KIND, fromDate, toDate, state, null)
-        val rows = reportDocRepository.findDocs(DOC_KIND, fromDate, toDate, state, null, paging.limit, paging.offset)
-
-        val items = rows.map {
-            mapOf(
-                "reportId" to it["docId"],
-                "targetDate" to it["targetDate"],
-                "version" to it["version"],
-                "state" to it["state"],
-                "generatedAt" to it["generatedAt"],
-                "confirmedAt" to it["confirmedAt"],
-                "confirmedBy" to it["confirmedBy"],
-                "correctionCnt" to it["correctionCnt"]
+        // 같은 제품을 두 번 보내면 어느 값이 남는지 순서에 달려 조용히 갈린다.
+        val duplicated = rows.mapNotNull { it.product?.trim()?.takeIf { p -> p.isNotBlank() } }
+            .groupingBy { it }.eachCount()
+            .filterValues { it > 1 }.keys
+        if (duplicated.isNotEmpty()) {
+            throw InvalidParameterException(
+                "같은 제품이 두 번 이상 들어 있습니다. [${duplicated.joinToString()}]", "rows"
             )
         }
 
-        return items to PageMeta.of(paging.page, paging.size, total)
-    }
+        val parsed = rows.mapIndexed { idx, r ->
+            val product = r.product?.trim()?.takeIf { it.isNotBlank() }
+                ?: throw InvalidParameterException("제품 코드는 필수입니다. [rows[$idx]]", "product")
+            if (r.targetQty != null && r.targetQty < 0) {
+                throw InvalidParameterException("일목표는 0 이상이어야 합니다. [rows[$idx]]", "targetQty")
+            }
 
-    /**
-     * 보고서를 복제한다. (No.67)
-     *
-     * @param reportId   원본 보고서 ID
-     * @param targetDate 복제 대상 일자
-     */
-    @Transactional
-    fun copy(reportId: Long, targetDate: String): Map<String, Any?> {
-        val principal = authorizationService.requireAnyMenu(MenuId.PROD_DAILY, MenuId.DAILY_HISTORY)
-        val source = reportDocRepository.findDoc(reportId)
-            ?: throw ResourceNotFoundException("복제할 보고서를 찾을 수 없습니다. [reportId=$reportId]")
-
-        val target = DateUtils.parseDate(targetDate, "targetDate")
-        val existing = reportDocRepository.findLatestDocByTargetDate(DOC_KIND, target)
-        val nextVersion = ((existing?.get("version") as? Int) ?: 0) + 1
-
-        val (periodFrom, periodTo) = reportPeriod(target)
-        val newDocId = reportDocRepository.insertDoc(
-            docKindCd = DOC_KIND,
-            reportId = REPORT_DEF_ID,
-            formId = null,
-            title = "일일 생산현황 보고 (${target.format(DateUtils.DATE)})",
-            targetDate = target,
-            periodFrom = periodFrom,
-            periodTo = periodTo,
-            occurDate = null,
-            versionNo = nextVersion,
-            plantCd = appProperties.defaultPlantCd,
-            lotNo = null,
-            productId = null,
-            customerId = null,
-            disclosurePolicy = null,
-            docNo = null,
-            actor = principal.userId
-        )
-
-        // 원본 항목 값을 그대로 복제한다.
-        val sourceFields = reportDocRepository.findFields(reportId).map { f ->
-            mapOf<String, Any?>(
-                "sectionCd" to f["section"],
-                "fieldNm" to f["field"],
-                "fieldCode" to f["fieldCode"],
-                "fieldValue" to f["value"],
-                "originCd" to f["origin"],
-                "isCorrected" to f["corrected"],
-                "blindFieldKey" to f["blindFieldKey"]
-            )
-        }
-        reportDocRepository.replaceFields(newDocId, sourceFields)
-        reportDocRepository.insertEvent(
-            newDocId, "COPY", "보고서 복제 (원본 reportId=$reportId)", principal.userId, principal.deptName
-        )
-
-        log.info("일일 생산현황 보고 복제 : {} → {}", reportId, newDocId)
-        return mapOf("newReportId" to newDocId, "targetDate" to target.format(DateUtils.DATE))
-    }
-
-    // ---------------------------------------------------------------------------------
-    // 초안 생성
-    // ---------------------------------------------------------------------------------
-
-    /**
-     * MES 실적을 집계해 보고서 초안을 생성한다.
-     *
-     * 섹션 구성
-     * - RESULT    : 생산 실적 (투입/양품/불량/불량률/수율)
-     * - CONDITION : 공정별 수율
-     * - CAUSE     : 주요 불량 유형
-     * - ACTION    : 비가동 현황
-     *
-     * @return 생성된 문서 ID
-     */
-    private fun generateDraft(target: LocalDate, version: Int): Long {
-        val principal = UserContext.current()
-        val plantCd = appProperties.defaultPlantCd
-        val (periodFrom, periodTo) = reportPeriod(target)
-
-        val docId = reportDocRepository.insertDoc(
-            docKindCd = DOC_KIND,
-            reportId = REPORT_DEF_ID,
-            formId = null,
-            title = "일일 생산현황 보고 (${target.format(DateUtils.DATE)})",
-            targetDate = target,
-            periodFrom = periodFrom,
-            periodTo = periodTo,
-            occurDate = null,
-            versionNo = version,
-            plantCd = plantCd,
-            lotNo = null,
-            productId = null,
-            customerId = null,
-            disclosurePolicy = null,
-            docNo = null,
-            actor = principal.userId
-        )
-
-        // 1. 보고 기간(전일 08:00~당일 08:00)의 생산 실적을 집계한다.
-        val summary = productionRepository.findResultSummary(
-            ResultFilter(plantCd = plantCd, from = target.minusDays(1), to = target)
-        )
-        val processYield = dashboardAiRepository.findProcessYield(plantCd, target)
-        val defectComposition = dashboardAiRepository.findDefectComposition(plantCd, target, null)
-        val downtimeSummary = downtimeRepository.findSummary(plantCd, target)
-
-        val fields = mutableListOf<Map<String, Any?>>()
-
-        // 2. 생산 실적 섹션
-        fields += field("RESULT", "투입 수량", "inputQty", summary["inputQty"]?.toString(), "MES", DataField.QTY)
-        fields += field("RESULT", "양품 수량", "okQty", summary["okQty"]?.toString(), "MES", DataField.QTY)
-        fields += field("RESULT", "불량 수량", "ngQty", summary["ngQty"]?.toString(), "MES", DataField.QTY)
-        fields += field("RESULT", "불량률(%)", "defectRate", summary["defectRate"]?.toString(), "MES", DataField.YIELD)
-        fields += field("RESULT", "수율(%)", "yieldRate", summary["yield"]?.toString(), "MES", DataField.YIELD)
-
-        // 3. 공정별 수율 섹션
-        processYield.forEach { p ->
-            fields += field(
-                "CONDITION", "${p["process"]} 수율(%)", "yield_${p["processId"]}",
-                p["yield"]?.toString(), "MES", DataField.YIELD
+            DailyDecisionRow(
+                product = product,
+                targetQty = r.targetQty,
+                decision = r.decision?.trim()?.takeIf { it.isNotBlank() },
+                dri = r.dri?.trim()?.takeIf { it.isNotBlank() },
+                dueDate = r.due?.trim()?.takeIf { it.isNotBlank() }
+                    ?.let { DateUtils.parseDate(it, "due") }
             )
         }
 
-        // 4. 주요 불량 유형 섹션 (상위 5종)
-        defectComposition.take(5).forEach { d ->
-            fields += field(
-                "CAUSE", "${d["label"]} 불량 수량", "defect_${d["code"]}",
-                d["value"]?.toString(), "MES", DataField.YIELD
-            )
-        }
+        dailyDecisionRepository.upsertRows(target, parsed, principal.userId)
+        log.info("일일 생산현황 보고 회의 결과 저장 : targetDate={} 제품={}종", target, parsed.size)
 
-        // 5. 비가동 현황 섹션
-        fields += field("ACTION", "총 비가동 시간(분)", "downtimeMin", downtimeSummary["totalMin"]?.toString(), "MES", null)
-        fields += field("ACTION", "사유 미등록 건수", "unregisteredCnt", downtimeSummary["unregisteredCnt"]?.toString(), "MES", null)
-        fields += field("ACTION", "특이사항", "note", null, "MANUAL", null)
-
-        reportDocRepository.replaceFields(docId, fields)
-        reportDocRepository.updateSummary(docId, objectMapper.writeValueAsString(summary), principal.userId)
-        reportDocRepository.insertEvent(
-            docId, if (version > 1) "REGENERATE" else "GENERATE",
-            "MES 실적 기반 초안 생성 (v$version)", principal.userId, principal.deptName
-        )
-
-        return docId
+        return mapOf("targetDate" to target.format(DateUtils.DATE), "savedCnt" to parsed.size)
     }
-
-    /**
-     * 초안 조회 응답을 조립한다. (섹션별 그룹핑 + 마스킹)
-     */
-    private fun buildDraftResponse(doc: Map<String, Any?>, mask: MaskingSupport): Map<String, Any?> {
-        val docId = doc["docId"] as Long
-        val fields = reportDocRepository.findFields(docId)
-
-        // 항목에 지정된 blind 항목 key 로 값을 마스킹한다.
-        val maskedFields = fields.map { f ->
-            val blindKey = f["blindFieldKey"] as? String
-            if (blindKey != null && !mask.check(blindKey)) f + mapOf("value" to null, "masked" to true)
-            else f
-        }
-
-        val sections = maskedFields.groupBy { it["section"] as String }
-            .map { (section, items) -> mapOf("section" to section, "fields" to items) }
-
-        return mapOf(
-            "reportId" to docId,
-            "version" to doc["version"],
-            "state" to doc["state"],
-            "targetDate" to doc["targetDate"],
-            "periodFrom" to doc["periodFrom"],
-            "periodTo" to doc["periodTo"],
-            "generatedAt" to doc["generatedAt"],
-            "generatedBy" to doc["generatedBy"],
-            "correctionCnt" to doc["correctionCnt"],
-            "sections" to sections,
-            "summary" to parseSummary(doc["summaryJson"] as? String, mask)
-        )
-    }
-
-    /** 요약 JSON 을 파싱하고 마스킹을 적용한다. */
-    private fun parseSummary(json: String?, mask: MaskingSupport): Map<String, Any?> {
-        if (json.isNullOrBlank()) return emptyMap()
-
-        @Suppress("UNCHECKED_CAST")
-        val parsed = runCatching { objectMapper.readValue(json, Map::class.java) as Map<String, Any?> }
-            .getOrDefault(emptyMap())
-
-        val result = parsed.toMutableMap()
-        mask.applyTo(
-            result,
-            mapOf(
-                "inputQty" to DataField.QTY,
-                "okQty" to DataField.QTY,
-                "ngQty" to DataField.QTY,
-                "defectRate" to DataField.YIELD,
-                "yield" to DataField.YIELD
-            )
-        )
-        return result.toMap()
-    }
-
-    /**
-     * 편집 가능한 문서인지 확인한다. (확정 문서는 수정 불가)
-     */
-    private fun requireEditableDoc(reportId: Long): Map<String, Any?> {
-        val doc = reportDocRepository.findDoc(reportId)
-            ?: throw ResourceNotFoundException("보고서를 찾을 수 없습니다. [reportId=$reportId]")
-        if (doc["state"] == "CONFIRMED") {
-            throw BusinessRuleException("확정된 보고서는 수정할 수 없습니다.")
-        }
-        return doc
-    }
-
-    /**
-     * 보고 대상 기간을 산출한다. (전일 08:00 ~ 당일 08:00)
-     */
-    private fun reportPeriod(target: LocalDate): Pair<LocalDateTime, LocalDateTime> =
-        target.minusDays(1).atTime(PERIOD_START_HOUR, 0) to target.atTime(PERIOD_START_HOUR, 0)
-
-    /** 보고서 항목 한 건을 구성한다. */
-    private fun field(
-        section: String,
-        name: String,
-        code: String,
-        value: String?,
-        origin: String,
-        blindFieldKey: String?
-    ): Map<String, Any?> = mapOf(
-        "sectionCd" to section,
-        "fieldNm" to name,
-        "fieldCode" to code,
-        "fieldValue" to value,
-        "originCd" to origin,
-        "isCorrected" to false,
-        "blindFieldKey" to blindFieldKey
-    )
 }

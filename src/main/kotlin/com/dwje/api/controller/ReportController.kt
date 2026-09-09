@@ -4,12 +4,14 @@ import com.dwje.api.common.response.ApiResponse
 import com.dwje.api.common.util.MenuId
 import com.dwje.api.model.request.ApprovalLineRequest
 import com.dwje.api.model.request.ExportFormatRequest
+import com.dwje.api.model.request.ReportWriteStateRequest
 import com.dwje.api.model.request.ScrapDraftRequest
 import com.dwje.api.model.request.ScrapManualRowRequest
 import com.dwje.api.model.request.ScrapUnitPriceRequest
 import com.dwje.api.service.DownloadLogService
 import com.dwje.api.service.ExportService
 import com.dwje.api.service.ReportService
+import com.dwje.api.service.ReportWriteStateService
 import com.dwje.api.service.ScrapReportService
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.Parameter
@@ -37,6 +39,7 @@ import org.springframework.web.bind.annotation.RestController
 @Tag(name = "07. 보고서")
 class ReportController(
     private val reportService: ReportService,
+    private val reportWriteStateService: ReportWriteStateService,
     private val scrapReportService: ScrapReportService,
     private val exportService: ExportService,
     private val downloadLogService: DownloadLogService
@@ -131,6 +134,40 @@ class ReportController(
     }
 
     // =================================================================================
+    // 보고서 센터 — 작성 상태 (일일 생산현황 보고 · 아침회의 자료 · 폐기 보고서)
+    // =================================================================================
+
+    /**
+     * 보고서 작성 상태 조회 — 허브 상단 "오늘 작성할 보고서" 띠
+     *
+     * 문서 관리가 없어 상태는 `max(파생, 기록)` 이다. 파생은 아침회의 결과 행 유무로 DRAFT 까지만,
+     * 제출·승인은 화면 단추가 남긴 기록(`ax.tb_rpt_write_state`)에서 온다.
+     */
+    @Operation(
+        summary = "보고서 작성 상태 조회",
+        description = "대상일의 화면별 작성 상태(NONE|DRAFT|SUBMITTED|APPROVED)를 반환한다. " +
+            "대상은 prod-daily · rpt-press-morning · rpt-plating-morning · rpt-scrap 중 호출자에게 메뉴 권한이 있는 화면이다. " +
+            "source 는 DERIVED(저장 행 유무로 판단) 또는 RECORDED(제출·승인 단추로 기록)."
+    )
+    @GetMapping("/status")
+    fun writeStatus(
+        @Parameter(description = "보고서 대상일 yyyy-MM-dd. 미지정 시 오늘") @RequestParam(required = false) baseDate: String?
+    ): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(reportWriteStateService.getStatus(baseDate))
+
+    /** 보고서 작성 상태 기록 — 화면 머리말의 「제출」「승인」「작성 중으로 되돌리기」 */
+    @Operation(
+        summary = "보고서 작성 상태 기록",
+        description = "화면·대상일의 작성 상태를 DRAFT|SUBMITTED|APPROVED 로 기록한다. 있으면 덮어쓴다(낮추는 방향 포함). " +
+            "대상 화면이 아니면 400, 해당 화면 메뉴 권한이 없으면 E-AUTH-002."
+    )
+    @PutMapping("/status")
+    fun setWriteStatus(
+        @Valid @RequestBody request: ReportWriteStateRequest
+    ): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(reportWriteStateService.setStatus(request), "작성 상태를 기록했습니다.")
+
+    // =================================================================================
     // RP-06 / RP-07. 폐기 보고서 · 작성 위저드
     // =================================================================================
 
@@ -151,173 +188,5 @@ class ReportController(
             from, to, processId, modelCd, defectTypeCd, originType, page, size
         )
         return ApiResponse.page(mapOf("items" to rows), meta, mask.maskedKeys())
-    }
-
-    /** 폐기 보고서 목록 조회 (No.113) */
-    @Operation(summary = "폐기 보고서 목록 조회", description = "기간·발생 구분별 폐기 보고서 목록을 조회한다.")
-    @GetMapping("/scrap")
-    fun scrapDocs(
-        @RequestParam(required = false) from: String?,
-        @RequestParam(required = false) to: String?,
-        @RequestParam(required = false) originType: String?,
-        @RequestParam(required = false) page: Int?,
-        @RequestParam(required = false) size: Int?
-    ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta, mask) = scrapReportService.getScrapDocs(from, to, originType, page, size)
-        return ApiResponse.page(mapOf("items" to rows), meta, mask.maskedKeys())
-    }
-
-    /** 초안 생성·임시저장 (No.116) */
-    @Operation(summary = "폐기 보고서 초안 생성", description = "선택한 MES 전표로 폐기 보고서 초안을 생성한다.")
-    @PostMapping("/scrap/drafts")
-    fun createScrapDraft(@Valid @RequestBody request: ScrapDraftRequest): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(scrapReportService.createDraft(request), "초안이 생성되었습니다.")
-
-    /** 초안 수정 (No.117) */
-    @Operation(summary = "폐기 보고서 초안 수정", description = "위저드 단계 상태와 선택 전표·입력 값을 갱신한다.")
-    @PutMapping("/scrap/drafts/{draftId}")
-    fun updateScrapDraft(
-        @PathVariable draftId: Long,
-        @Valid @RequestBody request: ScrapDraftRequest
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(scrapReportService.updateDraft(draftId, request), "초안이 저장되었습니다.")
-
-    /** 초안 삭제 — 위저드 취소 (신규, API 목록 외) */
-    @Operation(
-        summary = "폐기 보고서 초안 삭제",
-        description = "위저드를 중단할 때 남은 초안을 삭제한다(소프트 삭제). " +
-            "없는 초안은 404, 이미 발행·확정된 보고서는 409 로 거부한다."
-    )
-    @DeleteMapping("/scrap/drafts/{draftId}")
-    fun deleteScrapDraft(@PathVariable draftId: Long): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(scrapReportService.deleteDraft(draftId), "초안이 삭제되었습니다.")
-
-    /** 수기 폐기 행 추가 (No.118 — 2단계) */
-    @Operation(summary = "수기 폐기 행 추가", description = "MES 전표에 없는 불용재고·반품분을 수기 행으로 추가한다.")
-    @PostMapping("/scrap/drafts/{draftId}/manual-rows")
-    fun addManualRow(
-        @PathVariable draftId: Long,
-        @Valid @RequestBody request: ScrapManualRowRequest
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(scrapReportService.addManualRow(draftId, request), "수기 행이 추가되었습니다.")
-
-    /** 수기 폐기 행 삭제 (No.119) */
-    @Operation(summary = "수기 폐기 행 삭제", description = "수기로 추가한 폐기 행을 삭제한다.")
-    @DeleteMapping("/scrap/drafts/{draftId}/manual-rows/{rowId}")
-    fun deleteManualRow(
-        @PathVariable draftId: Long,
-        @PathVariable rowId: Long
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(scrapReportService.deleteManualRow(draftId, rowId), "수기 행이 삭제되었습니다.")
-
-    /** 폐기 금액 산정 (No.120 — 3단계) */
-    @Operation(summary = "폐기 금액 산정", description = "원가 기준정보 단가를 적용해 폐기 금액을 산정한다.")
-    @PostMapping("/scrap/drafts/{draftId}/calculate")
-    fun calculate(@PathVariable draftId: Long): ApiResponse<Map<String, Any?>> {
-        val (data, mask) = scrapReportService.calculate(draftId)
-        return ApiResponse.ok(data, mask.maskedKeys(), "금액을 산정했습니다.")
-    }
-
-    /** 단가 수기 조정 (No.121) */
-    @Operation(summary = "단가 수기 조정", description = "모델·공정 단위로 단가를 직접 조정한다. 조정 이력이 보존된다.")
-    @PutMapping("/scrap/drafts/{draftId}/unit-price")
-    fun adjustUnitPrice(
-        @PathVariable draftId: Long,
-        @Valid @RequestBody request: ScrapUnitPriceRequest
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(scrapReportService.adjustUnitPrice(draftId, request), "단가가 조정되었습니다.")
-
-    /** 검토 부서·결재선 지정 (No.122 — 4단계) */
-    @Operation(summary = "검토 부서·결재선 지정", description = "검토 부서와 기안·검토·승인 3단 결재선을 지정한다.")
-    @PutMapping("/scrap/drafts/{draftId}/approval-line")
-    fun setApprovalLine(
-        @PathVariable draftId: Long,
-        @Valid @RequestBody request: ApprovalLineRequest
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(scrapReportService.setApprovalLine(draftId, request), "결재선이 지정되었습니다.")
-
-    /** 검토 요청 발송 (No.123) */
-    @Operation(summary = "검토 요청 발송", description = "지정 부서·담당자에게 검토 요청 알림을 발송한다.")
-    @PostMapping("/scrap/drafts/{draftId}/review-request")
-    fun sendReviewRequest(
-        @PathVariable draftId: Long,
-        @Valid @RequestBody(required = false) request: ApprovalLineRequest?
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(
-            scrapReportService.sendReviewRequest(draftId, request?.notifyChannels ?: emptyList()),
-            "검토 요청을 발송했습니다."
-        )
-
-    /** 보고서 생성 (No.124 — 5단계) */
-    @Operation(summary = "폐기 보고서 생성", description = "문서번호를 채번하고 보고서를 발행한다.")
-    @PostMapping("/scrap/drafts/{draftId}/publish")
-    fun publish(@PathVariable draftId: Long): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(scrapReportService.publish(draftId), "보고서가 생성되었습니다.")
-
-    /** 폐기 보고서 상세 조회 (No.114) */
-    @Operation(summary = "폐기 보고서 상세 조회", description = "결재 양식 머리부·발생 정보·상세 표·검토 의견을 반환한다.")
-    @GetMapping("/scrap/{docNo}")
-    fun scrapDoc(@PathVariable docNo: String): ApiResponse<Map<String, Any?>> {
-        val (data, mask) = scrapReportService.getScrapDoc(docNo)
-        return ApiResponse.ok(data, mask.maskedKeys())
-    }
-
-    // =================================================================================
-    // 공통 출력
-    // =================================================================================
-
-    /** 보고서 출력 (No.125 — 엑셀·CSV·PDF) */
-    @Operation(summary = "보고서 출력", description = "보고서를 엑셀·CSV 로 출력한다. blind 항목은 제외한다.")
-    @PostMapping("/{reportId}/export")
-    fun export(
-        @PathVariable reportId: Long,
-        @Valid @RequestBody(required = false) request: ExportFormatRequest?
-    ): ResponseEntity<ByteArrayResource> {
-        val format = request?.format ?: "xls"
-        val (detail, mask) = scrapReportService.getDocDetailById(reportId)
-
-        @Suppress("UNCHECKED_CAST")
-        val rows = detail["rows"] as List<Map<String, Any?>>
-
-        downloadLogService.record(
-            reportId = null,
-            reportNm = ((detail["header"] as? Map<*, *>)?.get("title") as? String) ?: "보고서",
-            menuId = MenuId.RPT_SCRAP,
-            format = format,
-            scope = "reportId=$reportId",
-            rowCnt = rows.size,
-            blindCnt = mask.maskedCount(),
-            blindCells = mask.maskedKeys().associateWith { rows.size }
-        )
-
-        return exportService.export(
-            format = format,
-            fileName = "report_${reportId}_${exportService.timestamp()}",
-            headers = listOf("모델", "공정", "폐기 사유", "수량", "단가", "금액", "비중(%)", "구분"),
-            keys = listOf("model", "process", "reason", "qty", "unitPrice", "amount", "ratio", "kind"),
-            rows = rows
-        )
-    }
-
-    /** 보고서 인쇄용 조회 (No.126) */
-    @Operation(summary = "보고서 인쇄용 조회", description = "인쇄 양식용 데이터를 반환하고 다운로드 이력을 기록한다.")
-    @GetMapping("/{reportId}/print")
-    fun print(@PathVariable reportId: Long): ApiResponse<Map<String, Any?>> {
-        val (detail, mask) = scrapReportService.getDocDetailById(reportId)
-
-        @Suppress("UNCHECKED_CAST")
-        val rows = detail["rows"] as List<Map<String, Any?>>
-
-        downloadLogService.record(
-            reportId = null,
-            reportNm = ((detail["header"] as? Map<*, *>)?.get("title") as? String) ?: "보고서",
-            menuId = MenuId.RPT_SCRAP,
-            format = "pdf",
-            scope = "print reportId=$reportId",
-            rowCnt = rows.size,
-            blindCnt = mask.maskedCount()
-        )
-
-        return ApiResponse.ok(detail, mask.maskedKeys())
     }
 }

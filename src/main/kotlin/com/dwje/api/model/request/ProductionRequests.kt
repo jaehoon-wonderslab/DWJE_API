@@ -1,5 +1,6 @@
 package com.dwje.api.model.request
 
+import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.NotBlank
 
 /**
@@ -89,4 +90,25 @@ data class DowntimeUpdateRequest(
     val reasonCd: String? = null,
     val remark: String? = null,
     val resumeAt: String? = null
+)
+
+/**
+ * 제품·공정별 일목표 등록·수정 요청 — POST/PUT /api/v1/production/day-targets
+ *
+ * 목표는 `applyFrom` 부터 **다음 적용일 전까지** 유효하다. 종료일은 두지 않는다 —
+ * 끝을 적게 하면 구간이 끊기거나 겹친 상태를 막을 방법이 따로 필요해진다.
+ *
+ * @param product   제품 코드 (등록 시 필수, 수정 시 무시)
+ * @param processId 작업장(공정) 코드 (등록 시 필수, 수정 시 무시)
+ * @param applyFrom 적용 시작일 (`yyyy-MM-dd`, 필수)
+ * @param targetQty 일목표 수량 (필수, 0 이상)
+ * @param remark    비고
+ */
+data class DayTargetRequest(
+    val product: String? = null,
+    val processId: String? = null,
+    val applyFrom: String? = null,
+    @field:Min(0, message = "일목표는 0 이상이어야 합니다.")
+    val targetQty: Long? = null,
+    val remark: String? = null
 )

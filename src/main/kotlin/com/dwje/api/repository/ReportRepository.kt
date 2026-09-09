@@ -2,17 +2,19 @@ package com.dwje.api.repository
 
 import com.dwje.api.common.util.DefectSql
 import com.dwje.api.common.util.Rs
+import com.dwje.api.common.util.TimeWindow
 import com.dwje.api.common.util.safeRate
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Repository
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.YearMonth
 
 /**
  * 정형 보고서 Repository (RP-01 ~ RP-05)
  *
- * - 아침회의 자료 : 일목표(ax.tb_met_metric_value, metric_cd='PROD_DAY_TARGET') 대비 실적
+ * - 아침회의 자료 : 일목표(ax.tb_prod_day_target — 제품·공정별 마스터) 대비 실적
  * - 연간 출하계획 : ax.tb_prod_ship_plan (회계연도 8월 시작)
  * - 제품별 수율   : mes.tb_pop_label_hist · mes.tb_pop_defect_hist · mes.tb_md_defect_by_item
  * - 고객사 LRR    : ax.tb_qc_lrr_notice 접수 이력 대비 출하 실적
@@ -25,7 +27,13 @@ class ReportRepository(
     /**
      * 아침회의 자료 본표를 조회한다. (No.107 / No.109)
      *
-     * 일목표는 지표 측정값에서, 실적은 라벨 이력에서 가져오고 주간 누적을 함께 산출한다.
+     * 일목표는 **제품·공정별 마스터**(`ax.tb_prod_day_target`)에서, 실적은 라벨 이력에서
+     * 가져오고 주간 누적을 함께 산출한다.
+     *
+     * 마스터에 목표가 없는 공정은 `dayTarget`·`rate` 가 **null** 이다 —
+     * 0 으로 채우면 "목표 없음" 과 "목표가 0" 이 구분되지 않고, 달성률 0 이 되어
+     * 전 행이 위험으로 뜬다. 주간목표는 이 표의 주간 창(기준일 포함 7일)에 맞춰
+     * 서비스가 `dayTarget x 7` 로 낸다.
      *
      * @param plantCd     사업장 코드
      * @param baseDate    기준일 (전일 실적 기준)
@@ -62,39 +70,38 @@ class ReportRepository(
                   AND lh.ins_date <  :dayEnd
                 GROUP BY lh.wc_cd
             ),
+            -- 일목표는 제품·공정별 마스터(ax.tb_prod_day_target)에서 온다.
+            -- 예전에는 지표(ax.tb_met_metric_value, metric_cd='PROD_DAY_TARGET')를 읽었는데
+            -- 그 테이블이 0행이라 coalesce 로 0 이 되어 **전 행이 달성률 0 · 위험**으로 떴다.
+            --
+            -- 마스터는 제품 x 공정 단위이고 이 표는 공정 한 줄이라 공정별로 합친다.
+            -- 목표가 하나도 없는 공정은 sum() 이 NULL 이 되고, 그 NULL 을 그대로 내린다 —
+            -- 0 으로 바꾸면 "목표 없음" 과 "목표가 0" 이 같은 값이 되어 구분할 수 없다.
             day_target AS (
-                SELECT mv.wc_cd, coalesce(sum(mv.metric_value), 0) AS target_qty
-                FROM ax.tb_met_metric_value mv
-                INNER JOIN ax.tb_met_metric_std ms ON ms.metric_id = mv.metric_id
-                WHERE ms.metric_cd    = 'PROD_DAY_TARGET'
-                  AND mv.measured_at >= :dayStart
-                  AND mv.measured_at <  :dayEnd
-                GROUP BY mv.wc_cd
-            ),
-            week_target AS (
-                SELECT mv.wc_cd, coalesce(sum(mv.metric_value), 0) AS target_qty
-                FROM ax.tb_met_metric_value mv
-                INNER JOIN ax.tb_met_metric_std ms ON ms.metric_id = mv.metric_id
-                WHERE ms.metric_cd    = 'PROD_DAY_TARGET'
-                  AND mv.measured_at >= :weekStart
-                  AND mv.measured_at <  :dayEnd
-                GROUP BY mv.wc_cd
+                SELECT eff.wc_cd, sum(eff.target_qty) AS target_qty
+                FROM (
+                    -- 적용일 구간: 그 날짜 이하의 적용일 중 가장 늦은 것 한 건
+                    SELECT DISTINCT ON (product, wc_cd) wc_cd, target_qty
+                    FROM ax.tb_prod_day_target
+                    WHERE plant_cd = :plantCd
+                      AND apply_from <= :baseDate
+                    ORDER BY product, wc_cd, apply_from DESC
+                ) eff
+                GROUP BY eff.wc_cd
             )
             SELECT
                 w.wc_cd,
                 w.wc_nm,
                 w.sort_seq,
-                coalesce(dt.target_qty, 0)  AS day_target,
+                dt.target_qty               AS day_target,
                 coalesce(da.qty, 0)         AS day_actual,
                 coalesce(da.ng_qty, 0)      AS day_ng,
                 coalesce(da.eqpt_cnt, 0)    AS eqpt_cnt,
-                coalesce(wt.target_qty, 0)  AS week_target,
                 coalesce(wa.qty, 0)         AS week_actual
             FROM mes.tb_md_workcenter w
             LEFT JOIN day_actual  da ON da.wc_cd = w.wc_cd
             LEFT JOIN week_actual wa ON wa.wc_cd = w.wc_cd
             LEFT JOIN day_target  dt ON dt.wc_cd = w.wc_cd
-            LEFT JOIN week_target wt ON wt.wc_cd = w.wc_cd
             WHERE w.plant_cd = :plantCd
               AND now() BETWEEN w.valid_from_dt AND w.valid_to_dt
             """.trimIndent()
@@ -105,6 +112,7 @@ class ReportRepository(
             .addValue("dayStart", baseDate.atStartOfDay())
             .addValue("dayEnd", baseDate.plusDays(1).atStartOfDay())
             .addValue("weekStart", baseDate.minusDays(6).atStartOfDay())
+            .addValue("baseDate", baseDate)
 
         if (processCds.isNotEmpty()) {
             sql.append(" AND w.wc_cd = ANY(:processCds)")
@@ -116,20 +124,152 @@ class ReportRepository(
         return jdbcTemplate.query(sql.toString(), params) { rs, _ ->
             val dayTarget = rs.getBigDecimal("day_target")
             val dayActual = rs.getBigDecimal("day_actual")
-            val weekTarget = rs.getBigDecimal("week_target")
-            val weekActual = rs.getBigDecimal("week_actual")
 
             mapOf(
                 "processId" to rs.getString("wc_cd"),
                 "process" to rs.getString("wc_nm"),
+                // 목표가 없으면 null 이다. 달성률도 서비스에서 내지 않는다.
                 "dayTarget" to Rs.qty(rs, "day_target"),
                 "dayActual" to Rs.qty(rs, "day_actual"),
                 "dayNgQty" to Rs.qty(rs, "day_ng"),
-                "rate" to safeRate(dayActual, dayTarget),
-                "weekTarget" to Rs.qty(rs, "week_target"),
+                "rate" to if (dayTarget == null) null else safeRate(dayActual, dayTarget),
                 "weekActual" to Rs.qty(rs, "week_actual"),
-                "weekRate" to safeRate(weekActual, weekTarget),
                 "impactEqptCnt" to rs.getInt("eqpt_cnt")
+            )
+        }
+    }
+
+    /**
+     * 일일 생산현황 보고 양식 본문(제품 × 공정)을 조회한다.
+     *
+     * 집계 구간은 서비스가 정한다. (전일 20:00 ~ 당일 08:00 / 주간 누적)
+     *
+     * 설비 대수는 **제품 단위로 `count(DISTINCT eqpt_cd)`** 를 낸다.
+     * 품목별로 센 값을 더하면 한 설비가 같은 모델의 여러 품목을 찍을 때 중복으로 센다.
+     *
+     * 품목 → 제품 매핑이 없는 실적은 버리지 않고 `item_cd` 를 제품 코드 자리에 그대로 둔다.
+     * (매핑은 1,106/1,139 만 있어 조용히 버리면 합계가 어긋난다)
+     *
+     * @param plantCd    사업장 코드
+     * @param window     대상일 집계 구간
+     * 주간 실적은 **두 기준으로 따로** 낸다.
+     * `week_qty` 는 그 주 보고 구간들의 합이고, `week_qty_all_shift` 는 주간 교대까지
+     * 포함한 연속 구간의 합이다. 주간목표가 일목표 × 보고 일수라서, 달성률에는
+     * 보고 구간 합만 짝이 맞는다. 한 이름에 두 기준을 담으면 화면마다 잘못 쓴다.
+     *
+     * @param window        대상일 집계 구간
+     * @param reportWindows 그 주 보고 구간 목록 (비어 있으면 `window` 하나로 본다)
+     * @param processCds    대상 공정 코드 목록 (빈 목록이면 전체)
+     */
+    fun findDailySheetRows(
+        plantCd: String,
+        window: TimeWindow,
+        reportWindows: List<TimeWindow>,
+        processCds: List<String>
+    ): List<Map<String, Any?>> {
+        // 품목 → 제품 매핑은 (plant_cd, item_cd) 유일하므로 조인이 행을 늘리지 않는다.
+        val processFilter = if (processCds.isEmpty()) "" else " AND lh.wc_cd = ANY(:processCds)"
+
+        val windows = reportWindows.ifEmpty { listOf(window) }
+        val weekFrom = windows.minOf { it.from }
+
+        // 보고 구간에 드는지 판정하는 절. 구간이 최대 7개라 그대로 펼친다.
+        val shiftPredicate = windows.indices.joinToString(
+            separator = "\n                     OR "
+        ) { i -> "(lh.ins_date >= :shiftFrom$i AND lh.ins_date < :shiftTo$i)" }
+
+        val sql = """
+            WITH lab AS (
+                SELECT
+                    lh.eqpt_cd,
+                    lh.wc_cd,
+                    lh.normal,
+                    lh.defect,
+                    lh.ins_date,
+                    coalesce(p.model_cd, lh.item_cd) AS product,
+                    p.model_nm                       AS product_nm,
+                    ($shiftPredicate)                AS is_report_shift
+                FROM mes.tb_pop_label_hist lh
+                LEFT JOIN ax.tb_prod_item_map pm
+                       ON pm.plant_cd = lh.plant_cd AND pm.item_cd = lh.item_cd
+                LEFT JOIN ax.tb_prod_product p
+                       ON p.product_id = pm.product_id
+                WHERE lh.plant_cd  = :plantCd
+                  AND lh.del_flg   = 'N'
+                  AND lh.ins_date >= :weekStart
+                  AND lh.ins_date <  :dayEnd
+                  $processFilter
+            ),
+            day_agg AS (
+                SELECT
+                    product,
+                    max(product_nm)                                     AS product_nm,
+                    wc_cd,
+                    coalesce(sum(normal), 0) + coalesce(sum(defect), 0)  AS qty,
+                    coalesce(sum(normal), 0)                            AS ok_qty,
+                    coalesce(sum(defect), 0)                            AS ng_qty,
+                    count(DISTINCT eqpt_cd)                             AS eqpt_cnt
+                FROM lab
+                WHERE ins_date >= :dayStart
+                GROUP BY product, wc_cd
+            ),
+            week_agg AS (
+                SELECT
+                    product,
+                    max(product_nm) AS product_nm,
+                    wc_cd,
+                    -- 주간목표(일목표 x 보고 일수)와 짝이 맞는 값
+                    coalesce(sum(normal) FILTER (WHERE is_report_shift), 0)
+                        + coalesce(sum(defect) FILTER (WHERE is_report_shift), 0) AS qty,
+                    -- 주간 교대까지 포함한 연속 구간
+                    coalesce(sum(normal), 0) + coalesce(sum(defect), 0)           AS qty_all_shift
+                FROM lab
+                GROUP BY product, wc_cd
+            )
+            -- 주간 집계가 조인을 주도한다. 대상일 구간에 실적이 없고 그 주에만 있는 제품
+            -- (예: 낮 근무만 돌린 제품)을 빼면 주간 합계가 조용히 모자란다.
+            -- 실측: 08-28 대상일에서 PDX-S/W120 이 빠져 주간 연속구간 합이 60,000 적었다.
+            SELECT
+                wk.product,
+                coalesce(d.product_nm, wk.product_nm) AS product_nm,
+                wk.wc_cd,
+                coalesce(w.wc_nm, wk.wc_cd)    AS wc_nm,
+                coalesce(d.qty, 0)             AS qty,
+                coalesce(d.ok_qty, 0)          AS ok_qty,
+                coalesce(d.ng_qty, 0)          AS ng_qty,
+                coalesce(d.eqpt_cnt, 0)        AS eqpt_cnt,
+                wk.qty                         AS week_qty,
+                wk.qty_all_shift               AS week_qty_all_shift
+            FROM week_agg wk
+            LEFT JOIN day_agg d
+                   ON d.product = wk.product AND d.wc_cd = wk.wc_cd
+            LEFT JOIN mes.tb_md_workcenter w
+                   ON w.plant_cd = :plantCd AND w.wc_cd = wk.wc_cd
+            ORDER BY w.sort_seq NULLS LAST, wk.wc_cd, coalesce(d.qty, 0) DESC, wk.product
+        """.trimIndent()
+
+        val params = MapSqlParameterSource()
+            .addValue("plantCd", plantCd)
+            .addValue("dayStart", window.from)
+            .addValue("dayEnd", window.toExclusive)
+            .addValue("weekStart", weekFrom)
+        windows.forEachIndexed { i, w ->
+            params.addValue("shiftFrom$i", w.from).addValue("shiftTo$i", w.toExclusive)
+        }
+        if (processCds.isNotEmpty()) params.addValue("processCds", processCds.toTypedArray())
+
+        return jdbcTemplate.query(sql, params) { rs, _ ->
+            mapOf(
+                "product" to rs.getString("product"),
+                "productNm" to rs.getString("product_nm"),
+                "processId" to rs.getString("wc_cd"),
+                "processNm" to rs.getString("wc_nm"),
+                "qty" to Rs.qty(rs, "qty"),
+                "okQty" to Rs.qty(rs, "ok_qty"),
+                "ngQty" to Rs.qty(rs, "ng_qty"),
+                "weekQty" to Rs.qty(rs, "week_qty"),
+                "weekQtyAllShift" to Rs.qty(rs, "week_qty_all_shift"),
+                "eqptCnt" to rs.getInt("eqpt_cnt")
             )
         }
     }

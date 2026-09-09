@@ -117,5 +117,14 @@ data class DownloadLogRecordRequest(
     @field:Min(0, message = "rowCnt 는 0 이상이어야 합니다.")
     val rowCnt: Int? = null,
     @field:Min(0, message = "blindCnt 는 0 이상이어야 합니다.")
-    val blindCnt: Int? = null
+    val blindCnt: Int? = null,
+    /**
+     * 생성 조건 스냅샷 — 대상일·기간·공정·양식 등 요청 파라미터 그대로.
+     *
+     * 문서를 저장하지 않으므로 같은 산출물을 다시 만들 수 있는 유일한 단서다.
+     */
+    val params: Map<String, Any?>? = null,
+    /** 내려받은 파일 크기(byte). 인쇄(PDF) 처럼 파일이 없으면 생략한다. */
+    @field:Min(0, message = "fileSize 는 0 이상이어야 합니다.")
+    val fileSize: Long? = null
 )

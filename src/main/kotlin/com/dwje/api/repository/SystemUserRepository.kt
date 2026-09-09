@@ -436,9 +436,16 @@ class SystemUserRepository(
      * 부서 × 화면 메뉴 권한 매트릭스를 조회한다. (No.140)
      */
     fun findMenuPermMatrix(): List<Map<String, Any?>> {
+        // 사용 중지된 화면은 제외한다. 권한 행은 화면을 내려도 남아 있으므로
+        // (복원 시 그대로 되돌리기 위해 남긴다) 조인 없이 읽으면 matrix 에만 나타난다.
+        // 그러면 같은 응답의 screens 에는 없는 화면이 matrix 에 있는 상태가 되어,
+        // 권한 관리 화면이 존재하지 않는 행을 그리고 관리자가 켜고 꺼도 아무 일이 없다.
+        // 실제로 비가동 관리(prod-down)를 내렸을 때 그렇게 남았다.
         val sql = """
             SELECT p.dept_id, p.menu_id, p.can_read, p.can_write
             FROM ax.tb_sys_dept_menu_perm p
+            INNER JOIN ax.tb_sys_menu m ON m.menu_id = p.menu_id AND m.use_flg = 'Y'
+            INNER JOIN ax.tb_sys_menu_group g ON g.group_id = m.group_id AND g.use_flg = 'Y'
             WHERE p.can_read = true
         """.trimIndent()
 

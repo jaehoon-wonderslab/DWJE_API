@@ -193,10 +193,12 @@ class MaskRuleRepository(
     /**
      * 마스킹 해제 요청을 등록한다. (No.89)
      *
+     * 문서 관리 제거(2026-09-04) 로 `doc_id` 가 없어졌다.
+     * 요청 맥락은 화면(`menu_id`)과 데이터 항목(`field_keys`) 으로 남는다.
+     *
      * @return 생성된 요청 ID
      */
     fun insertUnmaskRequest(
-        docId: Long?,
         menuId: String?,
         fieldKeys: List<String>,
         reason: String,
@@ -205,15 +207,14 @@ class MaskRuleRepository(
     ): Long {
         val sql = """
             INSERT INTO ax.tb_rpt_unmask_req (
-                doc_id, menu_id, field_keys, reason, state_cd, requested_at, requester_id, requester_dept
+                menu_id, field_keys, reason, state_cd, requested_at, requester_id, requester_dept
             ) VALUES (
-                :docId, :menuId, :fieldKeys, :reason, 'REQUESTED', now(), :requesterId, :requesterDept
+                :menuId, :fieldKeys, :reason, 'REQUESTED', now(), :requesterId, :requesterDept
             )
             RETURNING req_id
         """.trimIndent()
 
         val params = MapSqlParameterSource()
-            .addValue("docId", docId)
             .addValue("menuId", menuId)
             .addValue("fieldKeys", fieldKeys.toTypedArray())
             .addValue("reason", reason.take(500))

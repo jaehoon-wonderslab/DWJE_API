@@ -1,7 +1,11 @@
 package com.dwje.api.controller
 
 import com.dwje.api.common.response.ApiResponse
+import com.dwje.api.common.util.DateUtils
+import com.dwje.api.common.util.ProductionMonitorPeriod
 import com.dwje.api.common.util.MenuId
+import com.dwje.api.model.request.DailyReportRowsRequest
+import com.dwje.api.model.request.DayTargetRequest
 import com.dwje.api.model.request.DowntimeCreateRequest
 import com.dwje.api.model.request.DowntimeUpdateRequest
 import com.dwje.api.model.request.ExportFormatRequest
@@ -10,6 +14,7 @@ import com.dwje.api.model.request.ReportCopyRequest
 import com.dwje.api.model.request.ReportCorrectionRequest
 import com.dwje.api.model.request.ReportRegenerateRequest
 import com.dwje.api.service.DailyReportService
+import com.dwje.api.service.DayTargetService
 import com.dwje.api.service.DowntimeService
 import com.dwje.api.service.DownloadLogService
 import com.dwje.api.service.ExportService
@@ -20,6 +25,7 @@ import io.swagger.v3.oas.annotations.tags.Tag
 import jakarta.validation.Valid
 import org.springframework.core.io.ByteArrayResource
 import org.springframework.http.ResponseEntity
+import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
@@ -40,6 +46,7 @@ import org.springframework.web.bind.annotation.RestController
 class ProductionController(
     private val productionService: ProductionService,
     private val dailyReportService: DailyReportService,
+    private val dayTargetService: DayTargetService,
     private val downtimeService: DowntimeService,
     private val exportService: ExportService,
     private val downloadLogService: DownloadLogService
@@ -53,13 +60,16 @@ class ProductionController(
      * 모니터링 요약 (No.55)
      *
      * @param processId 공정 코드
+     * @param targetDate 기준일(YYYY-MM-DD). 지정 시 해당 일자 생산 실적 전체를 집계한다.
      */
     @Operation(summary = "모니터링 요약", description = "가동·경고·정지 설비 수와 시간당 처리량을 반환한다.")
     @GetMapping("/monitor/summary")
     fun monitorSummary(
-        @RequestParam(required = false) processId: String?
+        @RequestParam(required = false) processId: String?,
+        @Parameter(description = "기준일(YYYY-MM-DD) — 지정 시 해당일 00:00 ~ 익일 00:00")
+        @RequestParam(required = false) targetDate: String?
     ): ApiResponse<Map<String, Any?>> {
-        val (data, mask) = productionService.getMonitorSummary(processId)
+        val (data, mask) = productionService.getMonitorSummary(processId, targetDate)
         return ApiResponse.ok(data, mask.maskedKeys())
     }
 
@@ -75,12 +85,22 @@ class ProductionController(
         @Parameter(description = "공정 코드 — 응답의 processId 와 같은 값 (예 S120)")
         @RequestParam(required = false) processId: String?,
         @Parameter(description = "상태 — RUNNING|WARNING|STOPPED") @RequestParam(required = false) state: String?,
+        @Parameter(description = "기준일(YYYY-MM-DD) — 지정 시 해당일 00:00 ~ 익일 00:00")
+        @RequestParam(required = false) targetDate: String?,
         @RequestParam(required = false) page: Int?,
         @RequestParam(required = false) size: Int?
     ): ApiResponse<Map<String, Any?>> {
         val (rows, meta, mask) =
-            productionService.getMonitorEquipments(lineRange, model, processId, state, page, size)
-        return ApiResponse.page(mapOf("items" to rows), meta, mask.maskedKeys())
+            productionService.getMonitorEquipments(lineRange, model, processId, state, targetDate, page, size)
+        val data = linkedMapOf<String, Any?>("items" to rows)
+        targetDate?.takeIf { it.isNotBlank() }?.let {
+            val target = DateUtils.parseDate(it, "targetDate")
+            data["targetDate"] = target.format(DateUtils.DATE)
+            val period = ProductionMonitorPeriod.of(target)
+            data["periodFrom"] = period.from.format(DateUtils.DATETIME)
+            data["periodTo"] = period.toExclusive.format(DateUtils.DATETIME)
+        }
+        return ApiResponse.page(data, meta, mask.maskedKeys())
     }
 
     /**
@@ -165,6 +185,16 @@ class ProductionController(
             request?.from, request?.to, unit, itemCd, modelCd, lineCd
         )
 
+        // 파일을 먼저 만든다 — 크기를 이력에 남겨야 하고, 만들다 실패하면
+        // 'DONE' 으로 기록되는 것도 막힌다. (문서를 저장하지 않으므로 이 이력이 유일한 기록이다)
+        val response = exportService.export(
+            format = format,
+            fileName = "production_results_${exportService.timestamp()}",
+            headers = listOf("기간", "투입수량", "양품수량", "불량수량", "불량률(%)", "수율(%)", "가동률(%)", "비가동(분)"),
+            keys = listOf("period", "inputQty", "okQty", "ngQty", "defectRate", "yield", "uptimeRate", "downtimeMin"),
+            rows = rows
+        )
+
         downloadLogService.record(
             reportId = null,
             reportNm = "생산 실적 집계",
@@ -173,119 +203,112 @@ class ProductionController(
             scope = "from=${request?.from}, to=${request?.to}, unit=${unit ?: "day"}",
             rowCnt = rows.size,
             blindCnt = mask.maskedCount(),
-            blindCells = mask.maskedKeys().associateWith { rows.size }
+            blindCells = mask.maskedKeys().associateWith { rows.size },
+            params = mapOf(
+                "from" to request?.from,
+                "to" to request?.to,
+                "unit" to (unit ?: "day"),
+                "itemCd" to itemCd,
+                "modelCd" to modelCd,
+                "lineCd" to lineCd,
+                "format" to format
+            ),
+            fileSize = response.body?.contentLength()
         )
 
-        return exportService.export(
-            format = format,
-            fileName = "production_results_${exportService.timestamp()}",
-            headers = listOf("기간", "투입수량", "양품수량", "불량수량", "불량률(%)", "수율(%)", "가동률(%)", "비가동(분)"),
-            keys = listOf("period", "inputQty", "okQty", "ngQty", "defectRate", "yield", "uptimeRate", "downtimeMin"),
-            rows = rows
-        )
+        return response
     }
 
     // =================================================================================
-    // PR-03 / PR-04. 일일 생산현황 보고 · 이전 보고서
+    // PR-03. 일일 생산현황 보고 (문서 관리 없음 — 조회 조건으로 매번 만든다)
     // =================================================================================
 
     /**
-     * 보고서 초안 조회 (No.59 — 전일 08:00 ~ 당일 08:00)
+     * 보고서 양식 본문 조회 (제품 × 공정 — 전일 20:00 ~ 당일 08:00)
+     *
+     * 문서를 저장하지 않으므로 초안·버전·확정이 없다. 대상일만 보내면 매번 집계한다.
      */
-    @Operation(summary = "보고서 초안 조회", description = "대상 일자의 일일 생산현황 보고 초안을 조회한다. 없으면 생성한다.")
-    @GetMapping("/daily-reports/draft")
-    fun dailyDraft(
-        @RequestParam(required = false) targetDate: String?
+    @Operation(
+        summary = "보고서 양식 본문 조회",
+        description = "일일 생산현황 보고 양식의 제품 × 공정 본문을 조회한다. 목표 수량은 출처가 없어 저장값이 없으면 null 이다."
+    )
+    @GetMapping("/daily-reports/sheet")
+    fun dailySheet(
+        @RequestParam(required = false) targetDate: String?,
+        @RequestParam(required = false) processId: String?
     ): ApiResponse<Map<String, Any?>> {
-        val (data, mask) = dailyReportService.getDraft(targetDate)
+        val (data, mask) = dailyReportService.getSheet(targetDate, processId)
         return ApiResponse.ok(data, mask.maskedKeys())
     }
 
     /**
-     * 보고서 초안 재생성 (No.60)
+     * 아침회의 결과 저장 (제품별 일목표·판정·담당·기한)
+     *
+     * 문서가 없어 키가 대상일이다. 예전 `/{reportId}/rows` 를 대체한다.
      */
-    @Operation(summary = "보고서 초안 재생성", description = "MES 실적을 다시 집계해 새 버전 초안을 만든다.")
-    @PostMapping("/daily-reports/draft/regenerate")
-    fun dailyRegenerate(
-        @Valid @RequestBody(required = false) request: ReportRegenerateRequest?
+    @Operation(
+        summary = "아침회의 결과 저장",
+        description = "아침회의에서 정한 제품별 일목표·판정·담당·기한을 대상일 기준으로 저장한다. 보낸 제품만 갱신한다."
+    )
+    @PostMapping("/daily-reports/rows")
+    fun dailySaveRows(
+        @Valid @RequestBody request: DailyReportRowsRequest
     ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(dailyReportService.regenerateDraft(request?.targetDate), "초안을 재생성했습니다.")
+        ApiResponse.ok(
+            dailyReportService.saveRows(request.targetDate, request.rows),
+            "회의 결과를 저장했습니다."
+        )
 
-    /**
-     * 보고서 항목 보정 (No.61)
-     */
-    @Operation(summary = "보고서 항목 보정", description = "AI 초안 항목을 사람이 보정한다.")
-    @PutMapping("/daily-reports/{reportId}")
-    fun dailyCorrect(
-        @PathVariable reportId: Long,
-        @Valid @RequestBody request: ReportCorrectionRequest
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(dailyReportService.correct(reportId, request), "보정이 반영되었습니다.")
+    // =================================================================================
+    // PR-03-1. 제품·공정별 일목표 마스터
+    //
+    // 목표는 적용일부터 다음 적용일 전까지 유효하다. 일일 보고에서 작성자가 그날만
+    // 목표를 달리 잡으면 그 값이 마스터를 덮어쓴다 — 저장값 > 마스터 > null.
+    // =================================================================================
 
-    /**
-     * 보고서 임시 저장 (No.62)
-     */
-    @Operation(summary = "보고서 임시 저장", description = "작성 중인 보고서를 임시 저장한다.")
-    @PostMapping("/daily-reports/{reportId}/save")
-    fun dailySave(
-        @PathVariable reportId: Long,
-        @Valid @RequestBody request: ReportCorrectionRequest
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(dailyReportService.save(reportId, request), "임시 저장되었습니다.")
-
-    /**
-     * 보고서 확정 (No.63 — 감사 로그 기록)
-     */
-    @Operation(summary = "보고서 확정", description = "보고서를 확정 상태로 전환한다.")
-    @PostMapping("/daily-reports/{reportId}/confirm")
-    fun dailyConfirm(@PathVariable reportId: Long): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(dailyReportService.confirm(reportId), "보고서가 확정되었습니다.")
-
-    /**
-     * 보고서 반려 (No.64)
-     */
-    @Operation(summary = "보고서 반려", description = "확정 요청된 보고서를 반려한다.")
-    @PostMapping("/daily-reports/{reportId}/reject")
-    fun dailyReject(
-        @PathVariable reportId: Long,
-        @Valid @RequestBody(required = false) request: ReasonRequest?
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(dailyReportService.reject(reportId, request?.reason), "보고서가 반려되었습니다.")
-
-    /**
-     * 보고서 생성 이력 (No.65)
-     */
-    @Operation(summary = "보고서 생성 이력", description = "보고서 생성·보정·확정 이력을 조회한다.")
-    @GetMapping("/daily-reports/{reportId}/events")
-    fun dailyEvents(@PathVariable reportId: Long): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(dailyReportService.getEvents(reportId))
-
-    /**
-     * 보고서 이력 조회 (No.66 — PR-04 이전 보고서)
-     */
-    @Operation(summary = "보고서 이력 조회", description = "기간별 일일 생산현황 보고 이력을 조회한다.")
-    @GetMapping("/daily-reports")
-    fun dailyHistory(
-        @RequestParam(required = false) from: String?,
-        @RequestParam(required = false) to: String?,
-        @RequestParam(required = false) state: String?,
+    /** 일목표 조회 */
+    @Operation(
+        summary = "일목표 조회",
+        description = "제품·공정별 일목표를 조회한다. date 를 주면 그 날짜에 유효한 한 건씩만 반환한다."
+    )
+    @GetMapping("/day-targets")
+    fun dayTargets(
+        @RequestParam(required = false) product: String?,
+        @RequestParam(required = false) processId: String?,
+        @Parameter(description = "이 날짜에 유효한 목표만 조회. 미지정 시 전 이력")
+        @RequestParam(required = false) date: String?,
         @RequestParam(required = false) page: Int?,
         @RequestParam(required = false) size: Int?
     ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta) = dailyReportService.getHistory(from, to, state, page, size)
+        val (rows, meta) = dayTargetService.getTargets(product, processId, date, page, size)
         return ApiResponse.page(mapOf("items" to rows), meta)
     }
 
-    /**
-     * 보고서 복제 (No.67)
-     */
-    @Operation(summary = "보고서 복제", description = "기존 보고서를 다른 일자로 복제한다.")
-    @PostMapping("/daily-reports/{reportId}/copy")
-    fun dailyCopy(
-        @PathVariable reportId: Long,
-        @Valid @RequestBody request: ReportCopyRequest
+    /** 일목표 등록 */
+    @Operation(summary = "일목표 등록", description = "제품·공정·적용일 기준으로 일목표를 등록한다.")
+    @PostMapping("/day-targets")
+    fun createDayTarget(
+        @Valid @RequestBody request: DayTargetRequest
     ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(dailyReportService.copy(reportId, request.targetDate), "보고서를 복제했습니다.")
+        ApiResponse.ok(dayTargetService.create(request), "일목표를 등록했습니다.")
+
+    /** 일목표 수정 */
+    @Operation(
+        summary = "일목표 수정",
+        description = "적용일·수량·비고를 수정한다. 제품·공정은 바꿀 수 없다 — 바꿔야 하면 지우고 새로 등록한다."
+    )
+    @PutMapping("/day-targets/{targetId}")
+    fun updateDayTarget(
+        @PathVariable targetId: Long,
+        @Valid @RequestBody request: DayTargetRequest
+    ): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(dayTargetService.update(targetId, request), "일목표를 수정했습니다.")
+
+    /** 일목표 삭제 */
+    @Operation(summary = "일목표 삭제", description = "일목표 한 건을 삭제한다.")
+    @DeleteMapping("/day-targets/{targetId}")
+    fun deleteDayTarget(@PathVariable targetId: Long): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(dayTargetService.delete(targetId), "일목표를 삭제했습니다.")
 
     // =================================================================================
     // PR-05. 비가동 관리

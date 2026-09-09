@@ -8,6 +8,7 @@ import com.dwje.api.common.util.DateUtils
 import com.dwje.api.common.util.MaskingSupport
 import com.dwje.api.common.util.MenuId
 import com.dwje.api.common.util.PageRequestParam
+import com.dwje.api.common.util.ProductionMonitorPeriod
 import com.dwje.api.config.AppProperties
 import com.dwje.api.repository.DashboardAiRepository
 import com.dwje.api.repository.ProductionRepository
@@ -38,6 +39,10 @@ class ProductionService(
 
         /** 실적 집계 허용 단위 */
         private val ALLOWED_UNITS = setOf("day", "week", "month")
+
+        /** 기준일 모니터의 기본 설비 화면은 C-프레스 10대(MT-001~010)다. */
+        private const val DEFAULT_MONITOR_PRESS_PROCESS = "W120"
+        private const val DEFAULT_MONITOR_PRESS_PREFIX = "MT"
     }
 
     /**
@@ -46,15 +51,23 @@ class ProductionService(
      * @param processId 공정 코드
      */
     @Transactional(readOnly = true)
-    fun getMonitorSummary(processId: String?): Pair<Map<String, Any?>, MaskingSupport> {
+    fun getMonitorSummary(processId: String?, targetDate: String?): Pair<Map<String, Any?>, MaskingSupport> {
         val (_, mask) = authorizationService.guard(MenuId.PROD_MONITOR)
         val plantCd = appProperties.defaultPlantCd
+        val target = targetDate?.takeIf { it.isNotBlank() }
+            ?.let { DateUtils.parseDate(it, "targetDate") }
+        val window = target?.let(ProductionMonitorPeriod::of)
 
-        val summary = productionRepository.findMonitorSummary(plantCd, processId, WARN_UPTIME_LEVEL).toMutableMap()
+        val summary = productionRepository.findMonitorSummary(plantCd, processId, WARN_UPTIME_LEVEL, window).toMutableMap()
 
         // 시간당 처리량은 수량(qty) 권한 대상이다.
-        mask.applyTo(summary, mapOf("hourlyThroughput" to DataField.QTY))
-        summary["stoppedDetail"] = productionRepository.findStoppedDetail(plantCd, processId)
+        mask.applyTo(summary, mapOf("hourlyThroughput" to DataField.QTY, "totalThroughput" to DataField.QTY))
+        summary["stoppedDetail"] = productionRepository.findStoppedDetail(plantCd, processId, window)
+        target?.let { summary["targetDate"] = it.format(DateUtils.DATE) }
+        window?.let {
+            summary["periodFrom"] = it.from.format(DateUtils.DATETIME)
+            summary["periodTo"] = it.toExclusive.format(DateUtils.DATETIME)
+        }
 
         return summary.toMap() to mask
     }
@@ -68,18 +81,36 @@ class ProductionService(
         model: String?,
         processId: String?,
         state: String?,
+        targetDate: String?,
         page: Int?,
         size: Int?
     ): Triple<List<Map<String, Any?>>, PageMeta, MaskingSupport> {
         val (_, mask) = authorizationService.guard(MenuId.PROD_MONITOR)
         val plantCd = appProperties.defaultPlantCd
-        val paging = PageRequestParam.of(page, size)
+        val target = targetDate?.takeIf { it.isNotBlank() }
+            ?.let { DateUtils.parseDate(it, "targetDate") }
+        val window = target?.let(ProductionMonitorPeriod::of)
+        // size=0 은 전량이다. 다른 목록(/dashboard/ai/lines · /reports/yield-by-model)과 같은 규약이다.
+        // of() 를 쓰면 size 가 coerceIn(1, 1000) 되어 0 이 1 로 보정된다 — 실제로 그래서
+        // size=0 이 1건만 돌려주고 있었다.
+        // 기준일 첫 화면은 MT-001~010 프레스 10대를 바로 보여 준다. 명시한 page/size는
+        // 그대로 존중하므로 나머지 프레스까지 보거나 전량(size=0)을 받는 기존 용도는 깨지지 않는다.
+        val paging = if (window != null && page == null && size == null) {
+            PageRequestParam.of(1, 10)
+        } else {
+            PageRequestParam.ofAllowAll(page, size)
+        }
+
+        // 기준일 화면의 기본 목록은 실적이 연결된 C-프레스 10대다. 호출자가 공정·설비
+        // 조건을 주면 그 조건을 우선해 기존의 범용 모니터 조회도 유지한다.
+        val resolvedProcessId = if (window != null && processId.isNullOrBlank()) DEFAULT_MONITOR_PRESS_PROCESS else processId
+        val resolvedLineRange = if (window != null && lineRange.isNullOrBlank()) DEFAULT_MONITOR_PRESS_PREFIX else lineRange
 
         val total = productionRepository.countMonitorEquipments(
-            plantCd, lineRange, model, processId, state, WARN_UPTIME_LEVEL
+            plantCd, resolvedLineRange, model, resolvedProcessId, state, WARN_UPTIME_LEVEL, window
         )
         val rows = productionRepository.findMonitorEquipments(
-            plantCd, lineRange, model, processId, state, WARN_UPTIME_LEVEL, paging.limit, paging.offset
+            plantCd, resolvedLineRange, model, resolvedProcessId, state, WARN_UPTIME_LEVEL, window, paging.limitOrNull, paging.offset
         )
 
         // 수량·수율에 더해 금형 코드는 mold 권한 대상이다.
@@ -89,7 +120,8 @@ class ProductionService(
             m.toMap()
         }
 
-        return Triple(masked, PageMeta.of(paging.page, paging.size, total), mask)
+        val meta = if (paging.isAll) PageMeta.all(total) else PageMeta.of(paging.page, paging.size, total)
+        return Triple(masked, meta, mask)
     }
 
     /**

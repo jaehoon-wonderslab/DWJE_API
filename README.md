@@ -147,6 +147,8 @@ psql -d dwjedb -f src/main/resources/db/V11__glossary_domain_seed.sql
 psql -d dwjedb -f src/main/resources/db/V12__metric_window_code_fix.sql
 psql -d dwjedb -f src/main/resources/db/V13__ax_sync_run.sql
 psql -d dwjedb -f src/main/resources/db/V14__ax_sync_run_dry_run.sql
+psql -d dwjedb -f src/main/resources/db/V15__menu_prod_down_off.sql
+psql -d dwjedb -f src/main/resources/db/V23__report_center.sql
 ```
 
 > 번호는 한 번호에 한 파일이다. `V6__ax_sync_run.sql` 이 `V6__report_definitions.sql` 과

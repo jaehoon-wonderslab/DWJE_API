@@ -1,6 +1,8 @@
 package com.dwje.api.service
 
 import com.dwje.api.common.exception.ResourceNotFoundException
+import com.dwje.api.common.util.ProcessPeriod
+import com.dwje.api.common.util.ProcessPeriodRow
 import com.dwje.api.common.util.DataField
 import com.dwje.api.common.util.withUntypedSegment
 import com.dwje.api.common.util.DateUtils
@@ -28,6 +30,25 @@ class DashboardProcessService(
     private val authorizationService: AuthorizationService,
     private val appProperties: AppProperties
 ) {
+
+    @Transactional(readOnly = true)
+    fun getPeriod(from: String, to: String, unit: String, productCodes: List<String>?, processId: String?)
+        : Pair<Map<String, Any?>, MaskingSupport> {
+        val (_, mask) = authorizationService.guard(MenuId.DASH_PROC)
+        val range = ProcessPeriod.parse(from, to, unit)
+        val codes = productCodes.orEmpty().flatMap { it.split(',') }
+            .map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        val rows = dashboardProcessRepository.findPeriod(
+            appProperties.defaultPlantCd, range, requireValidProcess(processId), codes
+        ).groupBy({ it.first }, { it.second })
+        val periods = rows["periods"].orEmpty().associateBy { it.period }
+        return mapOf(
+            "summary" to rows.getValue("summary").single().masked(mask),
+            "periods" to range.buckets().map { (periods[it] ?: ProcessPeriodRow.empty().copy(period = it)).masked(mask) },
+            "products" to rows["products"].orEmpty().map { it.masked(mask) },
+            "processes" to rows["processes"].orEmpty().map { it.masked(mask) }
+        ) to mask
+    }
 
     /** 제품별 상세 목록 정렬 허용 항목 */
     private val productSortColumns = mapOf(
@@ -110,7 +131,16 @@ class DashboardProcessService(
         val (_, mask) = authorizationService.guard(MenuId.DASH_PROC)
         val rows = fetchProductRows(date, processId, productCodes, "ORDER BY total_qty DESC")
 
-        val items = rows.map { mapOf("product" to it["product"], "qty" to it["qty"], "defectRate" to it["defectRate"]) }
+        // 양품·불량 수량을 같이 낸다 — 화면이 qty × defectRate 로 되짚으면 반올림만큼 어긋난다.
+        val items = rows.map {
+            mapOf(
+                "product" to it["product"],
+                "qty" to it["qty"],
+                "okQty" to it["okQty"],
+                "ngQty" to it["ngQty"],
+                "defectRate" to it["defectRate"]
+            )
+        }
         return mapOf("items" to dashboardAiService.maskProductionRows(items, mask)) to mask
     }
 

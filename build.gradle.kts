@@ -81,6 +81,15 @@ tasks.withType<Test> {
         .withPropertyName("envVarDocs")
         .withPathSensitivity(PathSensitivity.RELATIVE)
         .optional()
+
+    // 규약 테스트 몇 개는 **소스 파일 본문을 직접 읽어** 규칙을 고정한다
+    // (집계 구간 주입, 설비 대수 집계 단위, Map 본문 등).
+    // 컴파일 결과만 test 입력이라 SQL 문자열 한 줄을 되돌려도 Gradle 이
+    // test 를 UP-TO-DATE 로 건너뛰어 **가드가 헛돈다.**
+    // 실제로 되돌림 검증 중에 그렇게 통과했다.
+    inputs.dir("src/main/kotlin")
+        .withPropertyName("scannedMainSources")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
 }
 
 tasks.named<org.springframework.boot.gradle.tasks.bundling.BootJar>("bootJar") {

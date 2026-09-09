@@ -101,3 +101,36 @@ data class ApprovalDeptInput(
     val dept: String? = null,
     val manager: String? = null
 )
+
+/**
+ * 일일 생산현황 보고 양식 본문 저장 요청 — POST /api/v1/production/daily-reports/{reportId}/rows
+ *
+ * 보낸 제품만 갱신한다. 한 줄만 고쳐 보내도 되고, 값에 `null` 을 보내면 그 칸을 비운다.
+ *
+ * @param rows 제품별 항목. 비어 있으면 400
+ */
+data class DailyReportRowsRequest(
+    /** 대상 일자 (`yyyy-MM-dd`). 미지정 시 오늘 — 문서가 없으므로 이것이 키다. */
+    val targetDate: String? = null,
+    val rows: List<DailyReportRowEntry> = emptyList()
+)
+
+/**
+ * 양식 본문 한 줄
+ *
+ * 일목표는 정식 출처가 없어 작성자가 손으로 넣는다. 지표(`PROD_DAY_TARGET`)는
+ * 공정 단위로만 정의돼 있어 제품별 목표를 서버가 낼 근거가 없다.
+ *
+ * @param product   제품 코드 (필수)
+ * @param targetQty 작성자가 입력한 일목표. 음수는 400
+ * @param decision  아침회의 판정 내용
+ * @param dri       담당 (부서 또는 담당자)
+ * @param due       조치 기한 (`yyyy-MM-dd`)
+ */
+data class DailyReportRowEntry(
+    val product: String? = null,
+    val targetQty: Long? = null,
+    val decision: String? = null,
+    val dri: String? = null,
+    val due: String? = null
+)

@@ -13,8 +13,6 @@ import com.dwje.api.service.AoiPredictionService
 import com.dwje.api.service.DownloadLogService
 import com.dwje.api.service.ExportService
 import com.dwje.api.service.QualityDefectService
-import com.dwje.api.service.QualityReportService
-import com.dwje.api.service.ReportFormService
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.Parameter
 import io.swagger.v3.oas.annotations.tags.Tag
@@ -31,7 +29,14 @@ import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 
 /**
- * 품질관리 API 컨트롤러 (QC-01 ~ QC-04)
+ * 품질관리 API 컨트롤러 (QC-01 ~ QC-02)
+ *
+ * ## 품질 보고서(QC-03)·보고서 양식 관리(QC-04) 는 제거되었다 (2026-09-04)
+ * 고객이 준 보고서 자료 7장에 품질 보고서가 없고, 만들기로 한 보고서 6종
+ * 어디에도 들어가지 않아 사용자 결정으로 걷어냈다.
+ * 마스킹 해제 요청도 함께 내렸다 — 그 요청을 띄우는 화면이 없어졌다.
+ * 되살리려면 `restore/20260904_문서관리제거/` 를 보라.
+ * (`ax.tb_rpt_unmask_req` 테이블과 `UNMASK_STATE` 코드는 남아 있다)
  *
  * 불량 현황 조회 · AOI 판정 분석/예측 · 품질 보고서 · 보고서 양식 관리를 담당한다.
  */
@@ -41,8 +46,6 @@ import org.springframework.web.bind.annotation.RestController
 class QualityController(
     private val qualityDefectService: QualityDefectService,
     private val aoiPredictionService: AoiPredictionService,
-    private val qualityReportService: QualityReportService,
-    private val reportFormService: ReportFormService,
     private val exportService: ExportService,
     private val downloadLogService: DownloadLogService
 ) {
@@ -185,169 +188,4 @@ class QualityController(
     @GetMapping("/aoi/prediction/basis")
     fun predictionBasis(): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(aoiPredictionService.getBasis())
-
-    // =================================================================================
-    // QC-03. 품질 보고서
-    // =================================================================================
-
-    /** 품질 보고서 초안 생성 (No.85) */
-    @Operation(summary = "품질 보고서 초안 생성", description = "양식 정의에 따라 초안을 생성하고 MES 항목을 자동 기입한다.")
-    @PostMapping("/reports/draft")
-    fun createDraft(
-        @Valid @RequestBody request: QualityReportDraftRequest
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(qualityReportService.createDraft(request), "초안을 생성했습니다.")
-
-    /** 품질 보고서 조회 (No.86) */
-    @Operation(summary = "품질 보고서 조회", description = "데이터 권한과 고객사 공개 정책을 적용해 보고서를 반환한다.")
-    @GetMapping("/reports/{reportId}")
-    fun getReport(@PathVariable reportId: Long): ApiResponse<Map<String, Any?>> {
-        val (data, mask) = qualityReportService.getReport(reportId)
-        return ApiResponse.ok(data, mask.maskedKeys())
-    }
-
-    /** 자동 기입 현황 조회 (No.87) */
-    @Operation(summary = "자동 기입 현황 조회", description = "항목별 기입 출처(MES/AI/수기)와 보정 여부를 반환한다.")
-    @GetMapping("/reports/{reportId}/autofill-status")
-    fun autofillStatus(@PathVariable reportId: Long): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(qualityReportService.getAutofillStatus(reportId))
-
-    /** 마스킹 적용 내역 (No.88) */
-    @Operation(summary = "마스킹 적용 내역", description = "적용된 마스킹 규칙과 대상 항목을 반환한다.")
-    @GetMapping("/reports/{reportId}/masking")
-    fun masking(@PathVariable reportId: Long): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(qualityReportService.getMaskingDetail(reportId))
-
-    /** 마스킹 해제 요청 (No.89) */
-    @Operation(summary = "마스킹 해제 요청", description = "마스킹 항목의 열람 해제를 요청하고 감사 로그에 기록한다.")
-    @PostMapping("/reports/{reportId}/unmask-request")
-    fun unmaskRequest(
-        @PathVariable reportId: Long,
-        @Valid @RequestBody request: UnmaskRequest
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(qualityReportService.requestUnmask(reportId, request), "해제 요청이 접수되었습니다.")
-
-    /** 증빙 이미지 후보 조회 (No.90) */
-    @Operation(summary = "증빙 이미지 후보 조회", description = "보고서에 첨부 가능한 증빙 이미지 후보를 반환한다.")
-    @GetMapping("/reports/{reportId}/evidence-images")
-    fun evidenceImageCandidates(
-        @PathVariable reportId: Long,
-        @Parameter(description = "선정 기준 — ng|lot|숫자") @RequestParam(required = false) criteria: String?
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(qualityReportService.getEvidenceImageCandidates(reportId, criteria))
-
-    /** 증빙 이미지 첨부 (No.91) */
-    @Operation(summary = "증빙 이미지 첨부", description = "선택한 증빙 이미지를 보고서에 첨부한다.")
-    @PostMapping("/reports/{reportId}/evidence-images")
-    fun attachEvidenceImages(
-        @PathVariable reportId: Long,
-        @Valid @RequestBody request: EvidenceImageRequest
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(qualityReportService.attachEvidenceImages(reportId, request), "이미지를 첨부했습니다.")
-
-    /** 보고서 임시 저장 (No.92) */
-    @Operation(summary = "보고서 임시 저장", description = "작성 중인 품질 보고서를 임시 저장한다.")
-    @PutMapping("/reports/{reportId}")
-    fun saveReport(
-        @PathVariable reportId: Long,
-        @Valid @RequestBody request: ReportCorrectionRequest
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(qualityReportService.save(reportId, request), "임시 저장되었습니다.")
-
-    /** 보고서 확정 (No.93) */
-    @Operation(summary = "보고서 확정", description = "품질 보고서를 확정한다.")
-    @PostMapping("/reports/{reportId}/confirm")
-    fun confirmReport(@PathVariable reportId: Long): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(qualityReportService.confirm(reportId), "보고서가 확정되었습니다.")
-
-    /** 보고서 반려 (No.94) */
-    @Operation(summary = "보고서 반려", description = "품질 보고서를 반려한다.")
-    @PostMapping("/reports/{reportId}/reject")
-    fun rejectReport(
-        @PathVariable reportId: Long,
-        @Valid @RequestBody(required = false) request: ReasonRequest?
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(qualityReportService.reject(reportId, request?.reason), "보고서가 반려되었습니다.")
-
-    /** 보고서 초안 재생성 (No.95) */
-    @Operation(summary = "보고서 초안 재생성", description = "자동 기입 항목만 다시 채우고 보정 항목은 보존한다.")
-    @PostMapping("/reports/{reportId}/regenerate")
-    fun regenerateReport(@PathVariable reportId: Long): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(qualityReportService.regenerate(reportId), "초안을 재생성했습니다.")
-
-    /** 보고서 출력 (No.96) */
-    @Operation(summary = "보고서 출력", description = "품질 보고서를 엑셀·CSV 로 출력한다. blind 항목은 제외한다.")
-    @PostMapping("/reports/{reportId}/export")
-    fun exportReport(
-        @PathVariable reportId: Long,
-        @Valid @RequestBody(required = false) request: ExportFormatRequest?
-    ): ResponseEntity<ByteArrayResource> {
-        val format = request?.format ?: "xls"
-        val (doc, rows, mask) = qualityReportService.getExportRows(reportId)
-
-        downloadLogService.record(
-            reportId = doc["reportDefId"] as? String,
-            reportNm = (doc["title"] as? String) ?: "품질 보고서",
-            menuId = MenuId.QC_REPORT,
-            format = format,
-            scope = "reportId=$reportId",
-            rowCnt = rows.size,
-            blindCnt = mask.maskedCount(),
-            blindCells = mask.maskedKeys().associateWith { rows.size }
-        )
-
-        return exportService.export(
-            format = format,
-            fileName = "quality_report_${reportId}_${exportService.timestamp()}",
-            headers = listOf("섹션", "항목", "값", "기입출처"),
-            keys = listOf("section", "field", "value", "origin"),
-            rows = rows
-        )
-    }
-
-    /** 품질 보고서 이력 (No.97) */
-    @Operation(summary = "품질 보고서 이력", description = "기간·양식·상태별 품질 보고서 이력을 조회한다.")
-    @GetMapping("/reports")
-    fun reportHistory(
-        @RequestParam(required = false) from: String?,
-        @RequestParam(required = false) to: String?,
-        @RequestParam(required = false) formId: Int?,
-        @RequestParam(required = false) state: String?,
-        @RequestParam(required = false) page: Int?,
-        @RequestParam(required = false) size: Int?
-    ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta) = qualityReportService.getHistory(from, to, formId, state, page, size)
-        return ApiResponse.page(mapOf("items" to rows), meta)
-    }
-
-    // =================================================================================
-    // QC-04. 보고서 양식 관리
-    // =================================================================================
-
-    /** 양식 목록 조회 (No.98) */
-    @Operation(summary = "양식 목록 조회", description = "등록된 보고서 양식 목록을 반환한다.")
-    @GetMapping("/report-forms")
-    fun forms(): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(reportFormService.getForms())
-
-    /** 양식 등록 (No.99) */
-    @Operation(summary = "양식 등록", description = "보고서 양식과 항목 정의를 등록한다.")
-    @PostMapping("/report-forms")
-    fun createForm(@Valid @RequestBody request: ReportFormRequest): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(reportFormService.createForm(request), "양식이 등록되었습니다.")
-
-    /** 양식 수정 (No.100) */
-    @Operation(summary = "양식 수정", description = "양식 정보를 수정한다. 항목 정의 변경 시 파서 버전이 올라간다.")
-    @PutMapping("/report-forms/{formId}")
-    fun updateForm(
-        @PathVariable formId: Int,
-        @Valid @RequestBody request: ReportFormRequest
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(reportFormService.updateForm(formId, request), "양식이 수정되었습니다.")
-
-    /** 양식 항목 정의 조회 (No.101) */
-    @Operation(summary = "양식 항목 정의 조회", description = "양식의 항목 코드·필수 여부·연결 데이터 항목을 반환한다.")
-    @GetMapping("/report-forms/{formId}/fields")
-    fun formFields(@PathVariable formId: Int): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(reportFormService.getFormFields(formId))
 }

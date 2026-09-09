@@ -8,8 +8,8 @@
 > `RequestBodyContractTest` 가 `Map` 본문 개수가 코드와 맞는지 검사한다 —
 > 이 문서를 처음 쓴 날 용어 API 4개를 DTO 로 바꾸고 갱신하지 않아 같은 날 안에 틀렸다.
 
-- 본문을 받는 엔드포인트 **83개**
-- 타입 DTO **83개** — 모르는 키는 400
+- 본문을 받는 엔드포인트 **68개**
+- 타입 DTO **68개** — 모르는 키는 400
 - `Map` 본문 **0개** — **전부 타입 DTO 로 전환 완료**
 
 ## 왜 켰는가
@@ -36,7 +36,7 @@
 > 키·타입이 어긋난 항목만 빠지고 200 이 나가서, 10개를 보냈는데 3개만 반영되고도
 > 화면은 성공으로 읽었다. 지금은 어긋난 항목이 하나라도 있으면 400 이다.
 
-## B. 타입 DTO 83개 — 선언 키만 허용
+## B. 타입 DTO 68개 — 선언 키만 허용
 
 ### `AiAskRequest`
 
@@ -51,8 +51,6 @@
 - `POST /api/v1/ai/chat/history/export-trainset`
 - `POST /api/v1/dashboard/kpi/evidence-export`
 - `POST /api/v1/production/results/export`
-- `POST /api/v1/quality/reports/{reportId}/export`
-- `POST /api/v1/reports/{reportId}/export`
 
 ### `AiExportRequest`
 
@@ -153,8 +151,6 @@
 허용 키 — `reason`, `actionNote`
 
 - `POST /api/v1/alerts/{alertId}/ack`
-- `POST /api/v1/production/daily-reports/{reportId}/reject`
-- `POST /api/v1/quality/reports/{reportId}/reject`
 
 ### `EmailCodeSendRequest`
 
@@ -212,7 +208,7 @@
 
 ### `DownloadLogRecordRequest`
 
-허용 키 — `reportId`, `reportNm`, `menuId`, `format`, `scope`, `rowCnt`, `blindCnt`
+허용 키 — `reportId`, `reportNm`, `menuId`, `format`, `scope`, `rowCnt`, `blindCnt`, `params`, `fileSize`
 
 - `POST /api/v1/download-logs`
 
@@ -247,21 +243,46 @@
 
 허용 키 — `targetDate`
 
-- `POST /api/v1/production/daily-reports/draft/regenerate`
 
 ### `ReportCorrectionRequest`
 
 허용 키 — `sections`, `remark`
 
-- `PUT /api/v1/production/daily-reports/{reportId}`
-- `POST /api/v1/production/daily-reports/{reportId}/save`
-- `PUT /api/v1/quality/reports/{reportId}`
+
+### `DayTargetRequest`
+
+허용 키 — `product`, `processId`, `applyFrom`, `targetQty`, `remark`
+(수정 시 `product`·`processId` 는 무시된다 — 제품·공정은 바꿀 수 없다)
+
+- `POST /api/v1/production/day-targets`
+- `PUT /api/v1/production/day-targets/{targetId}`
+
+### `DailyReportRowsRequest`
+
+허용 키 — `targetDate`, `rows`
+`rows[]` 허용 키 — `product`, `targetQty`, `decision`, `dri`, `due`
+
+- `POST /api/v1/production/daily-reports/rows`
+
+
+### `FavoriteScreensRequest`
+
+허용 키 — `screenIds`
+(배열 순서가 곧 `sortOrder`. 공백·중복은 정리하고, 20개 초과·메뉴에 없는 ID 는 400)
+
+- `PUT /api/v1/users/me/favorites`
+
+### `ReportWriteStateRequest`
+
+허용 키 — `screenId`, `baseDate`, `state`
+(`screenId` 는 prod-daily · rpt-press-morning · rpt-plating-morning · rpt-scrap 만, `state` 는 DRAFT · SUBMITTED · APPROVED 만)
+
+- `PUT /api/v1/reports/status`
 
 ### `ReportCopyRequest`
 
 허용 키 — `targetDate`
 
-- `POST /api/v1/production/daily-reports/{reportId}/copy`
 
 ### `DowntimeCreateRequest`
 
@@ -287,56 +308,35 @@
 
 - `PUT /api/v1/products/families/{familyCd}/products/order`
 
-### `ReportFormRequest`
-
-허용 키 — `name`, `type`, `customerId`, `disclosurePolicy`, `reportId`, `fields`
-
-- `POST /api/v1/quality/report-forms`
-- `PUT /api/v1/quality/report-forms/{formId}`
-
 ### `QualityReportDraftRequest`
 
 허용 키 — `formId`, `lotNo`, `occurDate`, `disclosurePolicy`
 
-- `POST /api/v1/quality/reports/draft`
 
 ### `EvidenceImageRequest`
 
 허용 키 — `imageIds`, `images`
 
-- `POST /api/v1/quality/reports/{reportId}/evidence-images`
-
-### `UnmaskRequest`
-
-허용 키 — `fields`, `reason`
-
-- `POST /api/v1/quality/reports/{reportId}/unmask-request`
 
 ### `ScrapDraftRequest`
 
 허용 키 — `step`, `cond`, `pickedVoucherIds`, `form`, `review`
 
-- `POST /api/v1/reports/scrap/drafts`
-- `PUT /api/v1/reports/scrap/drafts/{draftId}`
 
 ### `ApprovalLineRequest`
 
 허용 키 — `depts`, `appr`, `due`, `notifyChannels`
 
-- `PUT /api/v1/reports/scrap/drafts/{draftId}/approval-line`
-- `POST /api/v1/reports/scrap/drafts/{draftId}/review-request`
 
 ### `ScrapManualRowRequest`
 
 허용 키 — `model`, `process`, `reason`, `kind`, `qty`, `itemCd`, `occurDate`
 
-- `POST /api/v1/reports/scrap/drafts/{draftId}/manual-rows`
 
 ### `ScrapUnitPriceRequest`
 
 허용 키 — `key`, `keyValue`, `unitPrice`, `reason`
 
-- `PUT /api/v1/reports/scrap/drafts/{draftId}/unit-price`
 
 ### `ConnectionTestRequest`
 

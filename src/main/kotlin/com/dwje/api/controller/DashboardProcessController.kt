@@ -22,6 +22,20 @@ class DashboardProcessController(
     private val dashboardProcessService: DashboardProcessService
 ) {
 
+    @Operation(summary = "기간별 공정·제품 집계", description = "from/to 포함, 최대 92일 간격. 주는 월요일, 월은 월초 날짜로 표시. 공정 비교에는 processId 필터를 적용하지 않는다.")
+    @GetMapping("/period")
+    fun period(
+        @RequestParam from: String,
+        @RequestParam to: String,
+        @RequestParam unit: String,
+        @Parameter(description = "제품 코드: 쉼표 구분 또는 반복 파라미터")
+        @RequestParam(required = false) productCodes: List<String>?,
+        @RequestParam(required = false) processId: String?
+    ): ApiResponse<Map<String, Any?>> {
+        val (data, mask) = dashboardProcessService.getPeriod(from, to, unit, productCodes, processId)
+        return ApiResponse.ok(data, mask.maskedKeys())
+    }
+
     /**
      * 공정·제품 요약 지표 (No.33 — 가중 평균 산출)
      */

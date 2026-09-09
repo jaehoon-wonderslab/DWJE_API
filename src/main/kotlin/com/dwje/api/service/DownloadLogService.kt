@@ -7,6 +7,7 @@ import com.dwje.api.common.util.MenuId
 import com.dwje.api.common.util.PageRequestParam
 import com.dwje.api.config.AppProperties
 import com.dwje.api.repository.DownloadLogRepository
+import com.fasterxml.jackson.databind.ObjectMapper
 import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
@@ -26,7 +27,8 @@ class DownloadLogService(
     private val downloadLogRepository: DownloadLogRepository,
     private val auditLogService: AuditLogService,
     private val authorizationService: AuthorizationService,
-    private val appProperties: AppProperties
+    private val appProperties: AppProperties,
+    private val objectMapper: ObjectMapper
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -54,7 +56,9 @@ class DownloadLogService(
         rowCnt: Int,
         blindCnt: Int,
         blindCells: Map<String, Int> = emptyMap(),
-        fileNm: String? = null
+        fileNm: String? = null,
+        params: Map<String, Any?>? = null,
+        fileSize: Long? = null
     ): Long {
         return runCatching {
             val principal = UserContext.current()
@@ -71,7 +75,10 @@ class DownloadLogService(
                 rowCnt = rowCnt,
                 blindCnt = blindCnt,
                 ipAddr = currentIp(),
-                fileNm = fileNm
+                fileNm = fileNm,
+                // 조건 스냅샷은 비어 있으면 굳이 빈 객체를 남기지 않는다.
+                paramsJson = params?.takeIf { it.isNotEmpty() }?.let { objectMapper.writeValueAsString(it) },
+                fileSize = fileSize
             )
             downloadLogRepository.insertBlindDetail(dlId, blindCells)
 

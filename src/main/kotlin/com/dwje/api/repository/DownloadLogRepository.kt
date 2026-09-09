@@ -1,6 +1,7 @@
 package com.dwje.api.repository
 
 import com.dwje.api.common.util.Rs
+import com.fasterxml.jackson.databind.ObjectMapper
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Repository
@@ -13,7 +14,8 @@ import java.time.LocalDate
  */
 @Repository
 class DownloadLogRepository(
-    private val jdbcTemplate: NamedParameterJdbcTemplate
+    private val jdbcTemplate: NamedParameterJdbcTemplate,
+    private val objectMapper: ObjectMapper
 ) {
 
     /**
@@ -43,15 +45,19 @@ class DownloadLogRepository(
         rowCnt: Int,
         blindCnt: Int,
         ipAddr: String?,
-        fileNm: String?
+        fileNm: String?,
+        paramsJson: String?,
+        fileSize: Long?
     ): Long {
         val sql = """
             INSERT INTO ax.tb_rpt_download_log (
                 downloaded_at, user_id, dept_nm, report_id, menu_id, target_nm,
-                format_cd, scope_desc, row_cnt, blind_cnt, ip_addr, result_cd, file_nm
+                format_cd, scope_desc, row_cnt, blind_cnt, ip_addr, result_cd, file_nm,
+                params_json, file_size
             ) VALUES (
                 now(), :userId, :deptNm, :reportId, :menuId, :targetNm,
-                :formatCd, :scopeDesc, :rowCnt, :blindCnt, CAST(:ipAddr AS inet), 'DONE', :fileNm
+                :formatCd, :scopeDesc, :rowCnt, :blindCnt, CAST(:ipAddr AS inet), 'DONE', :fileNm,
+                CAST(:paramsJson AS jsonb), :fileSize
             )
             RETURNING dl_id
         """.trimIndent()
@@ -68,6 +74,9 @@ class DownloadLogRepository(
             .addValue("blindCnt", blindCnt)
             .addValue("ipAddr", ipAddr)
             .addValue("fileNm", fileNm?.take(200))
+            // 문서를 저장하지 않으므로 "어떤 조건으로 만든 파일인지" 는 이 스냅샷이 유일한 단서다.
+            .addValue("paramsJson", paramsJson)
+            .addValue("fileSize", fileSize)
 
         return jdbcTemplate.queryForObject(sql, params, Long::class.java) ?: 0L
     }
@@ -205,7 +214,8 @@ class DownloadLogRepository(
             SELECT
                 l.dl_id, l.downloaded_at, l.user_id, u.user_nm, l.dept_nm,
                 l.target_nm, l.report_id, l.format_cd, l.scope_desc,
-                l.row_cnt, l.blind_cnt, host(l.ip_addr) AS ip_addr, l.result_cd
+                l.row_cnt, l.blind_cnt, host(l.ip_addr) AS ip_addr, l.result_cd,
+                l.file_nm, l.params_json::text AS params_json, l.file_size
             FROM ax.tb_rpt_download_log l
             LEFT JOIN ax.tb_sys_user u ON u.user_id = l.user_id
             WHERE l.downloaded_at >= :from
@@ -232,6 +242,12 @@ class DownloadLogRepository(
                 "scope" to rs.getString("scope_desc"),
                 "rowCnt" to rs.getInt("row_cnt"),
                 "blindCnt" to rs.getInt("blind_cnt"),
+                "fileNm" to rs.getString("file_nm"),
+                // 문서를 저장하지 않으므로 이 스냅샷이 같은 산출물을 다시 만들 유일한 단서다.
+                "params" to rs.getString("params_json")?.let {
+                    runCatching { objectMapper.readValue(it, Map::class.java) }.getOrNull()
+                },
+                "fileSize" to rs.getObject("file_size") as? Long,
                 "ip" to rs.getString("ip_addr"),
                 "result" to rs.getString("result_cd")
             )

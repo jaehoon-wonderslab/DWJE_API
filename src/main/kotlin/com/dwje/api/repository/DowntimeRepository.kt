@@ -1,6 +1,7 @@
 package com.dwje.api.repository
 
 import com.dwje.api.common.util.Rs
+import com.dwje.api.common.util.TimeWindow
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Repository
@@ -25,7 +26,11 @@ class DowntimeRepository(
      * @param date    기준일
      * @return totalMin, registeredCnt, unregisteredCnt
      */
-    fun findSummary(plantCd: String, date: LocalDate): Map<String, Any?> {
+    fun findSummary(plantCd: String, date: LocalDate): Map<String, Any?> =
+        findSummary(plantCd, TimeWindow.ofDay(date))
+
+    /** 비가동 요약 — 집계 구간을 직접 지정한다. */
+    fun findSummary(plantCd: String, window: TimeWindow): Map<String, Any?> {
         val sql = """
             SELECT
                 coalesce(sum(d.elapsed_min), 0)                    AS total_min,
@@ -38,7 +43,7 @@ class DowntimeRepository(
               AND d.stop_at <  :dayEnd
         """.trimIndent()
 
-        return jdbcTemplate.queryForObject(sql, dayParams(plantCd, date)) { rs, _ ->
+        return jdbcTemplate.queryForObject(sql, dayParams(plantCd, window)) { rs, _ ->
             mapOf(
                 "totalMin" to rs.getLong("total_min"),
                 "registeredCnt" to rs.getLong("registered_cnt"),
@@ -422,8 +427,12 @@ class DowntimeRepository(
 
     /** 일자 범위 공통 파라미터 */
     private fun dayParams(plantCd: String, date: LocalDate): MapSqlParameterSource =
+        dayParams(plantCd, TimeWindow.ofDay(date))
+
+    /** 집계 구간 파라미터 — 자정을 넘는 구간(일일 생산현황 보고)도 담을 수 있다. */
+    private fun dayParams(plantCd: String, window: TimeWindow): MapSqlParameterSource =
         MapSqlParameterSource()
             .addValue("plantCd", plantCd)
-            .addValue("dayStart", date.atStartOfDay())
-            .addValue("dayEnd", date.plusDays(1).atStartOfDay())
+            .addValue("dayStart", window.from)
+            .addValue("dayEnd", window.toExclusive)
 }

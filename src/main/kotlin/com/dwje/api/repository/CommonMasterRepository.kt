@@ -205,6 +205,9 @@ class CommonMasterRepository(
      * @param limit       조회 건수
      * @param offset      건너뛸 건수
      */
+    /** 등록일·수정일의 출처 — 화면이 "무엇의 날짜인지" 를 밝힐 수 있게 같이 낸다. */
+    private val DATE_SOURCE_MES_ITEM = "mes.tb_md_item"
+
     fun findProducts(
         keyword: String?,
         familyCd: String?,
@@ -228,11 +231,24 @@ class CommonMasterRepository(
                 c.customer_cd,
                 c.customer_nm,
                 pj.project_cd,
-                pj.project_nm
+                pj.project_nm,
+                item_date.created_at,
+                item_date.updated_at
             FROM ax.tb_prod_product p
             INNER JOIN ax.tb_prod_family   f  ON f.family_id  = p.family_id
             LEFT  JOIN ax.tb_prod_customer c  ON c.customer_id = p.customer_id
             LEFT  JOIN ax.tb_prod_project  pj ON pj.project_id = p.project_id
+            -- 등록일·수정일은 MES 품목 마스터에서 낸다.
+            -- ax.tb_prod_product 의 ins_date·upd_date 는 205종이 전부 같은 시각인
+            -- **적재 시각**이라 정렬에 쓸 수 없다 (2026-09-07 확인).
+            LEFT  JOIN LATERAL (
+                SELECT min(i.ins_date) AS created_at,
+                       max(i.upd_date) AS updated_at
+                FROM ax.tb_prod_item_map pm
+                INNER JOIN mes.tb_md_item i
+                        ON i.plant_cd = pm.plant_cd AND i.item_cd = pm.item_cd
+                WHERE pm.product_id = p.product_id
+            ) item_date ON true
             WHERE p.use_flg = 'Y'
             """.trimIndent()
         )
@@ -256,7 +272,11 @@ class CommonMasterRepository(
                 "project" to rs.getString("project_nm"),
                 "projectCd" to rs.getString("project_cd"),
                 "rank" to Rs.intOrNull(rs, "rank_no"),
-                "seq" to rs.getInt("seq_in_family")
+                "seq" to rs.getInt("seq_in_family"),
+                // 제품 자체에는 등록일이 없다 — 그 모델의 품목이 MES 에 처음 등록된 시각이다.
+                "createdAt" to Rs.dateTime(rs, "created_at"),
+                "updatedAt" to Rs.dateTime(rs, "updated_at"),
+                "dateSource" to DATE_SOURCE_MES_ITEM
             )
         }
     }

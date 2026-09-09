@@ -68,7 +68,7 @@ class CommonMasterController(
         @Parameter(description = "제품군 코드") @RequestParam(required = false) familyCd: String?,
         @Parameter(description = "고객사 코드") @RequestParam(required = false) customerCd: String?,
         @Parameter(description = "프로젝트 코드") @RequestParam(required = false) projectCd: String?,
-        @Parameter(description = "정렬 — rank|name|family") @RequestParam(required = false) sort: String?,
+        @Parameter(description = "정렬 — rank|name|family|seq|createdAt|updatedAt") @RequestParam(required = false) sort: String?,
         @RequestParam(required = false) page: Int?,
         @RequestParam(required = false) size: Int?
     ): ApiResponse<Map<String, Any?>> {

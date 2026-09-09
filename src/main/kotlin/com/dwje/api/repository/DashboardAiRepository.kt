@@ -2,6 +2,7 @@ package com.dwje.api.repository
 
 import com.dwje.api.common.util.DefectSql
 import com.dwje.api.common.util.Rs
+import com.dwje.api.common.util.SlotBucket
 import com.dwje.api.common.util.TimeWindow
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
@@ -32,7 +33,11 @@ class DashboardAiRepository(
      * @param date    기준일
      * @return defectRate, uptimeRate, todayQty, okQty, ngQty
      */
-    fun findSummary(plantCd: String, date: LocalDate): Map<String, Any?> {
+    fun findSummary(plantCd: String, date: LocalDate): Map<String, Any?> =
+        findSummary(plantCd, TimeWindow.ofDay(date))
+
+    /** 생산·품질 요약 — 집계 구간을 직접 지정한다. */
+    fun findSummary(plantCd: String, window: TimeWindow): Map<String, Any?> {
         val sql = """
             WITH prod AS (
                 SELECT
@@ -65,7 +70,7 @@ class DashboardAiRepository(
             FROM prod, uptime
         """.trimIndent()
 
-        val params = dayParams(plantCd, date)
+        val params = dayParams(plantCd, window)
 
         return jdbcTemplate.queryForObject(sql, params) { rs, _ ->
             mapOf(
@@ -86,7 +91,11 @@ class DashboardAiRepository(
      *
      * @return cnt(대기 건수), maxWaitMin(최장 대기 분)
      */
-    fun findPendingBorderline(plantCd: String, date: LocalDate): Map<String, Any?> {
+    fun findPendingBorderline(plantCd: String, date: LocalDate): Map<String, Any?> =
+        findPendingBorderline(plantCd, TimeWindow.ofDay(date))
+
+    /** 경계 판정 대기 건수 — 집계 구간을 직접 지정한다. */
+    fun findPendingBorderline(plantCd: String, window: TimeWindow): Map<String, Any?> {
         val sql = """
             SELECT
                 count(*)                                                                  AS cnt,
@@ -99,7 +108,7 @@ class DashboardAiRepository(
               AND a.title ILIKE '%경계%'
         """.trimIndent()
 
-        return jdbcTemplate.queryForObject(sql, dayParams(plantCd, date)) { rs, _ ->
+        return jdbcTemplate.queryForObject(sql, dayParams(plantCd, window)) { rs, _ ->
             mapOf(
                 "cnt" to rs.getLong("cnt"),
                 "maxWaitMin" to rs.getInt("max_wait_min")
@@ -108,7 +117,7 @@ class DashboardAiRepository(
     }
 
     /**
-     * 시간대별 불량률 추이를 조회한다. (No.22 — 전체 + 주 불량유형 2계열)
+     * 시간대별 불량률 추이를 조회한다. (No.22 — 전체 불량률 계열)
      *
      * @param plantCd      사업장 코드
      * @param date         기준일
@@ -129,16 +138,11 @@ class DashboardAiRepository(
         intervalHour: Int,
         processId: String?
     ): List<Map<String, Any?>> {
-        val isMultiDay = !window.from.toLocalDate().isEqual(window.toExclusive.minusDays(1).toLocalDate())
-        val slotFormat = if (isMultiDay) "MM-DD HH24시" else "HH24:MI"
+        val bucket = SlotBucket.of(window, intervalHour)
         val sql = StringBuilder(
             """
             SELECT
-                to_char(
-                    date_trunc('hour', lh.ins_date)
-                    - make_interval(hours => (extract(hour FROM lh.ins_date)::int % :intervalHour)),
-                    '$slotFormat'
-                )                                                            AS slot,
+                ${bucket.labelExpr("lh.ins_date")}                           AS slot,
                 min(lh.ins_date)                                             AS slot_at,
                 coalesce(sum(lh.normal), 0) + coalesce(sum(lh.defect), 0)    AS total_qty,
                 coalesce(sum(lh.defect), 0)                                  AS ng_qty
@@ -150,7 +154,7 @@ class DashboardAiRepository(
             """.trimIndent()
         )
 
-        val params = dayParams(plantCd, window).addValue("intervalHour", intervalHour)
+        val params = dayParams(plantCd, window).addValue("intervalHour", bucket.intervalHour)
 
         if (!processId.isNullOrBlank()) {
             sql.append(" AND lh.wc_cd = :processId")
@@ -174,7 +178,7 @@ class DashboardAiRepository(
     /**
      * 시간대별 주요 불량유형 추이를 조회한다. (No.22 — 보조 계열)
      *
-     * @param topN 상위 불량유형 개수
+     * @param topN 상위 불량유형 개수 — 전 유형이 필요하면 유형 수보다 큰 값을 준다
      */
     fun findDefectTrendByType(
         plantCd: String,
@@ -192,8 +196,7 @@ class DashboardAiRepository(
         processId: String?,
         topN: Int
     ): List<Map<String, Any?>> {
-        val isMultiDay = !window.from.toLocalDate().isEqual(window.toExclusive.minusDays(1).toLocalDate())
-        val slotFormat = if (isMultiDay) "MM-DD HH24시" else "HH24:MI"
+        val bucket = SlotBucket.of(window, intervalHour)
         val sql = StringBuilder(
             """
             WITH top_defects AS (
@@ -209,11 +212,7 @@ class DashboardAiRepository(
                 LIMIT :topN
             )
             SELECT
-                to_char(
-                    date_trunc('hour', dh.ins_date)
-                    - make_interval(hours => (extract(hour FROM dh.ins_date)::int % :intervalHour)),
-                    '$slotFormat'
-                )                          AS slot,
+                ${bucket.labelExpr("dh.ins_date")} AS slot,
                 min(dh.ins_date)           AS slot_at,
                 dh.defect_cd,
                 max(md.defect_nm)          AS defect_nm,
@@ -233,7 +232,7 @@ class DashboardAiRepository(
         )
 
         val params = dayParams(plantCd, window)
-            .addValue("intervalHour", intervalHour)
+            .addValue("intervalHour", bucket.intervalHour)
             .addValue("topN", topN)
 
         // 공정 필터는 두 곳(top_defects CTE, 본 쿼리)에 동일하게 적용한다.
@@ -263,41 +262,78 @@ class DashboardAiRepository(
      *
      * @param processId 공정 코드
      */
-    fun findLineProduction(plantCd: String, date: LocalDate, processId: String?): List<Map<String, Any?>> {
+    fun findLineProduction(plantCd: String, date: LocalDate, processId: String?): List<Map<String, Any?>> =
+        findLineProduction(plantCd, TimeWindow.ofDay(date), processId)
+
+    /** 설비별 생산·불량 — 집계 구간을 직접 지정한다. */
+    fun findLineProduction(
+        plantCd: String,
+        window: TimeWindow,
+        processId: String?
+    ): List<Map<String, Any?>> {
+        val productFilter = if (processId.isNullOrBlank()) "" else "AND lh.wc_cd = :processId"
+        val params = dayParams(plantCd, window)
+        if (!processId.isNullOrBlank()) params.addValue("processId", processId.trim())
+
         val sql = StringBuilder(
             """
+            WITH prod AS (
+                SELECT
+                    lh.eqpt_cd,
+                    lh.wc_cd,
+                    -- 설비 마스터의 model_nm 은 1,511대 전부 null 이라 쓸 수 없다.
+                    -- 실적의 품목을 제품 마스터로 옮겨 그 구간에 실제로 돌린 제품을 낸다.
+                    coalesce(p.model_cd, lh.item_cd)                          AS product,
+                    p.model_nm                                                AS product_nm,
+                    coalesce(sum(lh.normal), 0)                               AS ok_qty,
+                    coalesce(sum(lh.defect), 0)                               AS ng_qty,
+                    coalesce(sum(lh.normal), 0) + coalesce(sum(lh.defect), 0) AS total_qty
+                FROM mes.tb_pop_label_hist lh
+                LEFT JOIN ax.tb_prod_item_map pm
+                       ON pm.plant_cd = lh.plant_cd AND pm.item_cd = lh.item_cd
+                LEFT JOIN ax.tb_prod_product p ON p.product_id = pm.product_id
+                WHERE lh.plant_cd  = :plantCd
+                  AND lh.del_flg   = 'N'
+                  AND lh.eqpt_cd IS NOT NULL
+                  AND lh.ins_date >= :dayStart
+                  AND lh.ins_date <  :dayEnd
+                  $productFilter
+                GROUP BY lh.eqpt_cd, lh.wc_cd, coalesce(p.model_cd, lh.item_cd), p.model_nm
+            )
             SELECT
-                lh.eqpt_cd,
-                max(e.eqpt_nm)                                            AS eqpt_nm,
-                max(e.model_nm)                                           AS model_nm,
-                coalesce(sum(lh.normal), 0)                               AS ok_qty,
-                coalesce(sum(lh.defect), 0)                               AS ng_qty,
-                coalesce(sum(lh.normal), 0) + coalesce(sum(lh.defect), 0) AS total_qty
-            FROM mes.tb_pop_label_hist lh
+                pr.eqpt_cd,
+                max(e.eqpt_nm)          AS eqpt_nm,
+                max(e.model_nm)         AS model_nm,
+                max(w.wc_cd)            AS wc_cd,
+                max(w.wc_nm)            AS wc_nm,
+                sum(pr.ok_qty)          AS ok_qty,
+                sum(pr.ng_qty)          AS ng_qty,
+                sum(pr.total_qty)       AS total_qty,
+                -- 가장 많이 만든 제품 하나와 나머지 종 수. 한 칸에 열 개를 늘어놓으면 못 읽는다.
+                (array_agg(pr.product    ORDER BY pr.total_qty DESC))[1] AS top_product,
+                (array_agg(pr.product_nm ORDER BY pr.total_qty DESC))[1] AS top_product_nm,
+                count(DISTINCT pr.product) - 1                           AS product_etc_cnt
+            FROM prod pr
             LEFT JOIN mes.tb_md_eqpt e
-                   ON e.plant_cd = lh.plant_cd AND e.eqpt_cd = lh.eqpt_cd
-            WHERE lh.plant_cd  = :plantCd
-              AND lh.del_flg   = 'N'
-              AND lh.eqpt_cd IS NOT NULL
-              AND lh.ins_date >= :dayStart
-              AND lh.ins_date <  :dayEnd
+                   ON e.plant_cd = :plantCd AND e.eqpt_cd = pr.eqpt_cd
+            LEFT JOIN mes.tb_md_workcenter w
+                   ON w.plant_cd = :plantCd AND w.wc_cd = pr.wc_cd
             """.trimIndent()
         )
 
-        val params = dayParams(plantCd, date)
-
-        if (!processId.isNullOrBlank()) {
-            sql.append(" AND lh.wc_cd = :processId")
-            params.addValue("processId", processId.trim())
-        }
-
-        sql.append("\nGROUP BY lh.eqpt_cd\nORDER BY total_qty DESC")
+        sql.append("\nGROUP BY pr.eqpt_cd\nORDER BY sum(pr.total_qty) DESC")
 
         return jdbcTemplate.query(sql.toString(), params) { rs, _ ->
             mapOf(
                 "eqptCd" to rs.getString("eqpt_cd"),
                 "eqptNm" to rs.getString("eqpt_nm"),
                 "model" to rs.getString("model_nm"),
+                "processId" to rs.getString("wc_cd"),
+                "processNm" to rs.getString("wc_nm"),
+                // 그 구간에 실제로 돌린 제품 — 설비 마스터가 비어 있어 실적에서 낸다.
+                "product" to rs.getString("top_product"),
+                "productNm" to rs.getString("top_product_nm"),
+                "productEtcCnt" to rs.getInt("product_etc_cnt"),
                 "qty" to Rs.qty(rs, "total_qty"),
                 "okQty" to Rs.qty(rs, "ok_qty"),
                 "ngQty" to Rs.qty(rs, "ng_qty"),
@@ -314,7 +350,15 @@ class DashboardAiRepository(
      * 축 : 양품률 · 가동률 · 정시완료 · 검사정확도 · 이상대응 · 데이터정합
      * 지표 기준(ax.tb_met_metric_std)에 등록된 지표의 당일 실측 평균과 기준값을 대비한다.
      */
-    fun findQualityIndex(plantCd: String, date: LocalDate, metricCodes: List<String>): List<Map<String, Any?>> {
+    fun findQualityIndex(plantCd: String, date: LocalDate, metricCodes: List<String>): List<Map<String, Any?>> =
+        findQualityIndex(plantCd, TimeWindow.ofDay(date), metricCodes)
+
+    /** 공정 품질 지수 6축 — 집계 구간을 직접 지정한다. */
+    fun findQualityIndex(
+        plantCd: String,
+        window: TimeWindow,
+        metricCodes: List<String>
+    ): List<Map<String, Any?>> {
         val sql = """
             SELECT
                 ms.metric_cd,
@@ -334,7 +378,7 @@ class DashboardAiRepository(
             ORDER BY array_position(:metricCodes, ms.metric_cd)
         """.trimIndent()
 
-        val params = dayParams(plantCd, date).addValue("metricCodes", metricCodes.toTypedArray())
+        val params = dayParams(plantCd, window).addValue("metricCodes", metricCodes.toTypedArray())
 
         return jdbcTemplate.query(sql, params) { rs, _ ->
             mapOf(
@@ -395,12 +439,186 @@ class DashboardAiRepository(
     }
 
     /**
+     * 시간대별 '유형 미상' 불량 수량 — 유형 이력이 하나도 없는 라벨의 불량 수량. (No.22 — topN=all 보조 계열)
+     *
+     * 불량 유형 구성(No.25)의 '유형 미상' 과 같은 정의다. 유형이 하나라도 붙은 라벨은 그 불량이
+     * 유형들에 안분되므로, 유형이 전혀 없는 라벨의 불량만 미상으로 남는다. 라벨 시각 기준으로
+     * 칸을 나눠 전체 불량률 계열([findDefectTrend])과 같은 칸에 놓인다.
+     *
+     * 전체 계열의 불량 − 유형 계열 합으로 구하면 안 된다. 유형 계열은 원표(defect_hist) 시각으로
+     * 칸이 잡히고 안분도 되지 않아 칸마다 부호가 뒤집힌다(2026-08 실측: 28칸 중 12칸 음수).
+     */
+    fun findUntypedDefectTrend(
+        plantCd: String,
+        window: TimeWindow,
+        intervalHour: Int,
+        processId: String?
+    ): List<Map<String, Any?>> {
+        val bucket = SlotBucket.of(window, intervalHour)
+        val sql = StringBuilder(
+            """
+            SELECT
+                ${bucket.labelExpr("lh.ins_date")}   AS slot,
+                min(lh.ins_date)                     AS slot_at,
+                coalesce(sum(lh.defect), 0)          AS ng_qty
+            FROM mes.tb_pop_label_hist lh
+            WHERE lh.plant_cd  = :plantCd
+              AND lh.del_flg   = 'N'
+              AND lh.ins_date >= :dayStart
+              AND lh.ins_date <  :dayEnd
+              AND coalesce(lh.defect, 0) > 0
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM mes.tb_pop_defect_hist dh
+                  WHERE dh.plant_cd  = lh.plant_cd
+                    AND dh.wc_cd     = lh.wc_cd
+                    AND dh.lot_no    = lh.lot_no
+                    AND dh.serial_no = lh.serial_no
+                    ${DefectSql.excludeNonProduction()}
+              )
+            """.trimIndent()
+        )
+
+        val params = dayParams(plantCd, window).addValue("intervalHour", bucket.intervalHour)
+
+        if (!processId.isNullOrBlank()) {
+            sql.append(" AND lh.wc_cd = :processId")
+            params.addValue("processId", processId.trim())
+        }
+
+        sql.append("\nGROUP BY 1\nORDER BY min(lh.ins_date)")
+
+        return jdbcTemplate.query(sql.toString(), params) { rs, _ ->
+            mapOf(
+                "slot" to rs.getString("slot"),
+                "ngQty" to Rs.qty(rs, "ng_qty")
+            )
+        }
+    }
+
+    /**
+     * 칸 하나의 라벨 원장 합계 — 투입·불량 수량. (No.22 칸 클릭 상세의 분모)
+     *
+     * [findDefectTrend] 한 칸과 같은 행 집합이라 칸 값과 정확히 맞는다.
+     */
+    fun findSlotLabelTotals(plantCd: String, slot: TimeWindow): Map<String, Any?> {
+        val sql = """
+            SELECT
+                coalesce(sum(lh.normal), 0) + coalesce(sum(lh.defect), 0) AS total_qty,
+                coalesce(sum(lh.defect), 0)                               AS ng_qty,
+                count(*)                                                  AS label_cnt
+            FROM mes.tb_pop_label_hist lh
+            WHERE lh.plant_cd  = :plantCd
+              AND lh.del_flg   = 'N'
+              AND lh.ins_date >= :slotFrom
+              AND lh.ins_date <  :slotTo
+        """.trimIndent()
+
+        return jdbcTemplate.queryForObject(sql, slotParams(plantCd, slot)) { rs, _ ->
+            val total = rs.getBigDecimal("total_qty")
+            val ng = rs.getBigDecimal("ng_qty")
+            mapOf(
+                "totalQty" to Rs.qty(rs, "total_qty"),
+                "ngQty" to Rs.qty(rs, "ng_qty"),
+                "labelCount" to rs.getLong("label_cnt"),
+                "defectRate" to com.dwje.api.common.util.safeRate(ng, total)
+            )
+        } ?: emptyMap()
+    }
+
+    /**
+     * 칸 하나의 불량 유형 상세 — 유형별 안분 수량과 원표 속성. (No.22 칸 클릭 상세)
+     *
+     * 수량은 불량 유형 구성(No.25)과 같이 라벨 원장 불량을 유형 구성비로 안분한 값이다.
+     * 그래서 유형 합 + 유형 미상 = 칸의 불량 수량이 성립한다. 원표 합계(`rawQty`)는
+     * 안분 전 값으로 따로 낸다 — 라벨 불량 수량과 어긋날 수 있어 비율의 분모로 쓰지 않는다.
+     *
+     * 원표(`tb_pop_defect_hist`)에 있는 속성은 유형별로 모아 전부 낸다 — 품목, 공정, 비고,
+     * 등록자, 최초·최종 시각, 이력 건수, LOT 수. 마스터(`tb_md_defect`)의 사용 여부·비고도 붙인다.
+     */
+    fun findSlotDefectDetails(plantCd: String, slot: TimeWindow): List<Map<String, Any?>> {
+        val sql = """
+            WITH
+            ${DefectSql.labelLedgerCte("slot_label", "slotFrom", "slotTo")},
+            ${DefectSql.apportionedTypeCte("cur", "slot_label")},
+            raw AS (
+                SELECT dh.defect_cd,
+                       coalesce(sum(dh.qty), 0)                                   AS raw_qty,
+                       count(*)                                                   AS record_cnt,
+                       count(DISTINCT dh.lot_no)                                  AS lot_cnt,
+                       count(DISTINCT dh.item_cd)                                 AS item_cnt,
+                       string_agg(DISTINCT dh.item_cd, ',')                       AS item_cds,
+                       string_agg(DISTINCT dh.wc_cd, ',')                         AS wc_cds,
+                       string_agg(DISTINCT nullif(trim(dh.remark), ''), ' | ')    AS remarks,
+                       string_agg(DISTINCT nullif(trim(dh.ins_user), ''), ',')    AS ins_users,
+                       min(dh.ins_date)                                           AS first_at,
+                       max(dh.ins_date)                                           AS last_at
+                FROM slot_label l
+                INNER JOIN mes.tb_pop_defect_hist dh
+                        ON dh.plant_cd  = l.plant_cd
+                       AND dh.wc_cd     = l.wc_cd
+                       AND dh.lot_no    = l.lot_no
+                       AND dh.serial_no = l.serial_no
+                       ${DefectSql.excludeNonProduction()}
+                GROUP BY dh.defect_cd
+            )
+            SELECT
+                raw.defect_cd,
+                coalesce(md.defect_nm, raw.defect_cd) AS defect_nm,
+                md.use_flg                            AS md_use_flg,
+                md.remark                             AS md_remark,
+                coalesce(cur.ng_qty, 0)               AS ng_qty,
+                raw.raw_qty, raw.record_cnt, raw.lot_cnt, raw.item_cnt,
+                raw.item_cds, raw.wc_cds, raw.remarks, raw.ins_users,
+                raw.first_at, raw.last_at
+            FROM raw
+            LEFT JOIN cur ON cur.defect_cd = raw.defect_cd
+            LEFT JOIN mes.tb_md_defect md
+                   ON md.plant_cd = :plantCd AND md.defect_cd = raw.defect_cd
+            ORDER BY coalesce(cur.ng_qty, 0) DESC, raw.raw_qty DESC, raw.defect_cd
+        """.trimIndent()
+
+        return jdbcTemplate.query(sql, slotParams(plantCd, slot)) { rs, _ ->
+            mapOf(
+                "defectCd" to rs.getString("defect_cd"),
+                "defectNm" to rs.getString("defect_nm"),
+                "useFlg" to rs.getString("md_use_flg"),
+                "masterRemark" to rs.getString("md_remark"),
+                "ngQty" to Rs.qty(rs, "ng_qty"),
+                "rawQty" to Rs.qty(rs, "raw_qty"),
+                "recordCount" to rs.getLong("record_cnt"),
+                "lotCount" to rs.getLong("lot_cnt"),
+                "itemCount" to rs.getLong("item_cnt"),
+                "itemCds" to splitList(rs.getString("item_cds"), ","),
+                "processIds" to splitList(rs.getString("wc_cds"), ","),
+                "remarks" to splitList(rs.getString("remarks"), " | "),
+                "insUsers" to splitList(rs.getString("ins_users"), ","),
+                "firstAt" to Rs.dateTime(rs, "first_at"),
+                "lastAt" to Rs.dateTime(rs, "last_at")
+            )
+        }
+    }
+
+    private fun splitList(joined: String?, separator: String): List<String> =
+        joined?.split(separator)?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
+
+    private fun slotParams(plantCd: String, slot: TimeWindow): MapSqlParameterSource =
+        MapSqlParameterSource()
+            .addValue("plantCd", plantCd)
+            .addValue("slotFrom", slot.from)
+            .addValue("slotTo", slot.toExclusive)
+
+    /**
      * 해당 일자의 라벨 원장 불량 총량을 조회한다. (No.25 — 유형 구성비의 분모)
      *
      * [findDefectComposition] 의 유형 합계는 유형이 붙지 않은 불량이 빠져 이 값보다 작다.
      * 표시된 유형만으로 분모를 잡으면 비중이 부풀려지므로 분모는 이 값을 쓴다.
      */
-    fun findDefectLedgerTotal(plantCd: String, date: LocalDate, processId: String?): Long {
+    fun findDefectLedgerTotal(plantCd: String, date: LocalDate, processId: String?): Long =
+        findDefectLedgerTotal(plantCd, TimeWindow.ofDay(date), processId)
+
+    /** 라벨 원장 불량 총량 — 집계 구간을 직접 지정한다. */
+    fun findDefectLedgerTotal(plantCd: String, window: TimeWindow, processId: String?): Long {
         val sql = StringBuilder(
             """
             SELECT coalesce(sum(coalesce(lh.defect, 0)), 0) AS ng_qty
@@ -412,7 +630,7 @@ class DashboardAiRepository(
             """.trimIndent()
         )
 
-        val params = dayParams(plantCd, date)
+        val params = dayParams(plantCd, window)
 
         if (!processId.isNullOrBlank()) {
             sql.append(" AND lh.wc_cd = :processId")
@@ -473,19 +691,23 @@ class DashboardAiRepository(
      *
      * @param intervalHour 집계 구간 시간
      */
-    fun findPlanVsActual(plantCd: String, date: LocalDate, intervalHour: Int): List<Map<String, Any?>> {
+    fun findPlanVsActual(plantCd: String, date: LocalDate, intervalHour: Int): List<Map<String, Any?>> =
+        findPlanVsActual(plantCd, TimeWindow.ofDay(date), intervalHour)
+
+    /** 계획 대비 실적 — 집계 구간을 직접 지정한다. 칸 단위는 구간 길이가 정한다. */
+    fun findPlanVsActual(plantCd: String, window: TimeWindow, intervalHour: Int): List<Map<String, Any?>> {
+        val bucket = SlotBucket.of(window, intervalHour)
         val sql = """
             WITH slots AS (
                 SELECT generate_series(
-                    :dayStart::timestamp,
-                    :dayEnd::timestamp - make_interval(hours => :intervalHour),
-                    make_interval(hours => :intervalHour)
+                    ${bucket.slotExpr("(:dayStart)::timestamp")},
+                    (:dayEnd)::timestamp - ${bucket.stepInterval()},
+                    ${bucket.stepInterval()}
                 ) AS slot_at
             ),
             actual AS (
                 SELECT
-                    date_trunc('hour', lh.ins_date)
-                        - make_interval(hours => (extract(hour FROM lh.ins_date)::int % :intervalHour)) AS slot_at,
+                    ${bucket.slotExpr("lh.ins_date")}                                                   AS slot_at,
                     coalesce(sum(lh.normal), 0) + coalesce(sum(lh.defect), 0)                          AS qty
                 FROM mes.tb_pop_label_hist lh
                 WHERE lh.plant_cd  = :plantCd
@@ -496,8 +718,7 @@ class DashboardAiRepository(
             ),
             plan AS (
                 SELECT
-                    date_trunc('hour', sh.ins_date)
-                        - make_interval(hours => (extract(hour FROM sh.ins_date)::int % :intervalHour)) AS slot_at,
+                    ${bucket.slotExpr("sh.ins_date")}                                                   AS slot_at,
                     coalesce(sum(sh.qty), 0)                                                           AS qty
                 FROM mes.tb_pop_stock_hist sh
                 WHERE sh.plant_cd  = :plantCd
@@ -507,7 +728,7 @@ class DashboardAiRepository(
                 GROUP BY 1
             )
             SELECT
-                to_char(s.slot_at, 'HH24:MI')   AS slot,
+                to_char(s.slot_at, '${bucket.format}') AS slot,
                 coalesce(plan.qty, 0)           AS plan_qty,
                 coalesce(actual.qty, 0)         AS actual_qty
             FROM slots s
@@ -516,7 +737,7 @@ class DashboardAiRepository(
             ORDER BY s.slot_at
         """.trimIndent()
 
-        val params = dayParams(plantCd, date).addValue("intervalHour", intervalHour)
+        val params = dayParams(plantCd, window).addValue("intervalHour", bucket.intervalHour)
 
         return jdbcTemplate.query(sql, params) { rs, _ ->
             mapOf(
@@ -538,17 +759,23 @@ class DashboardAiRepository(
         date: LocalDate,
         processId: String?,
         intervalHour: Int
+    ): List<Map<String, Any?>> =
+        findEquipmentUptimeHeatmap(plantCd, TimeWindow.ofDay(date), processId, intervalHour)
+
+    /** 설비별 가동률 히트맵 — 집계 구간을 직접 지정한다. */
+    fun findEquipmentUptimeHeatmap(
+        plantCd: String,
+        window: TimeWindow,
+        processId: String?,
+        intervalHour: Int
     ): List<Map<String, Any?>> {
+        val bucket = SlotBucket.of(window, intervalHour)
         val sql = StringBuilder(
             """
             SELECT
                 mv.eqpt_cd,
                 coalesce(max(e.eqpt_nm), mv.eqpt_cd) AS eqpt_nm,
-                to_char(
-                    date_trunc('hour', mv.measured_at)
-                    - make_interval(hours => (extract(hour FROM mv.measured_at)::int % :intervalHour)),
-                    'HH24:MI'
-                )                                    AS slot,
+                ${bucket.labelExpr("mv.measured_at")} AS slot,
                 min(mv.measured_at)                  AS slot_at,
                 round(avg(mv.metric_value), 2)       AS uptime_rate
             FROM ax.tb_met_metric_value mv
@@ -563,7 +790,7 @@ class DashboardAiRepository(
             """.trimIndent()
         )
 
-        val params = dayParams(plantCd, date).addValue("intervalHour", intervalHour)
+        val params = dayParams(plantCd, window).addValue("intervalHour", bucket.intervalHour)
 
         if (!processId.isNullOrBlank()) {
             sql.append(" AND mv.wc_cd = :processId")
@@ -587,7 +814,11 @@ class DashboardAiRepository(
      *
      * 목록 본문과 달리 생산·가동률 LATERAL 이 필요 없으므로 설비 기준만 센다.
      */
-    fun countLines(plantCd: String, date: LocalDate, processId: String?): Long {
+    fun countLines(plantCd: String, date: LocalDate, processId: String?): Long =
+        countLines(plantCd, TimeWindow.ofDay(date), processId)
+
+    /** 라인 목록 전체 건수 — 집계 구간을 직접 지정한다. */
+    fun countLines(plantCd: String, window: TimeWindow, processId: String?): Long {
         val sql = StringBuilder(
             """
             SELECT count(*)
@@ -599,7 +830,7 @@ class DashboardAiRepository(
             """.trimIndent()
         )
 
-        val params = dayParams(plantCd, date)
+        val params = dayParams(plantCd, window)
 
         if (!processId.isNullOrBlank()) {
             sql.append(" AND ew.wc_cd = :processId")
@@ -621,6 +852,16 @@ class DashboardAiRepository(
         processId: String?,
         limit: Int?,
         offset: Int
+    ): List<Map<String, Any?>> =
+        findLines(plantCd, TimeWindow.ofDay(date), processId, limit, offset)
+
+    /** 라인별 현황 목록 — 집계 구간을 직접 지정한다. */
+    fun findLines(
+        plantCd: String,
+        window: TimeWindow,
+        processId: String?,
+        limit: Int?,
+        offset: Int
     ): List<Map<String, Any?>> {
         val sql = StringBuilder(
             """
@@ -629,14 +870,44 @@ class DashboardAiRepository(
                 e.eqpt_nm,
                 e.model_nm,
                 ew.wc_cd,
+                w.wc_nm,
                 coalesce(prod.ok_qty, 0)                                  AS ok_qty,
                 coalesce(prod.ng_qty, 0)                                  AS ng_qty,
                 coalesce(prod.ok_qty, 0) + coalesce(prod.ng_qty, 0)       AS total_qty,
                 uptime.uptime_rate,
-                uptime.last_measured_at
+                uptime.last_measured_at,
+                item.top_product,
+                item.top_product_nm,
+                coalesce(item.product_etc_cnt, 0)                         AS product_etc_cnt
             FROM mes.tb_md_eqpt e
             INNER JOIN mes.tb_md_eqpt_by_workcenter ew
                     ON ew.plant_cd = e.plant_cd AND ew.eqpt_cd = e.eqpt_cd
+            LEFT JOIN mes.tb_md_workcenter w
+                   ON w.plant_cd = ew.plant_cd AND w.wc_cd = ew.wc_cd
+            -- 설비 마스터의 model_nm 은 1,511대 전부 null 이라 제품 칸을 채울 수 없다.
+            -- 그 구간 실적의 품목을 제품 마스터로 옮겨 실제로 돌린 제품을 낸다.
+            LEFT JOIN LATERAL (
+                SELECT
+                    (array_agg(t.product    ORDER BY t.qty DESC))[1] AS top_product,
+                    (array_agg(t.product_nm ORDER BY t.qty DESC))[1] AS top_product_nm,
+                    count(*) - 1                                     AS product_etc_cnt
+                FROM (
+                    SELECT
+                        coalesce(p.model_cd, lh.item_cd)                          AS product,
+                        p.model_nm                                                AS product_nm,
+                        coalesce(sum(lh.normal), 0) + coalesce(sum(lh.defect), 0) AS qty
+                    FROM mes.tb_pop_label_hist lh
+                    LEFT JOIN ax.tb_prod_item_map pm
+                           ON pm.plant_cd = lh.plant_cd AND pm.item_cd = lh.item_cd
+                    LEFT JOIN ax.tb_prod_product p ON p.product_id = pm.product_id
+                    WHERE lh.plant_cd  = e.plant_cd
+                      AND lh.eqpt_cd   = e.eqpt_cd
+                      AND lh.del_flg   = 'N'
+                      AND lh.ins_date >= :dayStart
+                      AND lh.ins_date <  :dayEnd
+                    GROUP BY coalesce(p.model_cd, lh.item_cd), p.model_nm
+                ) t
+            ) item ON true
             LEFT JOIN LATERAL (
                 SELECT
                     coalesce(sum(lh.normal), 0) AS ok_qty,
@@ -664,7 +935,7 @@ class DashboardAiRepository(
             """.trimIndent()
         )
 
-        val params = dayParams(plantCd, date)
+        val params = dayParams(plantCd, window)
 
         if (!processId.isNullOrBlank()) {
             sql.append(" AND ew.wc_cd = :processId")
@@ -688,6 +959,11 @@ class DashboardAiRepository(
                 "eqptNm" to rs.getString("eqpt_nm"),
                 "model" to rs.getString("model_nm"),
                 "processId" to rs.getString("wc_cd"),
+                "processNm" to rs.getString("wc_nm"),
+                // 그 구간에 실제로 돌린 제품 — 설비 마스터가 비어 있어 실적에서 낸다.
+                "product" to rs.getString("top_product"),
+                "productNm" to rs.getString("top_product_nm"),
+                "productEtcCnt" to rs.getInt("product_etc_cnt"),
                 "qty" to Rs.qty(rs, "total_qty"),
                 "okQty" to Rs.qty(rs, "ok_qty"),
                 "ngQty" to Rs.qty(rs, "ng_qty"),
@@ -705,6 +981,117 @@ class DashboardAiRepository(
             )
         }
     }
+
+    /**
+     * 설비 × 제품 실적을 조회한다. (실적 집계 조회 3단계)
+     *
+     * [findLines] 는 설비 한 대에 한 행이라, 두 제품 이상 돌린 설비는 수량이 대표 제품
+     * 한 칸에 몰린다(2026-09-03 기준 512대 중 76대가 2종 이상, 최대 10종). 제품으로
+     * 묶어 그리려면 설비가 만든 제품마다 행이 나뉘어야 한다.
+     *
+     * 실적이 있는 설비만 나온다 — 안 돌린 설비는 3단계에 그릴 것이 없다.
+     */
+    fun findLineProducts(
+        plantCd: String,
+        window: TimeWindow,
+        processId: String?,
+        limit: Int?,
+        offset: Int
+    ): List<Map<String, Any?>> {
+        val sql = StringBuilder(lineProductBaseSql())
+        val params = dayParams(plantCd, window)
+
+        if (!processId.isNullOrBlank()) {
+            sql.append(" AND lh.wc_cd = :processId")
+            params.addValue("processId", processId.trim())
+        }
+
+        sql.append("\nGROUP BY lh.eqpt_cd, lh.wc_cd, coalesce(p.model_cd, lh.item_cd)")
+        sql.append("\nORDER BY lh.wc_cd, lh.eqpt_cd, coalesce(p.model_cd, lh.item_cd)")
+
+        if (limit != null) {
+            sql.append("\nLIMIT :limit OFFSET :offset")
+            params.addValue("limit", limit)
+            params.addValue("offset", offset)
+        }
+
+        return jdbcTemplate.query(sql.toString(), params) { rs, _ ->
+            mapOf(
+                "eqptCd" to rs.getString("eqpt_cd"),
+                "eqptNm" to rs.getString("eqpt_nm"),
+                "processId" to rs.getString("wc_cd"),
+                "processNm" to rs.getString("wc_nm"),
+                "product" to rs.getString("product"),
+                "productNm" to rs.getString("product_nm"),
+                "qty" to Rs.qty(rs, "total_qty"),
+                "okQty" to Rs.qty(rs, "ok_qty"),
+                "ngQty" to Rs.qty(rs, "ng_qty"),
+                "defectRate" to com.dwje.api.common.util.safeRate(
+                    rs.getBigDecimal("ng_qty"), rs.getBigDecimal("total_qty")
+                )
+            )
+        }
+    }
+
+    /** 설비 × 제품 실적의 전체 건수. (페이징 meta.total) */
+    fun countLineProducts(plantCd: String, window: TimeWindow, processId: String?): Long {
+        val inner = StringBuilder(
+            """
+            SELECT 1
+            FROM mes.tb_pop_label_hist lh
+            LEFT JOIN ax.tb_prod_item_map pm
+                   ON pm.plant_cd = lh.plant_cd AND pm.item_cd = lh.item_cd
+            LEFT JOIN ax.tb_prod_product p ON p.product_id = pm.product_id
+            WHERE lh.plant_cd  = :plantCd
+              AND lh.del_flg   = 'N'
+              AND lh.ins_date >= :dayStart
+              AND lh.ins_date <  :dayEnd
+            """.trimIndent()
+        )
+        val params = dayParams(plantCd, window)
+
+        if (!processId.isNullOrBlank()) {
+            inner.append(" AND lh.wc_cd = :processId")
+            params.addValue("processId", processId.trim())
+        }
+
+        inner.append("\nGROUP BY lh.eqpt_cd, lh.wc_cd, coalesce(p.model_cd, lh.item_cd)")
+
+        val sql = "SELECT count(*) FROM (\n$inner\n) t"
+        return jdbcTemplate.queryForObject(sql, params, Long::class.java) ?: 0L
+    }
+
+    /**
+     * 설비 × 제품 실적의 본문 SQL.
+     *
+     * 제품 식별자는 [findLines] 의 `product` 와 같은 식(`coalesce(model_cd, item_cd)`)이다
+     * — 두 응답을 화면에서 맞붙일 수 있어야 한다.
+     */
+    private fun lineProductBaseSql(): String =
+        """
+        SELECT
+            lh.eqpt_cd,
+            coalesce(max(e.eqpt_nm), lh.eqpt_cd)                      AS eqpt_nm,
+            lh.wc_cd,
+            max(w.wc_nm)                                              AS wc_nm,
+            coalesce(p.model_cd, lh.item_cd)                          AS product,
+            max(p.model_nm)                                           AS product_nm,
+            coalesce(sum(lh.normal), 0)                               AS ok_qty,
+            coalesce(sum(lh.defect), 0)                               AS ng_qty,
+            coalesce(sum(lh.normal), 0) + coalesce(sum(lh.defect), 0) AS total_qty
+        FROM mes.tb_pop_label_hist lh
+        LEFT JOIN mes.tb_md_eqpt e
+               ON e.plant_cd = lh.plant_cd AND e.eqpt_cd = lh.eqpt_cd
+        LEFT JOIN mes.tb_md_workcenter w
+               ON w.plant_cd = lh.plant_cd AND w.wc_cd = lh.wc_cd
+        LEFT JOIN ax.tb_prod_item_map pm
+               ON pm.plant_cd = lh.plant_cd AND pm.item_cd = lh.item_cd
+        LEFT JOIN ax.tb_prod_product p ON p.product_id = pm.product_id
+        WHERE lh.plant_cd  = :plantCd
+          AND lh.del_flg   = 'N'
+          AND lh.ins_date >= :dayStart
+          AND lh.ins_date <  :dayEnd
+        """.trimIndent()
 
     /**
      * 설비 상세를 조회한다. (No.30 — 모달)
