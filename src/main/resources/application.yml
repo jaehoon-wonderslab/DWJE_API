@@ -11,6 +11,8 @@ spring:
     time-zone: Asia/Seoul
     serialization:
       write-dates-as-timestamps: false
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
   mvc:
     problemdetails:
       enabled: false
@@ -21,6 +23,7 @@ spring:
 
 server:
   port: 8080
+  shutdown: graceful
   servlet:
     encoding:
       charset: UTF-8
@@ -80,6 +83,17 @@ app:
   # 생산량이 적으면 불량 1건으로 불량률 100% 가 되어 최대 이슈로 올라온다.
   # 현업 확인 전 임시값이다.
   anomaly-min-qty: 1000
+  # 업로드 리포트(AI 통합 대시보드) 원본 엑셀 저장소. 배포 환경은 AX_UPLOAD_DIR 로 바꾼다.
+  upload:
+    dir: "${AX_UPLOAD_DIR:./data/ax-uploads}"
+    # 원본 1건 상한(바이트). 20MB. spring.servlet.multipart 상한(50MB)보다 작아야 한다.
+    max-bytes: 20971520
+  # AOI 불량 이미지가 있는 NAS 마운트 루트. 이 아래 경로만 프록시로 내려준다.
+  # NAS 경로 규칙 문서(발주자 제공 예정)가 오기 전 임시값이다.
+  nas:
+    aoi-root: "${AX_NAS_AOI_ROOT:./data/nas-aoi}"
+    # 이미지 프록시 URL 서명의 유효시간(초). 상세 응답을 받은 뒤 이 시간 안에 그려야 한다.
+    image-url-ttl-sec: 900
   # 도금·코팅 작업장 — Plating·Coating 아침회의 자료의 기본 범위 (18개)
   plating-workcenters: [V110, V111, V112, V113,
                         S114, S115, S140, S116, S110, S117, S118, S112, S113,

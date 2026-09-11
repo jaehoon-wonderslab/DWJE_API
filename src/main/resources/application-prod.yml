@@ -10,8 +10,8 @@ spring:
       on-profile: prod
   datasource:
     driver-class-name: org.postgresql.Driver
-    url: jdbc:postgresql://prod-db.dwje.internal:5432/dwjedb
-    username: dwje_prod
+    url: "${PROD_DB_URL:jdbc:postgresql://prod-db.dwje.internal:5432/dwjedb}"
+    username: "${PROD_DB_USERNAME:dwje_local}"
     password: "${PROD_DB_PASSWORD}"
     hikari:
       pool-name: dwje-prod-pool

@@ -26,7 +26,10 @@ class CachedBodyHttpServletRequest(
     /** 캐싱된 본문. 상한 초과 또는 본문 없음이면 null */
     val cachedBody: ByteArray? = runCatching {
         val length = request.contentLength
-        if (length in 1..maxBytes) request.inputStream.readAllBytes() else null
+        // multipart 는 캐싱하지 않는다 — 여기서 스트림을 비우면 컨테이너의 getParts() 가
+        // 원본 스트림을 읽을 것이 없어 파일 파트가 비어 도착한다. 검사 대상(JSON)도 아니다.
+        val multipart = request.contentType?.startsWith("multipart/", ignoreCase = true) == true
+        if (!multipart && length in 1..maxBytes) request.inputStream.readAllBytes() else null
     }.getOrNull()
 
     override fun getInputStream(): ServletInputStream {

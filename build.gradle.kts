@@ -94,4 +94,31 @@ tasks.withType<Test> {
 
 tasks.named<org.springframework.boot.gradle.tasks.bundling.BootJar>("bootJar") {
     archiveFileName.set("dwje-api-${project.version}.jar")
+
+    doLast {
+        val libsDir = layout.buildDirectory.dir("libs").get().asFile
+
+        // 1. *.sh 스크립트 파일 복사 (실행 권한 755 부여)
+        val shFiles = fileTree(layout.projectDirectory) {
+            include("*.sh")
+        }
+        copy {
+            from(shFiles)
+            into(libsDir)
+            filePermissions { unix("755") }
+        }
+
+        // 2. config 디렉터리 복사 (api.env.example, api.env 등)
+        val configDir = file("config")
+        if (configDir.exists()) {
+            copy {
+                from(configDir)
+                into(File(libsDir, "config"))
+                filePermissions { unix("600") }
+            }
+        }
+
+        logger.lifecycle("배포 패키지 구성 완료 — build/libs/ 에 실행 스크립트(*.sh) 및 config/ 디렉터리가 복사되었습니다.")
+    }
 }
+

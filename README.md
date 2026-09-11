@@ -44,6 +44,19 @@ java -jar -Dspring.profiles.active=prod build/libs/dwje-api-0.0.1.jar
 
 ### 환경변수
 
+배포 시 `config/api.env.example`을 `config/api.env`로 복사하고 실제 접속 정보를 입력한 뒤
+`./start.sh --profile=prod`로 실행한다. `start.sh`가 이 파일의 변수를 export하여 Java에 전달한다.
+기존 `config/api.env`가 있다면 복사로 덮어쓰지 않고 필요한 항목만 수정한다.
+
+```bash
+SPRING_DATASOURCE_USERNAME="dwje_local"
+SPRING_DATASOURCE_URL="jdbc:postgresql://localhost:5432/dwjedb"
+```
+
+`SPRING_DATASOURCE_USERNAME`은 Spring의 `spring.datasource.username`을 직접 덮어쓴다.
+DB 비밀번호는 `PROD_DB_PASSWORD`에 설정한다. DB가 별도 서버라면 URL의 `localhost`를
+해당 DB 호스트로 변경한다. 직접 `java -jar`로 실행할 때는 환경변수 파일이 자동으로 로드되지 않는다.
+
 프로파일 yml 의 `${...}` 는 **기본값이 없으면 전부 필수**다. 하나라도 없으면
 `Could not resolve placeholder '<이름>'` 으로 기동 단계에서 죽는다.
 
@@ -52,6 +65,7 @@ java -jar -Dspring.profiles.active=prod build/libs/dwje-api-0.0.1.jar
 | local | `LOCAL_DB_PASSWORD` (기본 `dwje_local`) | 기본값으로 기동 |
 | dev | `DEV_DB_PASSWORD` · `DEV_JWT_SECRET` · `DEV_MAIL_HOST` · `DEV_MAIL_USERNAME` · `DEV_MAIL_PASSWORD` | **기동 실패** (5개 전부 필수) |
 | prod | `PROD_DB_PASSWORD` · `PROD_JWT_SECRET` · `PROD_MAIL_HOST` · `PROD_MAIL_USERNAME` · `PROD_MAIL_PASSWORD` | **기동 실패** (5개 전부 필수) |
+| 공통(선택) | `AX_UPLOAD_DIR` (기본 `./data/ax-uploads`) · `AX_NAS_AOI_ROOT` (기본 `./data/nas-aoi`) | 기본값으로 기동 — 업로드 리포트 원본 저장소 · AOI 이미지 NAS 마운트 루트 |
 
 > 메일 3종은 이 표에 없었다. 그래서 안내대로 DB·JWT 두 개만 채우면
 > `Could not resolve placeholder 'DEV_MAIL_HOST'` 로 기동조차 못 했다.
@@ -149,6 +163,12 @@ psql -d dwjedb -f src/main/resources/db/V13__ax_sync_run.sql
 psql -d dwjedb -f src/main/resources/db/V14__ax_sync_run_dry_run.sql
 psql -d dwjedb -f src/main/resources/db/V15__menu_prod_down_off.sql
 psql -d dwjedb -f src/main/resources/db/V23__report_center.sql
+psql -d dwjedb -f src/main/resources/db/V24__report_usage.sql
+psql -d dwjedb -f src/main/resources/db/V25__menu_ai_panel_upload_aoi.sql
+psql -d dwjedb -f src/main/resources/db/V26__dash_upload_doc.sql
+psql -d dwjedb -f src/main/resources/db/V27__aoi_defect_image.sql
+psql -d dwjedb -f src/main/resources/db/V28__aoi_defect_image_dimension_key.sql
+psql -d dwjedb -f src/main/resources/db/V29__aoi_wc_display_name.sql
 ```
 
 > 번호는 한 번호에 한 파일이다. `V6__ax_sync_run.sql` 이 `V6__report_definitions.sql` 과

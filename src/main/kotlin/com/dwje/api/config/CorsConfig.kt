@@ -36,7 +36,7 @@ class CorsConfig {
      */
     private fun corsConfigurationSource(): CorsConfigurationSource {
         val config = CorsConfiguration().apply {
-            allowedOriginPatterns = listOf("http://localhost:*", "http://127.0.0.1:*", "https://*.dwje.internal")
+            allowedOriginPatterns = listOf("http://localhost:*", "http://127.0.0.1:*", "https://*.dwje.internal", "http://192.168.2.8:*")
             allowedMethods = listOf("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
             allowedHeaders = listOf("*")
             exposedHeaders = listOf("Content-Disposition")

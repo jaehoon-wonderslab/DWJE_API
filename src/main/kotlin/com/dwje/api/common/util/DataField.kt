@@ -67,6 +67,12 @@ object MenuId {
     const val SYS_SYNC = "sys-sync"
     const val SYS_MODEL_VER = "sys-model-ver"
 
+    // 2026-09-10 요구사항 9건 — V25 로 tb_sys_menu 에 등록된다.
+    /** AI 통합 대시보드 › 업로드 리포트 **업로드**(동작 권한). 보기는 DASH_AI 를 따른다. */
+    const val DASH_AI_UPLOAD = "dash-ai-upload"
+    /** 시스템관리 › 업로드 문서 목록 (조회 전용) */
+    const val SYS_UPLOAD_DOC = "sys-upload-doc"
+
     // 보고서 화면 (RP-01~07) — resources/db/V5__report_menu.sql 로 tb_sys_menu 에 등록된다.
     const val RPT_PRESS_MORNING = "rpt-press-morning"
     const val RPT_PLATING_MORNING = "rpt-plating-morning"

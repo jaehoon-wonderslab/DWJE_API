@@ -29,6 +29,8 @@ import org.springframework.validation.annotation.Validated
  * @param platingWorkcenters     도금·코팅 작업장 코드 — Plating·Coating 아침회의의 기본 범위
  * @param anomalyMinQty          이상 후보 설비의 최소 생산량 — 이 미만은 후보에서 뺀다
  * @param ai                     sLLM 서빙 설정
+ * @param upload                 업로드 문서 저장소 설정
+ * @param nas                    NAS 이미지 경로 설정
  */
 @Validated
 @ConfigurationProperties(prefix = "app")
@@ -90,5 +92,13 @@ data class AppProperties(
 
     /** sLLM 서빙 설정 — [AiProperties] */
     @field:jakarta.validation.Valid
-    val ai: AiProperties = AiProperties()
+    val ai: AiProperties = AiProperties(),
+
+    /** 업로드 문서 저장소 — [UploadProperties] */
+    @field:jakarta.validation.Valid
+    val upload: UploadProperties = UploadProperties(),
+
+    /** NAS 이미지 경로 — [NasProperties] */
+    @field:jakarta.validation.Valid
+    val nas: NasProperties = NasProperties()
 )

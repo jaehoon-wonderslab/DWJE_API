@@ -8,8 +8,8 @@
 > `RequestBodyContractTest` 가 `Map` 본문 개수가 코드와 맞는지 검사한다 —
 > 이 문서를 처음 쓴 날 용어 API 4개를 DTO 로 바꾸고 갱신하지 않아 같은 날 안에 틀렸다.
 
-- 본문을 받는 엔드포인트 **68개**
-- 타입 DTO **68개** — 모르는 키는 400
+- 본문을 받는 엔드포인트 **69개**
+- 타입 DTO **69개** — 모르는 키는 400
 - `Map` 본문 **0개** — **전부 타입 DTO 로 전환 완료**
 
 ## 왜 켰는가
@@ -36,7 +36,7 @@
 > 키·타입이 어긋난 항목만 빠지고 200 이 나가서, 10개를 보냈는데 3개만 반영되고도
 > 화면은 성공으로 읽었다. 지금은 어긋난 항목이 하나라도 있으면 400 이다.
 
-## B. 타입 DTO 68개 — 선언 키만 허용
+## B. 타입 DTO 69개 — 선언 키만 허용
 
 ### `AiAskRequest`
 
@@ -278,6 +278,13 @@
 (`screenId` 는 prod-daily · rpt-press-morning · rpt-plating-morning · rpt-scrap 만, `state` 는 DRAFT · SUBMITTED · APPROVED 만)
 
 - `PUT /api/v1/reports/status`
+
+### `ReportUsageRequest`
+
+허용 키 — `screenId`
+(메뉴에 없는 ID 는 400, 권한 없는 화면은 E-AUTH-002. 응답은 상위 5개 목록)
+
+- `POST /api/v1/reports/usage`
 
 ### `ReportCopyRequest`
 

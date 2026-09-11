@@ -4,6 +4,7 @@ import com.dwje.api.common.response.ApiResponse
 import com.dwje.api.common.util.MenuId
 import com.dwje.api.model.request.ApprovalLineRequest
 import com.dwje.api.model.request.ExportFormatRequest
+import com.dwje.api.model.request.ReportUsageRequest
 import com.dwje.api.model.request.ReportWriteStateRequest
 import com.dwje.api.model.request.ScrapDraftRequest
 import com.dwje.api.model.request.ScrapManualRowRequest
@@ -11,6 +12,7 @@ import com.dwje.api.model.request.ScrapUnitPriceRequest
 import com.dwje.api.service.DownloadLogService
 import com.dwje.api.service.ExportService
 import com.dwje.api.service.ReportService
+import com.dwje.api.service.ReportUsageService
 import com.dwje.api.service.ReportWriteStateService
 import com.dwje.api.service.ScrapReportService
 import io.swagger.v3.oas.annotations.Operation
@@ -40,6 +42,7 @@ import org.springframework.web.bind.annotation.RestController
 class ReportController(
     private val reportService: ReportService,
     private val reportWriteStateService: ReportWriteStateService,
+    private val reportUsageService: ReportUsageService,
     private val scrapReportService: ScrapReportService,
     private val exportService: ExportService,
     private val downloadLogService: DownloadLogService
@@ -166,6 +169,34 @@ class ReportController(
         @Valid @RequestBody request: ReportWriteStateRequest
     ): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(reportWriteStateService.setStatus(request), "작성 상태를 기록했습니다.")
+
+    // =================================================================================
+    // 보고서 화면 — 자주 쓰는 보고서 (계정별 사용 횟수)
+    // =================================================================================
+
+    /** 자주 쓰는 보고서 상위 N — `/menu/report` 버튼 줄 */
+    @Operation(
+        summary = "자주 쓰는 보고서 조회",
+        description = "현재 사용자가 보고서를 만든 횟수 내림차순 → 최근 사용 내림차순으로 상위 top 개를 반환한다. " +
+            "사용 중지 메뉴와 권한이 없는 화면은 제외한다. 기록이 없으면 items: []."
+    )
+    @GetMapping("/usage")
+    fun usage(
+        @Parameter(description = "반환 개수. 기본 5, 최대 20") @RequestParam(required = false) top: Int?
+    ): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(reportUsageService.getTop(top))
+
+    /** 보고서 사용 1회 기록 — 만들 때마다 웹이 호출 */
+    @Operation(
+        summary = "보고서 사용 기록",
+        description = "screenId 의 사용 횟수를 +1 하고 마지막 사용 시각을 갱신한 뒤 상위 5개 목록을 반환한다. " +
+            "메뉴에 없는 ID 는 400, 권한 없는 화면은 E-AUTH-002."
+    )
+    @PostMapping("/usage")
+    fun recordUsage(
+        @Valid @RequestBody request: ReportUsageRequest
+    ): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(reportUsageService.record(request), "사용 기록을 저장했습니다.")
 
     // =================================================================================
     // RP-06 / RP-07. 폐기 보고서 · 작성 위저드

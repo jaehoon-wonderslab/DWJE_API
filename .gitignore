@@ -28,3 +28,13 @@ src/main/resources/application-local-*.yml
 restore/
 package-lock.json
 
+
+# 로컬 업로드·NAS 대체 저장소 (app.upload.dir / app.nas.aoi-root 기본값)
+data/
+
+# 런타임 PID 및 서버 환경변수
+run/
+*.pid
+config/*.env
+!config/*.env.example
+

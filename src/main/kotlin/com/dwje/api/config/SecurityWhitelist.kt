@@ -28,6 +28,9 @@ object SecurityWhitelist {
         "/api/v1/auth/password/forgot",
         "/api/v1/auth/password/reset",
         "/api/v1/health",
+        // AOI 불량 이미지 프록시 — <img src> 는 Authorization 헤더를 못 보낸다.
+        // 대신 상세 API 가 발급한 짧은 서명 토큰(?token=)을 컨트롤러가 검증한다.
+        "/api/v1/files/aoi-images/**",
         "/actuator/health",
         "/swagger-ui/**",
         "/swagger-ui.html",
