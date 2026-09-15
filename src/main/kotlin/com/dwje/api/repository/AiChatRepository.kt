@@ -303,19 +303,9 @@ class AiChatRepository(
      * @param deptId    조회자 부서 ID
      * @param topK      반환 건수
      */
-    fun searchDocumentChunks(
-        queryText: String,
-        deptId: Int,
-        topK: Int,
-        blindFieldKeys: Collection<String> = emptyList()
-    ): List<Map<String, Any?>> {
-        // 열람 권한이 없는 데이터 항목이 태그된 문서(vec.tb_doc_data_field)는 근거에서 뺀다 —
-        // 제목·발췌가 답변 문장과 sources 에 그대로 실리므로 여기서 걸러야 값이 새지 않는다.
-        val blindFilter = if (blindFieldKeys.isEmpty()) "" else """
-              AND NOT EXISTS (
-                    SELECT 1 FROM vec.tb_doc_data_field df
-                     WHERE df.doc_id = d.doc_id AND df.field_key IN (:blindKeys)
-              )"""
+    fun searchDocumentChunks(queryText: String, deptId: Int, topK: Int): List<Map<String, Any?>> {
+        // 문서에 붙은 데이터 항목 태그(vec.tb_doc_data_field)를 함께 낸다. 권한 없는 항목이 태그된 문서도
+        // 근거에서 빼지 않는다(빼면 답이 틀려진다) — 서비스가 출력 단계에서 발췌를 가린다.
         val sql = """
             SELECT
                 ch.chunk_id,
@@ -324,6 +314,7 @@ class AiChatRepository(
                 ch.heading,
                 ch.page_no,
                 left(ch.chunk_text, 500)                                   AS snippet,
+                (SELECT string_agg(df.field_key, ',') FROM vec.tb_doc_data_field df WHERE df.doc_id = d.doc_id) AS field_tags,
                 d.title,
                 d.doc_type_cd,
                 d.doc_date,
@@ -341,7 +332,7 @@ class AiChatRepository(
                         SELECT 1 FROM vec.tb_doc_dept_perm p
                          WHERE p.doc_id = d.doc_id AND p.dept_id = :deptId AND p.can_read = true
                     )
-              )$blindFilter
+              )
             ORDER BY ts_score DESC, d.doc_date DESC NULLS LAST
             LIMIT :topK
         """.trimIndent()
@@ -350,7 +341,6 @@ class AiChatRepository(
             .addValue("queryText", queryText)
             .addValue("deptId", deptId)
             .addValue("topK", topK)
-        if (blindFieldKeys.isNotEmpty()) params.addValue("blindKeys", blindFieldKeys.toList())
 
         return jdbcTemplate.query(sql, params) { rs, _ ->
             mapOf(
@@ -362,6 +352,7 @@ class AiChatRepository(
                 "heading" to rs.getString("heading"),
                 "page" to Rs.intOrNull(rs, "page_no"),
                 "snippet" to rs.getString("snippet"),
+                "fieldTags" to (rs.getString("field_tags")?.split(",") ?: emptyList()),
                 "score" to Rs.doubleOrNull(rs, "ts_score")
             )
         }

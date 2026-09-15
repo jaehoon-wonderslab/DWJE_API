@@ -3,7 +3,6 @@ package com.dwje.api.service
 import com.dwje.api.common.exception.InvalidParameterException
 import com.dwje.api.common.exception.ResourceNotFoundException
 import com.dwje.api.common.security.UserContext
-import com.dwje.api.common.util.DataField
 import com.dwje.api.model.request.AiAskRequest
 import com.dwje.api.model.request.AiFeedbackRequest
 import com.dwje.api.repository.AiChatRepository
@@ -17,20 +16,20 @@ import java.util.UUID
  *
  * 질의 처리 흐름
  * 1. 용어 사전 기반 정규화 (현장 유사어 → 공식 용어)
- * 2. 의도 분류 — denied / unknown / trend / trace / downtime / metric
+ * 2. 의도 분류 — unknown / trend / trace / downtime / metric
  * 3. 부서 열람 권한이 있는 문서만 대상으로 근거 검색 (RAG)
  * 4. 데이터 접근 권한 기반 마스킹 적용 후 응답 조립
  * 5. 질의·검색 이력 기록 (감사 및 파인튜닝 학습데이터 후보)
  *
- * `denied` 분기는 감사 로그를 남기고, `unknown` 분기는 답을 추정하지 않고 자료 소재를 안내한다.
+ * `unknown` 분기는 답을 추정하지 않고 자료 소재를 안내한다.
  *
- * ## 답변에 권한 없는 값을 넣지 않는다 (V33)
- * 화면은 표 블록을 `blindColumns` 로 가릴 수 있지만 문장(`answerHtml`)은 가릴 수 없다. 그래서 서버가 세 지점에서 막는다.
- * - 질의 자체가 권한 없는 항목을 묻는다 → `denied`(답변 없음). 항목 판정은 코드 키워드 + 항목 표(항목명·응답 필드명)라 새 항목도 걸린다.
- * - 근거 문서 검색 → 권한 없는 항목이 태그된 문서는 제외([AiChatRepository.searchDocumentChunks]). 제목·발췌가 답변에 실리기 때문이다.
- * - 표 블록 → 열 이름을 `tb_sys_data_field_attr` 에서 찾아 `blindColumns` 를 채우고, 권한 없는 열은 값을 null 로 보낸다.
- * `answerHtml` 은 질문 원문과 (걸러진) 문서 제목만으로 만든다. 수치를 문장에 넣는 경로를 새로 만들 때는
- * 반드시 [DataFieldService.fieldOf] 로 항목을 찾아 [com.dwje.api.common.security.UserPrincipal.canReadField] 를 통과한 값만 쓴다.
+ * ## 질의는 막지 않고 결과에서 값만 가린다 (V33, 2026-09-16 요청자 결정)
+ * 권한 없는 항목이 섞인 질의도 정상으로 답한다. 데이터 권한을 이유로 한 `denied` 는 없다.
+ * 화면은 표 블록을 `blindColumns` 로 가릴 수 있지만 문장은 가릴 수 없으므로 서버가 출력 단계에서 가린다.
+ * - 문장(`answerHtml`) → [DataFieldService.maskText] — 항목 키워드 뒤의 숫자 값과 표에서 가린 값만 「비공개」로. 문장 구조는 그대로
+ * - 근거 문서 → 검색에서 빼지 않는다(빼면 답이 틀려진다). 권한 없는 항목이 태그된 문서는 발췌를 가리고 제목·쪽만 남긴다([DataFieldService.maskHit])
+ * - 표 블록 → 열 이름을 `tb_sys_data_field_attr` 에서 찾아 `blindColumns` 를 채우고, 권한 없는 열은 값을 null 로
+ * 응답 `blindFields` 에 이 사용자에게 가려지는 항목 key 를 실어 화면이 「어떤 항목이 가려졌는지」 알린다.
  */
 @Service
 class AiChatService(
@@ -53,8 +52,7 @@ class AiChatService(
             "trace" to listOf("⑤", "⑧"),
             "downtime" to listOf("②", "⑨"),
             "metric" to listOf("②", "⑥"),
-            "unknown" to listOf("②"),
-            "denied" to listOf("⑦")
+            "unknown" to listOf("②")
         )
 
         /** 의도 판정 키워드 사전 */
@@ -65,13 +63,6 @@ class AiChatService(
             "metric" to listOf("불량률", "수율", "생산량", "실적", "지표", "달성률", "얼마", "몇")
         )
 
-        /** 데이터 접근 권한이 필요한 질의 키워드 — 권한 없으면 denied 처리 */
-        private val RESTRICTED_KEYWORDS: List<Pair<String, List<String>>> = listOf(
-            DataField.PRICE to listOf("단가", "금액", "원가", "가공비", "매출"),
-            DataField.CUSTOMER to listOf("고객사", "거래처", "납품처"),
-            DataField.PLAN to listOf("출하계획", "출하 계획", "연간계획"),
-            DataField.WORKER to listOf("작업자", "근태", "담당자 사번")
-        )
     }
 
     /**
@@ -92,29 +83,38 @@ class AiChatService(
         // 2. 용어 정규화 — 현장 유사어를 공식 용어로 치환한다.
         val normalized = glossaryNormalizer.normalize(question)
 
-        // 3. 권한 기반 질의 차단 판정 (denied) — 코드 키워드 + 항목 표(항목명·응답 필드명).
-        //    원문과 정규화 문장을 모두 본다 — 용어 치환이 키워드를 바꿔 놓아도(실측: 「E2E」→「ER2E」) 차단이 빠지지 않게.
-        val deniedField = detectRestrictedField(question, principal) ?: detectRestrictedField(normalized.normalizedText, principal)
-        if (deniedField != null) {
-            return handleDenied(sessionId, question, normalized.normalizedText, deniedField, started)
-        }
+        // 3. 질의는 막지 않는다 — 데이터 권한은 결과에서 값만 가린다. (2026-09-16 요청자 결정)
+        val blindKeys = dataFieldService.blindKeysFor(principal)
 
         // 4. 의도 분류
         val intent = classifyIntent(normalized.normalizedText)
 
-        // 5. 근거 문서 검색 — 부서 열람 권한이 있는 문서만, 권한 없는 데이터 항목이 태그된 문서는 제외한다.
-        val blindKeys = dataFieldService.blindKeysFor(principal)
-        val hits = aiChatRepository.searchDocumentChunks(normalized.normalizedText, principal.deptId, SEARCH_TOP_K, blindKeys)
+        // 5. 근거 문서 검색 — 부서 열람 권한이 있는 문서만. 데이터 항목 권한으로는 빼지 않고 출력에서 발췌를 가린다.
+        val hits = aiChatRepository.searchDocumentChunks(normalized.normalizedText, principal.deptId, SEARCH_TOP_K)
+            .map { it.toMutableMap() }
+        var blindAppliedCnt = hits.sumOf { dataFieldService.maskHit(it, principal) }
 
         // 6. 근거가 없으면 답을 추정하지 않고 자료 소재를 안내한다. (unknown)
         val finalIntent = if (hits.isEmpty() && intent != "metric") "unknown" else intent
-        val answerHtml = buildAnswerHtml(finalIntent, normalized.normalizedText, hits)
 
-        // 표 블록 — 열별 항목 key(blindColumns) 를 채우고 권한 없는 열은 값을 비운다.
+        // 7. 표 블록 — 열별 항목 key(blindColumns) 를 채우고 권한 없는 열은 값을 비운다. 가린 값은 문장 마스킹에도 쓴다.
         val blocks = buildBlocks(finalIntent, hits)
-        val blindAppliedCnt = blocks.sumOf { applyBlindColumns(it, principal) }
+        val blindValues = linkedSetOf<String>()
+        blindAppliedCnt += blocks.sumOf { applyBlindColumns(it, principal, blindValues) }
 
-        // 7. 질의 이력 기록
+        // 8. 문장 — 권한 없는 항목의 값만 「비공개」로. 문장 구조는 그대로다.
+        val (answerHtml, textMasked) = dataFieldService.maskText(buildAnswerHtml(finalIntent, normalized.normalizedText, hits), principal, blindValues)
+        blindAppliedCnt += textMasked
+
+        // 가린 것이 있으면 감사 로그(MASK) 한 건 — 공통 규약 6. 질의는 막지 않았으므로 결과 코드는 MASKED 다.
+        if (blindAppliedCnt > 0) {
+            auditLogService.record(
+                logType = "MASK", menuId = "ai-chat", fieldKey = blindKeys.sorted().joinToString(",").take(30),
+                targetDesc = question.take(300), resultCd = "MASKED", maskedCnt = blindAppliedCnt, remark = "자연어 질의 결과 값 마스킹"
+            )
+        }
+
+        // 9. 질의 이력 기록
         val elapsedMs = (System.currentTimeMillis() - started).toInt()
         val prevChatId = aiChatRepository.findLastChatId(sessionId, principal.userId)
         val chatId = aiChatRepository.insertChatLog(
@@ -132,7 +132,7 @@ class AiChatService(
             prevChatId = prevChatId
         )
 
-        // 8. 참여 Agent 및 검색 이력 기록
+        // 10. 참여 Agent 및 검색 이력 기록
         val agentNos = INTENT_AGENTS[finalIntent] ?: emptyList()
         aiChatRepository.insertChatAgents(chatId, aiChatRepository.findAgentIdsByNo(agentNos))
 
@@ -159,6 +159,7 @@ class AiChatService(
             "answerHtml" to answerHtml,
             "blocks" to blocks,
             "blindFields" to blindKeys.sorted(),
+            "blindAppliedCnt" to blindAppliedCnt,
             "agents" to agentNos.map { mapOf("no" to it) },
             "sources" to hits.map {
                 mapOf(
@@ -168,7 +169,9 @@ class AiChatService(
                     "docType" to it["docType"],
                     "docDate" to it["docDate"],
                     "page" to it["page"],
-                    "snippet" to it["snippet"]
+                    "snippet" to it["snippet"],
+                    "blinded" to (it["blinded"] == true),
+                    "blindTags" to (it["blindTags"] ?: emptyList<String>())
                 )
             },
             "normalizedQuestion" to normalized.normalizedText,
@@ -277,80 +280,6 @@ class AiChatService(
     // ---------------------------------------------------------------------------------
 
     /**
-     * 데이터 접근 권한이 필요한 질의인지 판정한다.
-     *
-     * 코드 키워드([RESTRICTED_KEYWORDS])에 더해 항목 표의 항목명 조각(`단가·금액` → 단가, 금액)과
-     * 응답 필드명(`unitPrice`)을 키워드로 본다. 그래서 운영 중에 추가된 항목도 배포 없이 걸린다.
-     *
-     * @return 권한이 없어 차단해야 하는 데이터 항목 key (없으면 null)
-     */
-    internal fun detectRestrictedField(question: String, principal: com.dwje.api.common.security.UserPrincipal): String? {
-        if (principal.superAdmin) return null
-        RESTRICTED_KEYWORDS
-            .firstOrNull { (field, keywords) -> !principal.canReadField(field) && keywords.any { question.contains(it) } }
-            ?.let { return it.first }
-        return dataFieldService.restrictedFieldFor(question, principal)
-    }
-
-    /**
-     * denied 분기 — 답변을 생성하지 않고 감사 로그를 남긴다.
-     */
-    private fun handleDenied(
-        sessionId: UUID,
-        question: String,
-        normalizedQuestion: String,
-        deniedField: String,
-        started: Long
-    ): Map<String, Any?> {
-        val principal = UserContext.current()
-        val elapsedMs = (System.currentTimeMillis() - started).toInt()
-        val answerHtml =
-            "<p>요청하신 내용에는 <strong>열람 권한이 없는 데이터 항목</strong>이 포함되어 있어 답변할 수 없습니다.</p>" +
-                "<p>필요하시면 전산팀에 데이터 접근 권한을 신청해 주세요.</p>"
-
-        val chatId = aiChatRepository.insertChatLog(
-            sessionId = sessionId,
-            userId = principal.userId,
-            deptNm = principal.deptName,
-            question = question,
-            normalizedQuestion = normalizedQuestion,
-            intentCd = "denied",
-            intentNm = "권한 없음",
-            answer = answerHtml,
-            responseMs = elapsedMs,
-            blindAppliedCnt = 1,
-            profileId = null,
-            prevChatId = null
-        )
-        aiChatRepository.insertChatAgents(chatId, aiChatRepository.findAgentIdsByNo(listOf("⑦")))
-
-        // denied 분기는 감사 로그에 기록한다.
-        auditLogService.record(
-            logType = "MASK",
-            menuId = "ai-chat",
-            fieldKey = deniedField,
-            targetDesc = question.take(300),
-            resultCd = "BLIND",
-            maskedCnt = 1,
-            remark = "자연어 질의 권한 차단"
-        )
-
-        return mapOf(
-            "messageId" to chatId,
-            "sessionId" to sessionId.toString(),
-            "intent" to "denied",
-            "intentNm" to "권한 없음",
-            "answerHtml" to answerHtml,
-            "blocks" to emptyList<Any>(),
-            "agents" to listOf(mapOf("no" to "⑦")),
-            "sources" to emptyList<Any>(),
-            "followups" to emptyList<Any>(),
-            "deniedField" to deniedField,
-            "elapsedMs" to elapsedMs
-        )
-    }
-
-    /**
      * 키워드 기반으로 질의 의도를 분류한다.
      */
     private fun classifyIntent(question: String): String =
@@ -422,13 +351,17 @@ class AiChatService(
      * @return 가린 칸 수
      */
     @Suppress("UNCHECKED_CAST")
-    internal fun applyBlindColumns(block: MutableMap<String, Any?>, principal: com.dwje.api.common.security.UserPrincipal): Int {
+    internal fun applyBlindColumns(
+        block: MutableMap<String, Any?>,
+        principal: com.dwje.api.common.security.UserPrincipal,
+        maskedValues: MutableCollection<String>? = null
+    ): Int {
         val rows = (block["rows"] as? List<MutableMap<String, Any?>>).orEmpty()
         val columns = (block["columns"] as? List<String>) ?: rows.firstOrNull()?.keys?.toList().orEmpty()
         val blindColumns = dataFieldService.blindColumnsFor(columns)
         block["columns"] = columns
         block["blindColumns"] = blindColumns
-        return dataFieldService.maskRows(rows, columns, blindColumns, principal)
+        return dataFieldService.maskRows(rows, columns, blindColumns, principal, maskedValues)
     }
 
     /**

@@ -45,6 +45,12 @@ class DataFieldService(
         const val CACHE_TTL_MS = 60_000L
 
         private const val TARGET_KIND = "FIELD"
+
+        /** 문장에서 가릴 때 넣는 말 */
+        const val MASK = "비공개"
+
+        /** 숫자 값 — 천 단위 콤마 · 소수 · 바로(또는 한 칸 뒤에) 붙는 단위(%, 원, 개, EA, 건, kg, mm, 장, 매, 톤). 문장 끝 마침표는 먹지 않는다 */
+        const val VALUE_PATTERN = "[0-9]+(?:[,.][0-9]+)*(?: ?(?:%|원|개|ea|건|kg|mm|㎜|장|매|톤))?"
     }
 
     // =================================================================================
@@ -207,39 +213,93 @@ class DataFieldService(
     /**
      * 표 블록 행에서 권한 없는 열의 값을 null 로 바꾼다.
      *
+     * @param maskedValues 가린 값의 문자열을 모아 준다(있으면). 답변 문장에 같은 값이 풀어 쓰여 있으면 [maskText] 가 그것도 가린다
      * @return 가린 칸 수 (감사 로그 blind_applied_cnt)
      */
-    fun maskRows(rows: List<MutableMap<String, Any?>>, columns: List<String>, blindColumns: List<String?>, principal: UserPrincipal): Int {
+    fun maskRows(
+        rows: List<MutableMap<String, Any?>>,
+        columns: List<String>,
+        blindColumns: List<String?>,
+        principal: UserPrincipal,
+        maskedValues: MutableCollection<String>? = null
+    ): Int {
         var masked = 0
         columns.forEachIndexed { i, col ->
             val key = blindColumns.getOrNull(i) ?: return@forEachIndexed
             if (principal.canReadField(key)) return@forEachIndexed
-            rows.forEach { row -> if (row[col] != null) { row[col] = null; masked++ } }
+            rows.forEach { row ->
+                val v = row[col] ?: return@forEach
+                maskedValues?.add(v.toString())
+                row[col] = null; masked++
+            }
         }
         return masked
     }
 
     /**
-     * 질의 문장이 이 사용자가 열람할 수 없는 적용 중 항목을 묻는지 판정한다 — 답변 문장 차단용.
+     * 자연어 문장 안의 권한 없는 값만 「비공개」로 바꾼다 — 문장 구조는 살린다.
      *
-     * 키워드 = 항목명 전체와 항목명을 `·` `/` 로 나눈 조각(2자 이상) + 응답 필드명(대소문자 무시).
-     * 예) 「단가·금액」 → 단가, 금액 · 「작업자 정보」 → 작업자 정보 · attrs unitPrice → "unitprice".
-     * 공백으로는 나누지 않는다 — 「정보」「항목」 같은 일반어가 키워드가 되면 무관한 질의까지 막힌다.
+     * 값을 찾는 규칙 두 가지.
+     * 1. 항목 키워드(항목명 전체 · `·`/`/` 조각 · 응답 필드명) 뒤 24자 안에 오는 숫자 값(천 단위 콤마·소수·단위 포함)
+     *    예) 「8월 평균 단가는 12,400원입니다」 → 「8월 평균 단가는 비공개입니다」
+     * 2. [maskRows] 가 표에서 가린 값 그대로(2자 이상) — 표의 값이 문장에 풀어 쓰인 경우
+     * HTML 태그(`<…>`)는 넘지 않는다. 숫자가 아닌 값(고객사명·작업자명)은 1번으로는 못 찾고 2번으로만 가려진다.
      *
-     * @return 차단할 항목 key (없으면 null)
+     * @return 가린 문장 · 치환 수
      */
-    fun restrictedFieldFor(question: String, principal: UserPrincipal): String? {
-        if (principal.superAdmin) return null
-        val lowered = question.lowercase()
-        return appliedFieldsCached().firstOrNull { f ->
-            val key = f["key"] as String
-            if (principal.canReadField(key)) return@firstOrNull false
+    fun maskText(text: String?, principal: UserPrincipal, extraValues: Collection<String> = emptyList()): Pair<String?, Int> {
+        if (text.isNullOrEmpty() || principal.superAdmin) return text to 0
+        var out = text; var cnt = 0
+        // 표에서 가린 값(정확히 일치)을 먼저 — 키워드 규칙이 식별자 속 숫자(MDL-77 의 77)를 먼저 먹지 않게
+        extraValues.filter { it.trim().length >= 2 }.distinct().sortedByDescending { it.length }.forEach { v ->
+            val re = Regex(Regex.escape(v.trim()))
+            out = re.replace(out!!) { cnt++; MASK }
+        }
+        keywordsOfBlindFields(principal).forEach { kw ->
+            // 숫자 앞이 영문·숫자·'-' 면 식별자(모델 코드)의 일부라 값으로 보지 않는다
+            val re = Regex("(${Regex.escape(kw)})([^0-9<>]{0,24}?)(?<![A-Za-z0-9-])(${VALUE_PATTERN})", RegexOption.IGNORE_CASE)
+            out = re.replace(out!!) { m -> cnt++; m.groupValues[1] + m.groupValues[2] + MASK }
+        }
+        return out to cnt
+    }
+
+    /**
+     * 근거 문서 한 건의 출력 마스킹.
+     *
+     * 문서에 권한 없는 항목이 태그돼 있으면(`fieldTags` ∩ 사용자가 못 보는 항목) 발췌를 통째로 가린다 —
+     * 발췌는 원문이라 값이 숫자가 아니어도(고객사명 등) 새기 때문이다. 제목·쪽·날짜는 남겨 근거 인용은 유지한다.
+     * 태그가 없는 문서는 발췌·제목에 [maskText] 만 태운다. 검색에서 문서를 빼지는 않는다(빼면 답이 틀려진다).
+     *
+     * @return 가린 항목 수(발췌 1 + 문장 치환 수)
+     */
+    @Suppress("UNCHECKED_CAST")
+    fun maskHit(hit: MutableMap<String, Any?>, principal: UserPrincipal): Int {
+        if (principal.superAdmin) return 0
+        val blind = blindKeysFor(principal)
+        val tags = (hit["fieldTags"] as? List<String>).orEmpty().filter { it in blind }
+        var cnt = 0
+        if (tags.isNotEmpty()) {
+            val names = appliedFieldsCached().filter { it["key"] in tags }.map { it["name"] as String }
+            hit["snippet"] = "비공개 항목(${names.joinToString(" · ")})이 포함된 자료입니다. 발췌는 표시하지 않습니다."
+            hit["blindTags"] = tags; hit["blinded"] = true; cnt++
+        } else {
+            val (s, c1) = maskText(hit["snippet"] as? String, principal); hit["snippet"] = s; cnt += c1
+            hit["blinded"] = c1 > 0
+        }
+        val (title, c2) = maskText(hit["title"] as? String, principal); hit["title"] = title; cnt += c2
+        val (heading, c3) = maskText(hit["heading"] as? String, principal); hit["heading"] = heading; cnt += c3
+        return cnt
+    }
+
+    /** 이 사용자가 열람할 수 없는 적용 중 항목의 키워드 — 항목명 전체 · `·`/`/` 조각(2자 이상) · 응답 필드명. 긴 것부터 */
+    internal fun keywordsOfBlindFields(principal: UserPrincipal): List<String> {
+        if (principal.superAdmin) return emptyList()
+        return appliedFieldsCached().filterNot { principal.canReadField(it["key"] as String) }.flatMap { f ->
             val name = (f["name"] as? String).orEmpty().trim()
-            val nameParts = (listOf(name) + name.split('·', '/')).map { it.trim() }.filter { it.length >= 2 }
             @Suppress("UNCHECKED_CAST")
             val attrs = (f["attrs"] as? List<String>).orEmpty()
-            nameParts.any { question.contains(it) } || attrs.any { it.length >= 2 && lowered.contains(it.lowercase()) }
-        }?.get("key") as String?
+            (listOf(name) + name.split('·', '/') + attrs).map { it.trim() }.filter { it.length >= 2 }
+        }.distinct().sortedByDescending { it.length }
     }
 
     @Volatile

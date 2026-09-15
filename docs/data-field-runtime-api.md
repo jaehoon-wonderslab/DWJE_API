@@ -62,20 +62,25 @@ WEB 의 `endpoints.js` 카탈로그로 세는 쪽이 맞다. 등록된 필드명
 그때 손댈 자리: `MaskingSupport.on/check/applyTo` 호출 39곳(ProductionService · QualityDefectService · ReportService · ScrapReportService · AiBriefingInput · 엑셀 생성기)과
 응답 `masked` 배열 · 다운로드 이력 `blind_cnt`. AI 브리핑 프롬프트 입력 마스킹(`AiBriefingInput.of`)은 화면이 가릴 수 없는 자리라 끄면 안 된다.
 
-## 5. AI 답변 — 권한 없는 항목 값을 넣지 않는다
+## 5. AI 답변 — 질의는 막지 않고 결과에서 값만 가린다 (2026-09-16 요청자 결정으로 변경)
 
-세 지점에서 서버가 막는다(`AiChatService`).
+처음 구현(질의 차단 `denied`)은 요청자 지시 「ai 질의 차단은 하지말고, ai 결과의 내용 중 필터가 되어야 하는 단어만 필터링해서 결과를 보도록」에 따라 걷어냈다.
+**데이터 권한을 이유로 한 `denied` 는 없다.** 권한 없는 항목이 섞인 질의도 정상으로 답하고, 출력 단계에서 값만 「비공개」로 바꾼다(`AiChatService` · `DataFieldService`).
 
-1. **질의 차단(denied)** — 코드 키워드(`RESTRICTED_KEYWORDS`: 단가·금액·고객사·출하계획·작업자 …)에 더해 **항목 표**의 항목명 전체와 `·`/`/` 조각(2자 이상), 응답 필드명(대소문자 무시)이 키워드다.
-   적용 중 항목 중 사용자가 열람할 수 없는 것이 질의에 나오면 답변 없이 `intent=denied`, `deniedField=key`, 감사 `MASK/BLIND`. 새 항목도 apply 를 켜면 배포 없이 걸린다.
-   원문과 용어 정규화 문장을 **둘 다** 본다 — 실측에서 용어 치환이 `E2E`→`ER2E` 로 바꿔 놓아 정규화 문장만 보면 빠졌다.
-   항목명은 공백으로 나누지 않는다(「정보」「항목」 같은 일반어로 막지 않기 위해). 기본 항목의 이름 조각(생산·출하 수량·수율·불량률·금형…)도 키워드가 되므로 그 항목 권한이 없는 사용자는 해당 질의가 denied 다.
-2. **근거 문서 필터** — `vec.tb_doc_data_field` 에 사용자가 열람할 수 없는 적용 중 항목이 태그된 문서는 검색(`searchDocumentChunks`)에서 뺀다. 제목·발췌가 `answerHtml` 과 `sources` 에 그대로 실리기 때문이다. 응답 `blindFields` 에 그 항목 key 를 함께 준다.
-3. **표 블록** — 블록의 `columns`(없으면 첫 행의 키)마다 `tb_sys_data_field_attr` 에서 항목을 찾아 `blindColumns[i]`(없으면 null)를 채우고, 권한 없는 열은 값을 `null` 로 보낸다. 가린 칸 수가 `blind_applied_cnt` 로 남는다.
-   지금 블록은 `sources`(title·page·date) 하나라 실측 `blindColumns=[null,null,null]` 이다. 수치 표 블록이 생기면 같은 경로를 탄다.
+| 지점 | 동작 |
+| :--- | :--- |
+| 문장 `answerHtml` | [`maskText`] 항목 키워드(항목명 전체 · `·`/`/` 조각 · 응답 필드명, 대소문자 무시) 뒤 24자 안의 숫자 값(천 단위 콤마 · 소수 · 붙는 단위)을 「비공개」로. 표에서 가린 값이 문장에 풀어 쓰여 있으면 그것도. 문장 구조·HTML 태그·권한 있는 값은 그대로. 예) 「8월 평균 단가는 12,400원입니다」 → 「8월 평균 단가는 비공개입니다」 |
+| 근거 문서 `sources[]` | 검색에서 **빼지 않는다**. 권한 없는 항목이 태그된 문서(`vec.tb_doc_data_field`)는 발췌(`snippet`)를 「비공개 항목(단가·금액)이 포함된 자료입니다. 발췌는 표시하지 않습니다.」로 바꾸고 제목·쪽·날짜는 남긴다(`blinded:true`, `blindTags[]`). 태그가 없는 문서는 발췌·제목에 `maskText` 만 태운다 |
+| 표 블록 `blocks[]` | 그대로 — 열 이름을 attr 표에서 찾아 `blindColumns[i]` 를 채우고 권한 없는 열은 값을 `null` 로. 가린 값은 문장 마스킹에도 쓴다 |
+| 응답 `blindFields` | 이 사용자에게 가려지는 적용 중 항목 key. 화면이 「어떤 항목이 가려졌는지」 한 줄로 알린다. `blindAppliedCnt` 는 가린 칸·문장 치환·발췌 가림의 합 |
+| 감사 | 가린 것이 있으면 `tb_log_audit` `MASK` / `result_cd=MASKED` / `masked_cnt` 한 건(질의는 막지 않았으므로 BLIND 가 아니다). `tb_ai_chat_log.blind_applied_cnt` 에도 같은 수 |
 
-`answerHtml` 은 질문 원문과 (걸러진) 문서 제목만으로 만들고 수치를 문장에 넣는 경로가 없다. 그런 경로를 새로 만들 때는 `DataFieldService.fieldOf(attrName)` 으로 항목을 찾아 `canReadField` 를 통과한 값만 쓴다(코드 주석에 고정).
-카탈로그(`DataFieldService.attrFieldMap`)는 60초 캐시, 항목·필드명·적용 스위치를 바꾸면 즉시 비운다.
+근거 문서를 왜 검색에서 빼지 않는가 — 빼면 답이 가려지는 게 아니라 **틀려진다**(근거 없음 → 엉뚱한 답). 검색은 그대로 두고 출력에서 가리는 쪽을 택했다.
+다만 태그된 문서의 발췌는 원문이라 값이 숫자가 아니어도(고객사명·작업자명) 샐 수 있어 문장 치환이 아니라 **발췌 전체를 가린다.** 제목·쪽은 남겨 인용은 유지된다.
+
+한계 — 숫자가 아닌 값(고객사명 등)은 키워드 규칙으로는 못 찾고 표에서 가린 값과 같은 문자열일 때만 가려진다. 지금 답변 문장은 질문 원문 echo 와 문서 제목만이라 수치가 문장에 실리는 경로가 없고,
+sLLM 이 문장을 만들게 되면 그 출력도 반드시 `maskText` 를 태운다(`AiChatService` 머리말에 고정). 모델 코드 속 숫자(`MDL-77`)는 값으로 보지 않는다.
+용어 정규화가 숫자를 바꿔 놓으면(로컬 용어 사전에 「2→R2」 치환이 있어 실측 `12,400`→`1R2,400`) 값 인식이 끊긴다 — 용어 사전 데이터 문제라 여기서 고치지 않았다.
 
 ## 6. 기존 7개 항목의 응답 필드명 — 초기값 제안
 
@@ -109,17 +114,17 @@ ON CONFLICT (attr_name) DO NOTHING;
 | `repository/SystemUserRepository.kt` | `findDataFields()` — attr 표 · category · applyFlg |
 | `service/SystemUserService.kt` | 매트릭스·권한 변경·계정별 결과의 항목 기준을 항목 표로 |
 | `service/AuthService.kt` · `model/response/AuthResponses.kt` | `/auth/me` `dataFields`(`DataFieldInfo`) · dataPerms/blindFields 항목 표 기준 |
-| `service/AiChatService.kt` · `repository/AiChatRepository.kt` | 카탈로그 차단 · 문서 필터 · 표 블록 blindColumns/마스킹 · `blindFields` |
+| `service/AiChatService.kt` · `repository/AiChatRepository.kt` | 출력 마스킹(문장 `maskText` · 발췌 `maskHit` · 표 블록 blindColumns/null) · `blindFields`·`blindAppliedCnt` · 문서 태그 조회. 데이터 권한 `denied` 없음 |
 | `docs/REQUEST_BODY_CONTRACT.md` | DTO 3종 추가 |
-| 테스트 `DataFieldRuntimeTest`(6) | 등록·409 메시지(사전/경쟁)·삭제 가드·적용 스위치·blindColumns·차단 키워드 |
+| 테스트 `DataFieldRuntimeTest`(8) | 등록·409 메시지(사전/경쟁)·삭제 가드·적용 스위치·blindColumns·문장 마스킹·발췌 가림·키워드 |
 
 ## 8. 검증 (로컬 8080, 2026-09-16 — 임시 항목 `zz_e2e` 만 사용, 전부 삭제)
 
-- `./gradlew test` 205건 통과.
+- `./gradlew test` 207건 통과.
 - 전산팀 10004 로 등록 → `applyFlg=N`, `attrs=[]` · 같은 key 409 · `Bad Key` 400(fieldKey) · 분류 `NOPE` 400(허용 값 안내) · 모르는 본문 키 400.
 - 필드명 `zzE2eAmount` 등록 → 같은 이름을 `price` 에 등록 시 **409 "이미 E2E금액에 등록된 필드명입니다. [zzE2eAmount]"**, 같은 항목 재등록 409, `bad-name` 400, 없는 항목 404.
 - `/auth/me`: 적용 전 `dataFields` 에 없음(`blindFields` 에는 있음) → apply ON → `{"key":"zz_e2e",…,"attrs":["zzE2eAmount"]}` 즉시(재로그인 없이도 API 는 DB 를 읽는다).
-- AI 질의: `zzE2eAmount 값이 얼마야?` → `denied / deniedField=zz_e2e`(응답 필드명 키워드) · `E2E금액 알려줘` → `denied / price`(코드 키워드 「금액」이 먼저) · 무관한 질의 → 정상, `blindFields=["zz_e2e"]`.
+- AI 질의(차단 제거 뒤, 전산팀 10004 = price·yield·customer·mold·plan 없음): `8월 평균 단가 12,400원은 얼마` → `intent=metric`, `deniedField` 없음, echo 문장의 값이 「비공개」(`blindAppliedCnt=1`) · `oil contamination` → 근거 2건 모두 `blinded:true`(`blindTags` customer·mold(·plan)), 발췌 대신 안내문, `blindAppliedCnt=8`, `tb_log_audit` `MASK/MASKED/8` · 통합관리자 10000 은 같은 질의에 `blindFields=[]`, 발췌 원문 그대로.
 - `PUT /system/data-perms {fieldKey:"zz_e2e"}` 200(항목 표 기준) → `/auth/me.dataPerms` 에 반영 · 없는 key 400 · 매트릭스 `fields` 에 포함, 통합관리자 부서 허용 8개.
 - 삭제: `qty` 409(기본 항목) · 없는 key 404 · 필드명 해제 후 재해제 404 · 항목 삭제 200 `deletedDeptPerms=1` → 표·권한·필드명 0행.
 - 이력: `tb_sys_perm_log` DATA_PERM 6행(등록·필드명 등록·수정·적용 ON·필드명 해제·삭제), `tb_log_audit` PERM_CHANGE 7행.

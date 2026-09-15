@@ -180,16 +180,47 @@ class DataFieldRuntimeTest {
     }
 
     @Test
-    @DisplayName("질의 차단 — 항목명 조각과 응답 필드명이 키워드다, 적용을 켠 새 항목도 배포 없이 걸린다")
-    fun restricted() {
+    @DisplayName("문장 마스킹 — 항목 키워드 뒤의 값만 「비공개」, 문장 구조·태그·권한 있는 값은 그대로, 표에서 가린 값도 가린다")
+    fun maskText() {
         val p = principal(setOf("qty"))
-        assertEquals("price", service.restrictedFieldFor("8월 평균 단가는 얼마인가요", p))
-        assertEquals("price", service.restrictedFieldFor("UNITPRICE 컬럼 값 보여줘", p), "필드명은 대소문자 무시")
-        assertNull(service.restrictedFieldFor("배합 비율 알려줘", p), "미적용 항목은 걸리지 않는다")
+        assertEquals("8월 평균 단가는 비공개입니다" to 1, service.maskText("8월 평균 단가는 12,400원입니다", p))
+        assertEquals("<p>단가·금액: 비공개 (전월 비공개)</p>" to 2, service.maskText("<p>단가·금액: 1,200 (전월 1,150.5)</p>", p))
+        assertEquals("unitPrice 는 비공개 입니다" to 1, service.maskText("unitPrice 는 980 입니다", p), "응답 필드명 키워드")
+        assertEquals("양품 수량은 3,000개입니다" to 0, service.maskText("양품 수량은 3,000개입니다", p), "권한 있는 항목은 그대로")
+        assertEquals("단가는 <b>1200</b>" to 0, service.maskText("단가는 <b>1200</b>", p), "태그를 넘어 값을 찾지 않는다")
+        assertEquals("고객사 삼성전기 비중 40%" to 0, service.maskText("고객사 삼성전기 비중 40%", p), "미적용·무관 항목은 그대로")
+        assertEquals("최고 단가 제품은 비공개, 최저는 비공개" to 2, service.maskText("최고 단가 제품은 MDL-77, 최저는 MDL-09", p, extraValues = listOf("MDL-77", "MDL-09")), "표에서 가린 값")
+        assertEquals("단가 기준 모델 MDL-77 입니다" to 0, service.maskText("단가 기준 모델 MDL-77 입니다", p), "모델 코드 속 숫자는 값이 아니다")
+        assertEquals("단가 12,400원" to 0, service.maskText("단가 12,400원", admin), "통합관리자는 가리지 않는다")
+        assertEquals(null to 0, service.maskText(null, p))
+    }
+
+    @Test
+    @DisplayName("근거 문서 — 권한 없는 항목이 태그된 문서는 발췌만 가리고 제목·쪽은 남긴다, 태그 없는 문서는 값만 가린다, 검색에서 빼지 않는다")
+    fun maskHit() {
+        val p = principal(setOf("qty"))
+        val tagged = mutableMapOf<String, Any?>("title" to "8월 원가 보고", "snippet" to "A제품 단가 12,400원, 고객 X사", "page" to 3, "fieldTags" to listOf("price", "qty"))
+        assertEquals(1, service.maskHit(tagged, p))
+        assertTrue((tagged["snippet"] as String).contains("비공개 항목(단가·금액)"), tagged["snippet"].toString())
+        assertEquals(listOf("price"), tagged["blindTags"]); assertEquals(true, tagged["blinded"]); assertEquals(3, tagged["page"])
+        val plain = mutableMapOf<String, Any?>("title" to "아침회의", "snippet" to "평균 단가 1,000원, 생산 500개", "fieldTags" to emptyList<String>())
+        assertEquals(1, service.maskHit(plain, p))
+        assertEquals("평균 단가 비공개, 생산 500개", plain["snippet"]); assertEquals(true, plain["blinded"])
+        val ok = mutableMapOf<String, Any?>("title" to "t", "snippet" to "생산 500개", "fieldTags" to listOf("qty"))
+        assertEquals(0, service.maskHit(ok, p)); assertEquals(false, ok["blinded"])
+        assertEquals(0, service.maskHit(tagged.toMutableMap().also { it["snippet"] = "x 1,000원" }, admin), "통합관리자는 그대로")
+    }
+
+    @Test
+    @DisplayName("키워드 — 항목명 전체·`·` 조각·필드명, 공백으로는 나누지 않고 긴 것부터, 적용을 켠 새 항목도 배포 없이 포함")
+    fun keywords() {
+        val p = principal(setOf("qty"))
+        val kws = service.keywordsOfBlindFields(p)
+        assertTrue(kws.containsAll(listOf("단가·금액", "단가", "금액", "unitPrice", "amount")), kws.toString())
+        assertFalse(kws.contains("배합 비율"), "미적용 항목은 없다")
         service.setApply("recipe", true)
-        assertEquals("recipe", service.restrictedFieldFor("배합 비율 알려줘", p))
-        assertNull(service.restrictedFieldFor("비율만 알려줘", p), "항목명은 공백으로 나누지 않는다 — 일반어 「비율」로 막지 않는다")
-        assertNull(service.restrictedFieldFor("배합 비율 알려줘", principal(setOf("qty", "recipe"))), "권한이 있으면 통과")
-        assertNull(service.restrictedFieldFor("단가 알려줘", admin))
+        val after = service.keywordsOfBlindFields(p)
+        assertTrue(after.contains("배합 비율") && after.contains("mixRatio") && !after.contains("비율"), after.toString())
+        assertTrue(service.keywordsOfBlindFields(admin).isEmpty())
     }
 }
