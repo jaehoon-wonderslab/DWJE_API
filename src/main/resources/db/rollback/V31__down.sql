@@ -4,11 +4,15 @@
 --  V31__drop_removed_screen_tables.sql 이 지운 것을 그대로 되돌린다.
 --  구조(테이블·PK·FK·인덱스·IDENTITY·주석) · 공통코드 · 코드 참조 · 메뉴 표시를 복원한다.
 --
---  [업무 데이터는 이 파일로 살아나지 않는다]
---  구조만 복원한다. 행은 V31 적용 전에 뜬 덤프에서 되돌린다 —
---      psql -U <user> -d <db> -f drop5_backup.sql    (덤프에 CREATE TABLE 이 함께 있으면
---                                                     이 파일을 돌리지 말고 덤프만 돌린다)
---  덤프가 COPY 만 담고 있다면 이 파일을 먼저 돌려 구조를 만든 뒤 덤프를 적용한다.
+--  [업무 데이터는 이 파일로 살아나지 않는다 — 덤프를 먼저 돌린다]
+--  되돌리는 순서는 아래가 맞다 (2026-09-15 운영 모사 DB 에서 왕복 확인).
+--      1) 적용 전에 뜬 덤프를 먼저 적용한다   psql ... -f drop6_backup.sql
+--         pg_dump 덤프에는 CREATE TABLE 과 데이터가 함께 들어 있어 표와 행이 같이 살아난다.
+--      2) 그 다음 이 파일을 돌린다             psql ... -f rollback/V31__down.sql
+--         CREATE TABLE IF NOT EXISTS 는 건너뛰고, 덤프에 없는 공통코드 그룹·코드·코드 참조와
+--         메뉴 use_flg 복원만 이루어진다.
+--  순서를 뒤집으면(이 파일 먼저) 덤프의 CREATE TABLE 이 "already exists" 로 실패한다.
+--  덤프가 --data-only 라서 COPY 만 담고 있다면 그때는 이 파일을 먼저 돌려 구조를 만든다.
 --  IDENTITY 시퀀스는 데이터 복원 뒤 다음으로 맞춘다 —
 --      SELECT setval(pg_get_serial_sequence('ax.tb_prod_rank_log','log_id'),
 --                    coalesce((SELECT max(log_id) FROM ax.tb_prod_rank_log), 1));

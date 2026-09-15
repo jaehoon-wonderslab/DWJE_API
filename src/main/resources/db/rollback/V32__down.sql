@@ -3,8 +3,10 @@
 --
 --  V32__drop_ai_mask_rule.sql 이 지운 구조·공통코드·코드 참조를 되돌린다.
 --
---  [업무 데이터는 이 파일로 살아나지 않는다]
---  V32 적용 전에 뜬 덤프에서 되돌린다. 복원 뒤 IDENTITY 시퀀스를 맞춘다 —
+--  [업무 데이터는 이 파일로 살아나지 않는다 — 덤프를 먼저 돌린다]
+--  V31__down.sql 과 같다. ① 적용 전 덤프(CREATE TABLE + 데이터) → ② 이 파일(공통코드·코드 참조).
+--  순서를 뒤집으면 덤프의 CREATE TABLE 이 "already exists" 로 실패한다.
+--  복원 뒤 IDENTITY 시퀀스를 맞춘다 —
 --      SELECT setval(pg_get_serial_sequence('ax.tb_ai_mask_rule','rule_id'),
 --                    coalesce((SELECT max(rule_id) FROM ax.tb_ai_mask_rule), 1));
 --
