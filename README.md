@@ -449,13 +449,13 @@ MES 실적은 품목 코드(`item_cd`) 기준이고 화면은 제품 코드(`mod
 | 권한 변경 | `/system/menu-perms`, `/data-perms`, `/users`, `/depts` | `SystemUserService` |
 | 마스킹 | `/quality/reports/{id}/unmask-request`, AI 질의 denied 분기 | `QualityReportService` · `AiChatService` |
 | 출력 | 전 내려받기 API | `DownloadLogService` |
-| AI 모델 | `/ai/model-releases/{ver}/apply`, `/rollback`, `/ai/model-config` | `AiAdminService` |
-| 기준 수치 | `/metrics/standards/*` | `MetricStandardService` |
-| 순위 | `/products/families/order` | `ProductRankService` |
 | 알림 조건 | `/alert-conditions/*` | `AlertConfigService` |
 | 연동 | `/sync/jobs/{id}/retry`, `/sync/jobs/manual`, `/sync/schema-drift/{id}/resolve` | `SyncService` |
 
 감사 기록 실패가 본 업무를 되돌리지 않도록 `REQUIRES_NEW` 트랜잭션에서 처리하고 예외를 삼킨다.
+
+> AI 모델(`/ai/model-releases`, `/ai/model-config`) · 기준 수치(`/metrics/standards`) · 순위(`/products/families/order`) 항목은
+> 2026-09-15 에 해당 화면 5개(제품군 순위 관리 · AI 모델 설정 · AI 모델 버전 관리 · Agent 실행 현황 · 지표 측정 데이터 관리)와 함께 API 를 제거해 더 이상 기록하지 않는다.
 
 ---
 
@@ -470,7 +470,7 @@ MES 실적은 품목 코드(`item_cd`) 기준이고 화면은 제품 코드(`mod
 | 품질관리 (QC-01~04) | 29 | `QualityController` |
 | 이상 알림 (AL-01) | 5 | `AlertController` |
 | 보고서 (RP-01~07) | 20 | `ReportController` |
-| 시스템관리 (SY-01~15) | 107 | `SystemUserController` · `AuditLogController` · `AlertConditionController` · `AlertRecipientController` · `GlossaryController` · `ProductRankController` · `AiAdminController` · `MetricStandardController` · `DownloadLogController` · `SyncController` |
+| 시스템관리 (SY-01~15) | 107 | `SystemUserController` · `AuditLogController` · `AlertConditionController` · `AlertRecipientController` · `GlossaryController` · `AiAdminController`(질의 이력만) · `DownloadLogController` · `SyncController` — SY-07·10·11·12·13 은 2026-09-15 제거 |
 
 위 건수는 **API 목록 명세 기준의 초기 설계 값**이다. 이후 화면 요구로 엔드포인트가 늘었으므로
 **현재 개수를 이 표에서 읽지 말 것.** 지금 등록된 오퍼레이션은 여기서 본다.

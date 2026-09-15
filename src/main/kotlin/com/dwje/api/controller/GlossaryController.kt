@@ -1,13 +1,10 @@
 package com.dwje.api.controller
 
 import com.dwje.api.common.response.ApiResponse
-import com.dwje.api.model.request.FamilyOrderRequest
 import com.dwje.api.model.request.GlossaryNormalizeRequest
 import com.dwje.api.model.request.GlossaryTermRequest
 import com.dwje.api.model.request.GlossaryVariantRequest
-import com.dwje.api.model.request.ProductOrderRequest
 import com.dwje.api.service.GlossaryService
-import com.dwje.api.service.ProductRankService
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.Parameter
 import io.swagger.v3.oas.annotations.tags.Tag
@@ -128,78 +125,4 @@ class GlossaryController(
     @PostMapping("/reindex")
     fun reindex(): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(glossaryService.reindex(), "임베딩 재생성 작업을 등록했습니다.")
-}
-
-/**
- * 제품군 순위 관리 컨트롤러 (SY-07)
- *
- * 접근 부서 : 전산팀 · 경영진 · 통합관리자
- */
-@RestController
-@RequestMapping("/api/v1/products")
-@Tag(name = "10. 시스템관리 - 용어·제품")
-class ProductRankController(
-    private val productRankService: ProductRankService
-) {
-
-    /** 제품군 순위 조회 (No.179) */
-    @Operation(summary = "제품군 순위 조회", description = "제품군별 순위·제품 수·대표 제품을 반환한다.")
-    @GetMapping("/families")
-    fun families(): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(productRankService.getFamilies())
-
-    /** 제품군 순위 변경 (No.180) */
-    @Operation(summary = "제품군 순위 변경", description = "제품군 순위를 변경하고 제품 전체 순위를 재계산한다.")
-    @PutMapping("/families/order")
-    fun updateFamilyOrder(
-        @Valid @RequestBody request: FamilyOrderRequest
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(productRankService.updateFamilyOrder(request.orders), "제품군 순위가 변경되었습니다.")
-
-    /** 기본 순서 복원 (No.183) */
-    @Operation(summary = "기본 순서 복원", description = "제품군 순위와 제품 순서를 기본값으로 되돌린다.")
-    @PostMapping("/families/order/reset")
-    fun resetOrder(): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(productRankService.resetOrder(), "기본 순서로 복원했습니다.")
-
-    /** 제품군 내 제품 순서 조회 (No.181) */
-    @Operation(summary = "제품군 내 제품 순서 조회", description = "제품군에 속한 제품의 순서를 조회한다.")
-    @GetMapping("/families/{familyCd}/products")
-    fun productsInFamily(@PathVariable familyCd: String): ApiResponse<Map<String, Any?>> {
-        val (data, mask) = productRankService.getProductsInFamily(familyCd)
-        return ApiResponse.ok(data, mask.maskedKeys())
-    }
-
-    /** 제품군 내 제품 순서 변경 (No.182) */
-    @Operation(summary = "제품군 내 제품 순서 변경", description = "제품군 내 제품 순서를 변경한다.")
-    @PutMapping("/families/{familyCd}/products/order")
-    fun updateProductOrder(
-        @PathVariable familyCd: String,
-        @Valid @RequestBody request: ProductOrderRequest
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(
-            productRankService.updateProductOrder(familyCd, request.orders),
-            "제품 순서가 변경되었습니다."
-        )
-
-    /** 현재 순위 상위 N 조회 (No.184) */
-    @Operation(summary = "현재 순위 상위 N 조회", description = "현재 순위 기준 상위 N 제품을 반환한다.")
-    @GetMapping("/ranking")
-    fun ranking(
-        @RequestParam(required = false, defaultValue = "20") topN: Int
-    ): ApiResponse<Map<String, Any?>> {
-        val (data, mask) = productRankService.getTopRanking(topN)
-        return ApiResponse.ok(data, mask.maskedKeys())
-    }
-
-    /** 순위 변경 이력 (No.185) */
-    @Operation(summary = "순위 변경 이력", description = "제품군·제품 순위 변경 이력을 조회한다.")
-    @GetMapping("/rank-logs")
-    fun rankLogs(
-        @RequestParam(required = false) page: Int?,
-        @RequestParam(required = false) size: Int?
-    ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta) = productRankService.getRankLogs(page, size)
-        return ApiResponse.page(mapOf("items" to rows), meta)
-    }
 }

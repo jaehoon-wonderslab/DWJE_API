@@ -57,15 +57,13 @@ object MenuId {
     const val ALERT_COND = "alert-cond"
     const val SYS_RECIP = "sys-recip"
     const val SYS_GLOSS = "sys-gloss"
-    const val SYS_RANK = "sys-rank"
     const val CHAT_HISTORY = "chat-history"
     const val SYS_AUDIT = "sys-audit"
-    const val BASE_MODEL = "base-model"
-    const val AI_AGENT = "ai-agent"
-    const val SYS_METRIC = "sys-metric"
     const val SYS_DL = "sys-dl"
     const val SYS_SYNC = "sys-sync"
-    const val SYS_MODEL_VER = "sys-model-ver"
+
+    // 2026-09-15 제거된 화면 — sys-rank(제품군 순위) · base-model(AI 모델 설정) · sys-model-ver(AI 모델 버전) ·
+    // ai-agent(Agent 실행 현황) · sys-metric(지표 측정 데이터). 상수와 API 를 함께 지웠다.
 
     // 2026-09-10 요구사항 9건 — V25 로 tb_sys_menu 에 등록된다.
     /** AI 통합 대시보드 › 업로드 리포트 **업로드**(동작 권한). 보기는 DASH_AI 를 따른다. */

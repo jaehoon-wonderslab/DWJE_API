@@ -8,8 +8,8 @@
 > `RequestBodyContractTest` 가 `Map` 본문 개수가 코드와 맞는지 검사한다 —
 > 이 문서를 처음 쓴 날 용어 API 4개를 DTO 로 바꾸고 갱신하지 않아 같은 날 안에 틀렸다.
 
-- 본문을 받는 엔드포인트 **69개**
-- 타입 DTO **69개** — 모르는 키는 400
+- 본문을 받는 엔드포인트 **55개**
+- 타입 DTO **51개** — 모르는 키는 400
 - `Map` 본문 **0개** — **전부 타입 DTO 로 전환 완료**
 
 ## 왜 켰는가
@@ -20,7 +20,7 @@
 | 엔드포인트 | 보낸 것 | 결과 |
 |---|---|---|
 | `PATCH /system/users/{empNo}/state` | 본문 없음 | 200 — 실제로는 ACTIVE 로 바뀜 |
-| `PUT /metrics/standards/{stdId}` | `{field,value}` | 200 — 아무 값도 안 바뀜 |
+| `PUT /metrics/standards/{stdId}` | `{field,value}` | 200 — 아무 값도 안 바뀜 (API 는 2026-09-15 제거) |
 | `POST /alert-conditions` | 표시명·다른 키 이름 | 400 이지만 어느 값인지 알 수 없음 |
 
 ## A. `Map` 본문 0개
@@ -36,7 +36,7 @@
 > 키·타입이 어긋난 항목만 빠지고 200 이 나가서, 10개를 보냈는데 3개만 반영되고도
 > 화면은 성공으로 읽었다. 지금은 어긋난 항목이 하나라도 있으면 400 이다.
 
-## B. 타입 DTO 69개 — 선언 키만 허용
+## B. 타입 DTO 51개 — 선언 키만 허용
 
 ### `AiAskRequest`
 
@@ -64,45 +64,6 @@
 
 - `POST /api/v1/ai/chat/messages/{messageId}/feedback`
 
-### `FinetuneBuildRequest`
-
-허용 키 — `baseModel`, `method`, `trainsetId`, `epoch`
-
-- `POST /api/v1/ai/finetune-builds`
-
-### `MaskRuleRequest`
-
-허용 키 — `name`, `fieldKey`, `targetFields`, `action`, `customerId`, `customerPolicy`, `useYn`
-
-- `POST /api/v1/ai/mask-rules`
-- `POST /api/v1/ai/mask-rules/{ruleId}`
-- `PUT /api/v1/ai/mask-rules/{ruleId}`
-
-### `AiModelConfigRequest`
-
-허용 키 — `thresholds`, `classification`
-
-- `PUT /api/v1/ai/model-config`
-
-### `ModelReleaseRequest`
-
-허용 키 — `ver`, `vecId`, `ftId`, `mode`, `note`
-
-- `POST /api/v1/ai/model-releases`
-
-### `ModelApplyRequest`
-
-허용 키 — `mode`, `reason`
-
-- `POST /api/v1/ai/model-releases/rollback`
-- `POST /api/v1/ai/model-releases/{ver}/apply`
-
-### `VectorBuildRequest`
-
-허용 키 — `sources`, `embedModelId`, `chunkSize`
-
-- `POST /api/v1/ai/vector-builds`
-
 ### `AlertConditionRequest`
 
 허용 키 — `name`, `metricStdId`, `metricDesc`, `op`, `threshold`, `thresholdText`, `thresholdUnit`, `duration`, `targetScope`, `target`, `severity`, `channels`, `groupIds`, `validWindow`, `dedupMin`, `msgTemplate`
@@ -116,7 +77,6 @@
 
 - `PATCH /api/v1/alert-conditions/{condId}/state`
 - `PATCH /api/v1/alert-recipients/{recipientId}/state`
-- `PATCH /api/v1/metrics/standards/{stdId}/state`
 - `PATCH /api/v1/system/users/{empNo}/state`
 
 ### `DutyRequest`
@@ -232,13 +192,6 @@
 - `POST /api/v1/glossary/terms/{termId}/variants`
 - `PUT /api/v1/glossary/variants/{variantId}`
 
-### `MetricStandardRequest`
-
-허용 키 — `metricCd`, `name`, `category`, `unit`, `normal`, `warn`, `critical`, `window`, `basis`, `applied`, `direction`
-
-- `POST /api/v1/metrics/standards`
-- `PUT /api/v1/metrics/standards/{stdId}`
-
 ### `ReportRegenerateRequest`
 
 허용 키 — `targetDate`
@@ -302,18 +255,6 @@
 허용 키 — `reasonCd`, `remark`, `resumeAt`
 
 - `PUT /api/v1/production/downtimes/{downtimeId}`
-
-### `FamilyOrderRequest`
-
-허용 키 — `orders`
-
-- `PUT /api/v1/products/families/order`
-
-### `ProductOrderRequest`
-
-허용 키 — `orders`
-
-- `PUT /api/v1/products/families/{familyCd}/products/order`
 
 ### `QualityReportDraftRequest`
 

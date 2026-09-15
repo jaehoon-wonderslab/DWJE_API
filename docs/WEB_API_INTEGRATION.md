@@ -64,16 +64,16 @@ MES 실적 데이터는 충분하다 — 라벨 실적 749만행 / 불량 899만
 | `system` | 10 | 계정·부서·메뉴권한·데이터권한 |
 | `reports` | 5 | |
 | `sync` | 5 | |
-| `metrics` | 3 | |
-| `products` | 2 | 제품군·랭킹 |
-| `ai/*` | 8 | agents·chat·model-config·model-releases·vector-builds |
+| `metrics` | 3 | **2026-09-15 제거**(지표 측정 데이터 관리 화면) |
+| `products` | 2 | 제품군·랭킹 — **2026-09-15 제거**(제품군 순위 관리 화면) |
+| `ai/*` | 8 | chat 만 남음 — agents·model-config·model-releases·vector-builds 는 **2026-09-15 제거**(`dashboard/ai/agents` 는 별개로 유지) |
 | `alerts`, `alert-escalation-rules` | 2 | |
 | `menus`, `audit-logs`, `download-logs`, `health` | 4 | |
 
 ### 빈 상태 UI 가 필요한 도메인 — API 는 정상, 데이터가 없음
 
 `glossary` · `alert-conditions` · `alert-duties` · `alert-recipients` ·
-`alert-recipient-groups` · `ai/mask-rules` · `ai/finetune-builds` ·
+`alert-recipient-groups` · ~~`ai/mask-rules` · `ai/finetune-builds`~~(2026-09-15 제거) ·
 `quality/report-forms` · `quality/reports` · `reports/scrap` · `reports/ship-plan` ·
 `system/users/pending` · `system/data-perms/audit`
 
@@ -81,7 +81,7 @@ MES 실적 데이터는 충분하다 — 라벨 실적 749만행 / 불량 899만
 빈 배열을 오류로 처리하지 말고 "등록된 항목이 없습니다 + 등록 버튼" 형태로 그리면 된다.
 등록 API(POST) 104개는 별도로 살아 있고, 쓰기→조회 왕복을 아래 3개 도메인에서 실증했다.
 
-- `POST /metrics/standards` → `GET /metrics/standards` 반영 확인
+- ~~`POST /metrics/standards` → `GET /metrics/standards` 반영 확인~~ (2026-09-15 API 제거)
 - `POST /production/downtimes` → `GET /production/downtimes` 반영 확인
 - `POST /alert-recipients` → `GET /alert-recipients` 반영 확인
 

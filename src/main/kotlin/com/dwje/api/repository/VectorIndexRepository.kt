@@ -7,10 +7,12 @@ import org.springframework.stereotype.Repository
 import java.time.LocalDateTime
 
 /**
- * 벡터 색인 · 임베딩 작업 Repository (SY-06 재색인, SY-11 벡터 인덱스)
+ * 벡터 색인 · 임베딩 작업 Repository (SY-06 용어 재색인, SY-08 질의 상세의 검색 히트)
  *
- * 참조 테이블 : vec.tb_ingest_job, vec.tb_ingest_error, vec.tb_embed_model,
- *              vec.tb_doc, vec.tb_doc_version, vec.tb_doc_chunk
+ * AI 모델 버전 관리 화면(SY-11)의 색인 작업 목록·상세·오류 조회는 2026-09-15 에 화면과 함께 제거됐다.
+ *
+ * 참조 테이블 : vec.tb_ingest_job, vec.tb_embed_model, vec.tb_query_log, vec.tb_query_hit,
+ *              vec.tb_doc, vec.tb_doc_chunk
  */
 @Repository
 class VectorIndexRepository(
@@ -18,7 +20,7 @@ class VectorIndexRepository(
 ) {
 
     /**
-     * 색인 작업을 등록한다. (No.178 / No.203)
+     * 색인 작업을 등록한다. (No.178 용어 재색인)
      *
      * job_id 는 "JOB-yyyyMMddHHmmss-seq" 형식으로 채번한다.
      *
@@ -62,140 +64,6 @@ class VectorIndexRepository(
     }
 
     /**
-     * 벡터 인덱스(색인 작업) 목록을 조회한다. (No.202)
-     *
-     * @param state 작업 상태 (RUNNING/DONE/FAIL)
-     */
-    fun findIngestJobs(state: String?, limit: Int, offset: Int): List<Map<String, Any?>> {
-        val sql = StringBuilder(
-            """
-            SELECT
-                j.job_id, j.job_type_cd, j.started_at, j.ended_at, j.duration_sec,
-                j.doc_cnt, j.chunk_cnt, j.embed_cnt, j.ok_cnt, j.ng_cnt, j.token_cnt,
-                j.state_cd, j.triggered_by_cd, j.triggered_by, j.remark,
-                m.model_key, m.model_nm, m.dim
-            FROM vec.tb_ingest_job j
-            LEFT JOIN vec.tb_embed_model m ON m.model_id = j.embed_model_id
-            WHERE 1 = 1
-            """.trimIndent()
-        )
-
-        val params = MapSqlParameterSource()
-        if (!state.isNullOrBlank()) {
-            sql.append(" AND j.state_cd = :state")
-            params.addValue("state", state.trim().uppercase())
-        }
-
-        sql.append("\nORDER BY j.started_at DESC\nLIMIT :limit OFFSET :offset")
-        params.addValue("limit", limit).addValue("offset", offset)
-
-        return jdbcTemplate.query(sql.toString(), params) { rs, _ ->
-            mapOf(
-                "vecId" to rs.getString("job_id"),
-                "jobId" to rs.getString("job_id"),
-                "type" to rs.getString("job_type_cd"),
-                "startedAt" to Rs.dateTime(rs, "started_at"),
-                "endedAt" to Rs.dateTime(rs, "ended_at"),
-                "duration" to Rs.intOrNull(rs, "duration_sec"),
-                "state" to rs.getString("state_cd"),
-                "docCnt" to rs.getInt("doc_cnt"),
-                "chunkCnt" to rs.getInt("chunk_cnt"),
-                "embedCnt" to rs.getInt("embed_cnt"),
-                "okCnt" to rs.getInt("ok_cnt"),
-                "ngCnt" to rs.getInt("ng_cnt"),
-                "tokenCnt" to rs.getLong("token_cnt"),
-                "embedModel" to rs.getString("model_nm"),
-                "embedModelKey" to rs.getString("model_key"),
-                "dim" to Rs.intOrNull(rs, "dim"),
-                "triggeredBy" to rs.getString("triggered_by"),
-                "remark" to rs.getString("remark")
-            )
-        }
-    }
-
-    /** 색인 작업 전체 건수 */
-    fun countIngestJobs(state: String?): Long {
-        val sql = StringBuilder("SELECT count(*) FROM vec.tb_ingest_job j WHERE 1 = 1")
-        val params = MapSqlParameterSource()
-        if (!state.isNullOrBlank()) {
-            sql.append(" AND j.state_cd = :state")
-            params.addValue("state", state.trim().uppercase())
-        }
-        return jdbcTemplate.queryForObject(sql.toString(), params, Long::class.java) ?: 0L
-    }
-
-    /**
-     * 색인 작업 상세와 오류를 조회한다. (No.204)
-     */
-    fun findIngestJob(jobId: String): Map<String, Any?>? {
-        val sql = """
-            SELECT
-                j.job_id, j.job_type_cd, j.started_at, j.ended_at, j.duration_sec,
-                j.doc_cnt, j.chunk_cnt, j.embed_cnt, j.ok_cnt, j.ng_cnt, j.token_cnt,
-                j.state_cd, j.triggered_by, j.remark,
-                m.model_key, m.model_nm, m.dim, m.distance_cd
-            FROM vec.tb_ingest_job j
-            LEFT JOIN vec.tb_embed_model m ON m.model_id = j.embed_model_id
-            WHERE j.job_id = :jobId
-        """.trimIndent()
-
-        return jdbcTemplate.query(sql, MapSqlParameterSource("jobId", jobId)) { rs, _ ->
-            mapOf(
-                "vecId" to rs.getString("job_id"),
-                "config" to mapOf(
-                    "type" to rs.getString("job_type_cd"),
-                    "embedModel" to rs.getString("model_nm"),
-                    "embedModelKey" to rs.getString("model_key"),
-                    "dim" to Rs.intOrNull(rs, "dim"),
-                    "distance" to rs.getString("distance_cd")
-                ),
-                "stats" to mapOf(
-                    "startedAt" to Rs.dateTime(rs, "started_at"),
-                    "endedAt" to Rs.dateTime(rs, "ended_at"),
-                    "duration" to Rs.intOrNull(rs, "duration_sec"),
-                    "state" to rs.getString("state_cd"),
-                    "docCnt" to rs.getInt("doc_cnt"),
-                    "chunkCnt" to rs.getInt("chunk_cnt"),
-                    "embedCnt" to rs.getInt("embed_cnt"),
-                    "okCnt" to rs.getInt("ok_cnt"),
-                    "ngCnt" to rs.getInt("ng_cnt"),
-                    "tokenCnt" to rs.getLong("token_cnt")
-                ),
-                "triggeredBy" to rs.getString("triggered_by"),
-                "remark" to rs.getString("remark")
-            )
-        }.firstOrNull()
-    }
-
-    /**
-     * 색인 오류 목록을 조회한다. (No.204)
-     */
-    fun findIngestErrors(jobId: String, limit: Int): List<Map<String, Any?>> {
-        val sql = """
-            SELECT err_id, doc_id, chunk_id, stage_cd, err_code, err_msg, resolved, ins_date
-            FROM vec.tb_ingest_error
-            WHERE job_id = :jobId
-            ORDER BY err_id
-            LIMIT :limit
-        """.trimIndent()
-
-        val params = MapSqlParameterSource().addValue("jobId", jobId).addValue("limit", limit)
-
-        return jdbcTemplate.query(sql, params) { rs, _ ->
-            mapOf(
-                "errId" to rs.getLong("err_id"),
-                "docId" to Rs.longOrNull(rs, "doc_id"),
-                "chunkId" to Rs.longOrNull(rs, "chunk_id"),
-                "stage" to rs.getString("stage_cd"),
-                "code" to rs.getString("err_code"),
-                "message" to rs.getString("err_msg"),
-                "resolved" to rs.getBoolean("resolved"),
-                "at" to Rs.dateTime(rs, "ins_date")
-            )
-        }
-    }
-
-    /**
      * 기본 임베딩 모델 ID 를 조회한다.
      */
     fun findDefaultEmbedModelId(): Int? {
@@ -208,33 +76,6 @@ class VectorIndexRepository(
         """.trimIndent()
 
         return jdbcTemplate.query(sql, MapSqlParameterSource()) { rs, _ -> rs.getInt("model_id") }.firstOrNull()
-    }
-
-    /**
-     * 색인 대상 문서 통계를 조회한다. (재색인 실행 시 대상 규모 산출)
-     *
-     * @param sources 문서 유형 코드 목록 (빈 목록이면 전체)
-     */
-    fun findIndexTargetStats(sources: List<String>): Map<String, Any?> {
-        val sql = StringBuilder(
-            """
-            SELECT
-                count(DISTINCT d.doc_id)                                    AS doc_cnt,
-                coalesce(sum(d.chunk_cnt), 0)                               AS chunk_cnt
-            FROM vec.tb_doc d
-            WHERE d.del_flg = 'N'
-            """.trimIndent()
-        )
-
-        val params = MapSqlParameterSource()
-        if (sources.isNotEmpty()) {
-            sql.append(" AND d.doc_type_cd = ANY(:sources)")
-            params.addValue("sources", sources.toTypedArray())
-        }
-
-        return jdbcTemplate.queryForObject(sql.toString(), params) { rs, _ ->
-            mapOf("docCnt" to rs.getLong("doc_cnt"), "chunkCnt" to rs.getLong("chunk_cnt"))
-        } ?: mapOf("docCnt" to 0L, "chunkCnt" to 0L)
     }
 
     /**
