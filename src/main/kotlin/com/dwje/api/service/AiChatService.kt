@@ -23,13 +23,22 @@ import java.util.UUID
  * 5. 질의·검색 이력 기록 (감사 및 파인튜닝 학습데이터 후보)
  *
  * `denied` 분기는 감사 로그를 남기고, `unknown` 분기는 답을 추정하지 않고 자료 소재를 안내한다.
+ *
+ * ## 답변에 권한 없는 값을 넣지 않는다 (V33)
+ * 화면은 표 블록을 `blindColumns` 로 가릴 수 있지만 문장(`answerHtml`)은 가릴 수 없다. 그래서 서버가 세 지점에서 막는다.
+ * - 질의 자체가 권한 없는 항목을 묻는다 → `denied`(답변 없음). 항목 판정은 코드 키워드 + 항목 표(항목명·응답 필드명)라 새 항목도 걸린다.
+ * - 근거 문서 검색 → 권한 없는 항목이 태그된 문서는 제외([AiChatRepository.searchDocumentChunks]). 제목·발췌가 답변에 실리기 때문이다.
+ * - 표 블록 → 열 이름을 `tb_sys_data_field_attr` 에서 찾아 `blindColumns` 를 채우고, 권한 없는 열은 값을 null 로 보낸다.
+ * `answerHtml` 은 질문 원문과 (걸러진) 문서 제목만으로 만든다. 수치를 문장에 넣는 경로를 새로 만들 때는
+ * 반드시 [DataFieldService.fieldOf] 로 항목을 찾아 [com.dwje.api.common.security.UserPrincipal.canReadField] 를 통과한 값만 쓴다.
  */
 @Service
 class AiChatService(
     private val aiChatRepository: AiChatRepository,
     private val glossaryNormalizer: GlossaryNormalizer,
     private val auditLogService: AuditLogService,
-    private val authorizationService: AuthorizationService
+    private val authorizationService: AuthorizationService,
+    private val dataFieldService: DataFieldService
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -83,8 +92,9 @@ class AiChatService(
         // 2. 용어 정규화 — 현장 유사어를 공식 용어로 치환한다.
         val normalized = glossaryNormalizer.normalize(question)
 
-        // 3. 권한 기반 질의 차단 판정 (denied)
-        val deniedField = detectRestrictedField(normalized.normalizedText, principal.dataPerms, principal.superAdmin)
+        // 3. 권한 기반 질의 차단 판정 (denied) — 코드 키워드 + 항목 표(항목명·응답 필드명).
+        //    원문과 정규화 문장을 모두 본다 — 용어 치환이 키워드를 바꿔 놓아도(실측: 「E2E」→「ER2E」) 차단이 빠지지 않게.
+        val deniedField = detectRestrictedField(question, principal) ?: detectRestrictedField(normalized.normalizedText, principal)
         if (deniedField != null) {
             return handleDenied(sessionId, question, normalized.normalizedText, deniedField, started)
         }
@@ -92,12 +102,17 @@ class AiChatService(
         // 4. 의도 분류
         val intent = classifyIntent(normalized.normalizedText)
 
-        // 5. 근거 문서 검색 — 부서 열람 권한이 있는 문서만 대상으로 한다.
-        val hits = aiChatRepository.searchDocumentChunks(normalized.normalizedText, principal.deptId, SEARCH_TOP_K)
+        // 5. 근거 문서 검색 — 부서 열람 권한이 있는 문서만, 권한 없는 데이터 항목이 태그된 문서는 제외한다.
+        val blindKeys = dataFieldService.blindKeysFor(principal)
+        val hits = aiChatRepository.searchDocumentChunks(normalized.normalizedText, principal.deptId, SEARCH_TOP_K, blindKeys)
 
         // 6. 근거가 없으면 답을 추정하지 않고 자료 소재를 안내한다. (unknown)
         val finalIntent = if (hits.isEmpty() && intent != "metric") "unknown" else intent
         val answerHtml = buildAnswerHtml(finalIntent, normalized.normalizedText, hits)
+
+        // 표 블록 — 열별 항목 key(blindColumns) 를 채우고 권한 없는 열은 값을 비운다.
+        val blocks = buildBlocks(finalIntent, hits)
+        val blindAppliedCnt = blocks.sumOf { applyBlindColumns(it, principal) }
 
         // 7. 질의 이력 기록
         val elapsedMs = (System.currentTimeMillis() - started).toInt()
@@ -112,7 +127,7 @@ class AiChatService(
             intentNm = intentName(finalIntent),
             answer = answerHtml,
             responseMs = elapsedMs,
-            blindAppliedCnt = 0,
+            blindAppliedCnt = blindAppliedCnt,
             profileId = aiChatRepository.findActiveProfileId(),
             prevChatId = prevChatId
         )
@@ -142,7 +157,8 @@ class AiChatService(
             "intent" to finalIntent,
             "intentNm" to intentName(finalIntent),
             "answerHtml" to answerHtml,
-            "blocks" to buildBlocks(finalIntent, hits),
+            "blocks" to blocks,
+            "blindFields" to blindKeys.sorted(),
             "agents" to agentNos.map { mapOf("no" to it) },
             "sources" to hits.map {
                 mapOf(
@@ -263,13 +279,17 @@ class AiChatService(
     /**
      * 데이터 접근 권한이 필요한 질의인지 판정한다.
      *
+     * 코드 키워드([RESTRICTED_KEYWORDS])에 더해 항목 표의 항목명 조각(`단가·금액` → 단가, 금액)과
+     * 응답 필드명(`unitPrice`)을 키워드로 본다. 그래서 운영 중에 추가된 항목도 배포 없이 걸린다.
+     *
      * @return 권한이 없어 차단해야 하는 데이터 항목 key (없으면 null)
      */
-    private fun detectRestrictedField(question: String, dataPerms: Set<String>, superAdmin: Boolean): String? {
-        if (superAdmin) return null
-        return RESTRICTED_KEYWORDS
-            .firstOrNull { (field, keywords) -> field !in dataPerms && keywords.any { question.contains(it) } }
-            ?.first
+    internal fun detectRestrictedField(question: String, principal: com.dwje.api.common.security.UserPrincipal): String? {
+        if (principal.superAdmin) return null
+        RESTRICTED_KEYWORDS
+            .firstOrNull { (field, keywords) -> !principal.canReadField(field) && keywords.any { question.contains(it) } }
+            ?.let { return it.first }
+        return dataFieldService.restrictedFieldFor(question, principal)
     }
 
     /**
@@ -378,16 +398,37 @@ class AiChatService(
 
     /**
      * 화면 렌더링용 블록(표·차트 등) 구성을 생성한다.
+     *
+     * 표 블록은 `columns`(열 이름 = 응답 필드명) 와 `rows`(가변 Map) 를 가진다. blindColumns 는 [applyBlindColumns] 가 채운다.
      */
-    private fun buildBlocks(intent: String, hits: List<Map<String, Any?>>): List<Map<String, Any?>> {
+    private fun buildBlocks(intent: String, hits: List<Map<String, Any?>>): List<MutableMap<String, Any?>> {
         if (hits.isEmpty()) return emptyList()
         return listOf(
-            mapOf(
+            mutableMapOf(
                 "type" to "sources",
                 "title" to "근거 자료",
-                "rows" to hits.map { mapOf("title" to it["title"], "page" to it["page"], "date" to it["docDate"]) }
+                "columns" to listOf("title", "page", "date"),
+                "rows" to hits.map { mutableMapOf<String, Any?>("title" to it["title"], "page" to it["page"], "date" to it["docDate"]) }
             )
         )
+    }
+
+    /**
+     * 표 블록에 `blindColumns` 를 채우고, 권한 없는 열의 값을 null 로 바꾼다.
+     *
+     * 열 이름은 `columns` 가 없으면 첫 행의 키에서 얻는다. 항목은 `tb_sys_data_field_attr`(적용 중 항목)에서 찾는다 —
+     * 코드에 박힌 매핑이 없어 새 항목·새 필드명도 배포 없이 걸린다.
+     *
+     * @return 가린 칸 수
+     */
+    @Suppress("UNCHECKED_CAST")
+    internal fun applyBlindColumns(block: MutableMap<String, Any?>, principal: com.dwje.api.common.security.UserPrincipal): Int {
+        val rows = (block["rows"] as? List<MutableMap<String, Any?>>).orEmpty()
+        val columns = (block["columns"] as? List<String>) ?: rows.firstOrNull()?.keys?.toList().orEmpty()
+        val blindColumns = dataFieldService.blindColumnsFor(columns)
+        block["columns"] = columns
+        block["blindColumns"] = blindColumns
+        return dataFieldService.maskRows(rows, columns, blindColumns, principal)
     }
 
     /**

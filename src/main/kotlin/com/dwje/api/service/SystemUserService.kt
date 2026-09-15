@@ -5,7 +5,6 @@ import com.dwje.api.common.exception.DuplicatedValueException
 import com.dwje.api.common.exception.InvalidParameterException
 import com.dwje.api.common.exception.ResourceNotFoundException
 import com.dwje.api.common.response.PageMeta
-import com.dwje.api.common.util.DataField
 import com.dwje.api.common.util.MenuId
 import com.dwje.api.common.util.PageRequestParam
 import com.dwje.api.model.request.DataPermRequest
@@ -486,7 +485,7 @@ class SystemUserService(
         val matrix = depts.associate { dept ->
             val deptId = dept["deptId"] as Int
             val allowed = if (dept["superAdmin"] == true) {
-                DataField.ALL
+                fields.map { it["key"] as String }
             } else {
                 perms.filter { it["deptId"] == deptId }.map { it["fieldKey"] as String }
             }
@@ -502,7 +501,8 @@ class SystemUserService(
         val principal = authorizationService.requireMenu(MenuId.SYS_DATA)
         val dept = requireDept(request.deptId)
 
-        if (request.fieldKey !in DataField.ALL) {
+        // 항목은 운영 중에 늘어난다(V33) — 코드 상수가 아니라 항목 표를 본다.
+        if (systemUserRepository.findDataFields().none { it["key"] == request.fieldKey }) {
             throw InvalidParameterException("존재하지 않는 데이터 항목입니다. [${request.fieldKey}]", "fieldKey")
         }
 
@@ -564,12 +564,13 @@ class SystemUserService(
         val paging = PageRequestParam.of(page, size)
 
         val total = systemUserRepository.countUsersAll()
+        val allKeys = systemUserRepository.findDataFields().map { it["key"] as String }
         val rows = systemUserRepository.findDataPermByUser(paging.limit, paging.offset).map { row ->
             @Suppress("UNCHECKED_CAST")
-            val allowed = if (row["superAdmin"] == true) DataField.ALL else (row["allowedFields"] as List<String>)
+            val allowed = if (row["superAdmin"] == true) allKeys else (row["allowedFields"] as List<String>)
             row + mapOf(
                 "allowedFields" to allowed,
-                "maskedFields" to DataField.ALL.filterNot { it in allowed }
+                "maskedFields" to allKeys.filterNot { it in allowed }
             )
         }
 

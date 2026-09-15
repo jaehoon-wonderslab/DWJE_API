@@ -557,25 +557,26 @@ class SystemUserRepository(
     // =================================================================================
 
     /**
-     * 데이터 항목 목록을 조회한다. (No.145)
+     * 데이터 항목 목록을 조회한다. (No.145 — V33 확장)
      *
-     * 각 항목에 매핑된 물리 컬럼을 함께 반환한다.
+     * 각 항목에 붙은 API 응답 필드명(`ax.tb_sys_data_field_attr`) · 분류 · 적용 스위치를 함께 낸다.
+     * 사용 중(use_flg='Y') 항목 전체다 — 미적용(applyFlg='N') 항목도 나온다. 마스킹이 실제로 걸리는 것은
+     * applyFlg='Y' 인 항목뿐이고, 그 목록은 `/auth/me` 의 dataFields 가 따로 낸다.
      */
     fun findDataFields(): List<Map<String, Any?>> {
         val sql = """
             SELECT
-                f.field_key, f.field_nm, f.field_desc, f.sort_seq,
+                f.field_key, f.field_nm, f.field_desc, f.sort_seq, f.category_cd, f.apply_flg,
+                c.code_nm AS category_nm,
                 (
-                    SELECT string_agg(
-                               concat_ws('.', c.target_schema, c.target_table, c.target_column),
-                               ', ' ORDER BY c.target_table, c.target_column
-                           )
-                      FROM ax.tb_sys_data_field_column c
-                     WHERE c.field_key = f.field_key
-                ) AS columns
+                    SELECT string_agg(a.attr_name, ',' ORDER BY a.attr_name)
+                      FROM ax.tb_sys_data_field_attr a
+                     WHERE a.field_key = f.field_key
+                ) AS attrs
             FROM ax.tb_sys_data_field f
+            LEFT JOIN ax.tb_sys_code c ON c.group_cd = 'DATA_FIELD_CATEGORY' AND c.code = f.category_cd
             WHERE f.use_flg = 'Y'
-            ORDER BY f.sort_seq
+            ORDER BY f.sort_seq, f.field_key
         """.trimIndent()
 
         return jdbcTemplate.query(sql, MapSqlParameterSource()) { rs, _ ->
@@ -583,7 +584,11 @@ class SystemUserRepository(
                 "key" to rs.getString("field_key"),
                 "name" to rs.getString("field_nm"),
                 "desc" to rs.getString("field_desc"),
-                "columns" to (rs.getString("columns")?.split(", ") ?: emptyList())
+                "category" to rs.getString("category_cd"),
+                "categoryNm" to rs.getString("category_nm"),
+                "applyFlg" to rs.getString("apply_flg"),
+                "sortSeq" to rs.getInt("sort_seq"),
+                "attrs" to (rs.getString("attrs")?.split(",") ?: emptyList())
             )
         }
     }

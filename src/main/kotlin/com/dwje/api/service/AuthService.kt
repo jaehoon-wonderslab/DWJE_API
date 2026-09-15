@@ -8,7 +8,6 @@ import com.dwje.api.common.exception.UnauthenticatedException
 import com.dwje.api.common.security.JwtTokenProvider
 import com.dwje.api.common.security.PasswordEncoderService
 import com.dwje.api.common.security.UserContext
-import com.dwje.api.common.util.DataField
 import com.dwje.api.config.AppProperties
 import com.dwje.api.model.request.LoginRequest
 import com.dwje.api.model.request.PasswordChangeRequest
@@ -16,6 +15,7 @@ import com.dwje.api.model.request.PasswordForgotRequest
 import com.dwje.api.model.request.PasswordResetRequest
 import com.dwje.api.model.request.SignupRequest
 import com.dwje.api.model.request.SwitchAccountRequest
+import com.dwje.api.model.response.DataFieldInfo
 import com.dwje.api.model.response.DeptInfo
 import com.dwje.api.model.response.LoginResponse
 import com.dwje.api.model.response.LoginUser
@@ -25,6 +25,7 @@ import com.dwje.api.model.response.MenuTreeResponse
 import com.dwje.api.model.response.MyInfoResponse
 import com.dwje.api.model.response.RefreshTokenResponse
 import com.dwje.api.repository.AuthRepository
+import com.dwje.api.repository.DataFieldRepository
 import com.dwje.api.repository.EmailVerificationRepository
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
@@ -45,7 +46,8 @@ class AuthService(
     private val passwordEncoderService: PasswordEncoderService,
     private val auditLogService: AuditLogService,
     private val emailVerificationService: EmailVerificationService,
-    private val emailVerificationRepository: EmailVerificationRepository
+    private val emailVerificationRepository: EmailVerificationRepository,
+    private val dataFieldRepository: DataFieldRepository
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -167,9 +169,24 @@ class AuthService(
     fun getMyInfo(): MyInfoResponse {
         val principal = UserContext.current()
 
-        // 통합관리자는 전 항목을 열람하므로 허용 목록을 7종 전체로 채운다.
-        val dataPerms = if (principal.superAdmin) DataField.ALL else DataField.ALL.filter { it in principal.dataPerms }
-        val blindFields = DataField.ALL.filterNot { it in dataPerms }
+        // 항목은 운영 중에 늘어난다(V33) — 코드 상수가 아니라 사용 중 항목 표를 기준으로 한다.
+        // 통합관리자는 전 항목을 열람하므로 허용 목록을 전체로 채운다.
+        val allKeys = dataFieldRepository.findActiveKeys()
+        val dataPerms = if (principal.superAdmin) allKeys else allKeys.filter { it in principal.dataPerms }
+        val blindFields = allKeys.filterNot { it in dataPerms }
+
+        // 적용 중(apply_flg='Y') 항목만 — 화면은 이걸로 「응답 필드명 → 항목」 맵을 만들어 표·엑셀을 자동 마스킹한다.
+        // 재로그인 때 반영되는 계약이라 여기서 캐시하지 않는다.
+        @Suppress("UNCHECKED_CAST")
+        val dataFields = dataFieldRepository.findAppliedFields().map {
+            DataFieldInfo(
+                key = it["key"] as String,
+                name = it["name"] as String,
+                category = it["category"] as String?,
+                categoryNm = it["categoryNm"] as String?,
+                attrs = it["attrs"] as List<String>
+            )
+        }
 
         // menuPerms 는 화면 접근 통제 목록이다 — 좌측 메뉴에 그릴 목록이 아니다.
         // 메뉴 트리 쿼리를 쓰면 하위 화면(is_sub_page)이 빠져 들어갈 수 없게 되므로
@@ -200,6 +217,7 @@ class AuthService(
             menuPerms = menuPerms,
             dataPerms = dataPerms,
             blindFields = blindFields,
+            dataFields = dataFields,
             servingModelVer = authRepository.findServingModelVersion(),
             impersonated = principal.impersonated
         )

@@ -53,8 +53,9 @@ data class RefreshTokenResponse(
  * @param user             사용자 기본 정보
  * @param dept             소속 부서 정보
  * @param menuPerms        접근 가능한 화면 ID 목록
- * @param dataPerms        허용된 데이터 항목 key 목록 (7종 중)
+ * @param dataPerms        허용된 데이터 항목 key 목록 (사용 중 항목 기준 — 항목은 운영 중에 늘어난다, V33)
  * @param blindFields      비공개(마스킹) 처리되는 데이터 항목 key 목록
+ * @param dataFields       적용 중(apply_flg='Y') 항목과 그 API 응답 필드명 — 화면이 「필드명 → 항목」 맵을 만들어 자동 마스킹한다
  * @param servingModelVer  현재 서비스 중인 AI 모델 버전
  * @param impersonated     계정 전환 상태 여부
  */
@@ -64,8 +65,26 @@ data class MyInfoResponse(
     val menuPerms: List<String>,
     val dataPerms: List<String>,
     val blindFields: List<String>,
+    val dataFields: List<DataFieldInfo>,
     val servingModelVer: String?,
     val impersonated: Boolean
+)
+
+/**
+ * 적용 중 데이터 항목 (`/auth/me` dataFields 원소, V33)
+ *
+ * @param key        항목 key (dataPerms · blindFields 와 같은 값)
+ * @param name       항목명
+ * @param category   분류 코드 (DATA_FIELD_CATEGORY, 없으면 null)
+ * @param categoryNm 분류명 (예: 원가)
+ * @param attrs      이 항목에 속한 API 응답 JSON 필드명 — 대소문자 구분, 전역에서 한 항목에만 속한다
+ */
+data class DataFieldInfo(
+    val key: String,
+    val name: String,
+    val category: String?,
+    val categoryNm: String?,
+    val attrs: List<String>
 )
 
 /**
