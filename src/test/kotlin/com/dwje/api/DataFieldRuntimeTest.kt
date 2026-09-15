@@ -93,6 +93,7 @@ class DataFieldRuntimeTest {
         seed("qty", "생산·출하 수량", "Y", "okQty", "ngQty")
         seed("price", "단가·금액", "Y", "unitPrice", "amount")
         seed("recipe", "배합 비율", "N", "mixRatio")
+        seed("lot", "로트 정보(로트번호)", "Y", "lotNo")
     }
     private val audit = MemAudit()
     private val auth = mock(AuthorizationService::class.java).also { `when`(it.requireMenu(MenuId.SYS_DATA)).thenReturn(admin) }
@@ -175,7 +176,7 @@ class DataFieldRuntimeTest {
         val masked = service.maskRows(rows, columns, service.blindColumnsFor(columns), principal(setOf("qty")))
         assertEquals(1, masked, "null 이던 칸은 세지 않는다")
         assertEquals(10, rows[0]["okQty"]); assertNull(rows[0]["unitPrice"]); assertEquals(0.3, rows[0]["mixRatio"], "미적용 항목은 가리지 않는다")
-        assertEquals(setOf("price"), service.blindKeysFor(principal(setOf("qty"))))
+        assertEquals(setOf("price", "lot"), service.blindKeysFor(principal(setOf("qty"))), "적용 중 항목 중 못 보는 것 전부")
         assertTrue(service.blindKeysFor(admin).isEmpty())
     }
 
@@ -190,7 +191,11 @@ class DataFieldRuntimeTest {
         assertEquals("단가는 <b>1200</b>" to 0, service.maskText("단가는 <b>1200</b>", p), "태그를 넘어 값을 찾지 않는다")
         assertEquals("고객사 삼성전기 비중 40%" to 0, service.maskText("고객사 삼성전기 비중 40%", p), "미적용·무관 항목은 그대로")
         assertEquals("최고 단가 제품은 비공개, 최저는 비공개" to 2, service.maskText("최고 단가 제품은 MDL-77, 최저는 MDL-09", p, extraValues = listOf("MDL-77", "MDL-09")), "표에서 가린 값")
-        assertEquals("단가 기준 모델 MDL-77 입니다" to 0, service.maskText("단가 기준 모델 MDL-77 입니다", p), "모델 코드 속 숫자는 값이 아니다")
+        assertEquals("단가 기준 모델 비공개 입니다" to 1, service.maskText("단가 기준 모델 MDL-77 입니다", p), "코드형 식별자는 통째로 값 — 'MDL-비공개' 처럼 반만 가리지 않는다")
+        assertEquals("로트번호 비공개 의 이력, lotNo=비공개" to 2, service.maskText("로트번호 L260824-031 의 이력, lotNo=PR-03", p), "() 조각 라벨 + 코드형 식별자")
+        assertEquals("L260824-031 로트의 이력" to 0, service.maskText("L260824-031 로트의 이력", p), "값이 라벨보다 앞이면 규칙 1 로는 못 잡는다(알려진 한계 — 표 값이면 규칙 2 로 가려진다)")
+        assertEquals("비공개 로트의 이력" to 1, service.maskText("L260824-031 로트의 이력", p, extraValues = listOf("L260824-031")), "표에서 가린 값이면 앞에 와도 가려진다")
+        assertEquals("로트 정보 담당은 홍길동입니다" to 0, service.maskText("로트 정보 담당은 홍길동입니다", p), "일반 한글 낱말은 값 후보가 아니다 — 문장을 망가뜨리지 않는다")
         assertEquals("단가 12,400원" to 0, service.maskText("단가 12,400원", admin), "통합관리자는 가리지 않는다")
         assertEquals(null to 0, service.maskText(null, p))
     }
@@ -221,6 +226,7 @@ class DataFieldRuntimeTest {
         service.setApply("recipe", true)
         val after = service.keywordsOfBlindFields(p)
         assertTrue(after.contains("배합 비율") && after.contains("mixRatio") && !after.contains("비율"), after.toString())
+        assertTrue(kws.containsAll(listOf("로트 정보(로트번호)", "로트 정보", "로트번호", "lotNo")), "() 로도 쪼갠다: $kws")
         assertTrue(service.keywordsOfBlindFields(admin).isEmpty())
     }
 }

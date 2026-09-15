@@ -49,8 +49,12 @@ class DataFieldService(
         /** 문장에서 가릴 때 넣는 말 */
         const val MASK = "비공개"
 
-        /** 숫자 값 — 천 단위 콤마 · 소수 · 바로(또는 한 칸 뒤에) 붙는 단위(%, 원, 개, EA, 건, kg, mm, 장, 매, 톤). 문장 끝 마침표는 먹지 않는다 */
-        const val VALUE_PATTERN = "[0-9]+(?:[,.][0-9]+)*(?: ?(?:%|원|개|ea|건|kg|mm|㎜|장|매|톤))?"
+        /**
+         * 값 토막 — (1) 숫자: 천 단위 콤마 · 소수 · 바로(또는 한 칸 뒤에) 붙는 단위(%, 원, 개, EA, 건, kg, mm, 장, 매, 톤)
+         *          (2) 코드형 식별자: 영문 1~6자 + 숫자(하이픈 구간 포함) — L260824-031 · PR-03 · W-1023
+         * 일반 한글 낱말은 값 후보에 넣지 않는다 — 라벨 뒤의 멀쩡한 말까지 집어삼켜 문장이 망가진다. 문장 끝 마침표는 먹지 않는다
+         */
+        const val VALUE_PATTERN = "(?:[0-9]+(?:[,.][0-9]+)*(?: ?(?:%|원|개|ea|건|kg|mm|㎜|장|매|톤))?|[A-Za-z]{1,6}-?[0-9][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*)(?![A-Za-z0-9])"
     }
 
     // =================================================================================
@@ -239,11 +243,12 @@ class DataFieldService(
     /**
      * 자연어 문장 안의 권한 없는 값만 「비공개」로 바꾼다 — 문장 구조는 살린다.
      *
-     * 값을 찾는 규칙 두 가지.
-     * 1. 항목 키워드(항목명 전체 · `·`/`/` 조각 · 응답 필드명) 뒤 24자 안에 오는 숫자 값(천 단위 콤마·소수·단위 포함)
-     *    예) 「8월 평균 단가는 12,400원입니다」 → 「8월 평균 단가는 비공개입니다」
-     * 2. [maskRows] 가 표에서 가린 값 그대로(2자 이상) — 표의 값이 문장에 풀어 쓰인 경우
-     * HTML 태그(`<…>`)는 넘지 않는다. 숫자가 아닌 값(고객사명·작업자명)은 1번으로는 못 찾고 2번으로만 가려진다.
+     * 값을 찾는 규칙 두 가지. 라벨(항목 키워드)은 **항목 표에서** 뽑는다 — 고정 목록이 없어 새 항목도 배포 없이 걸린다.
+     * 1. 항목 키워드(항목명 전체 · `·`/`,`/`()` 조각 · 응답 필드명) 뒤 24자 안에 오는 값 토막([VALUE_PATTERN] — 숫자+단위 또는 코드형 식별자)
+     *    예) 「8월 평균 단가는 12,400원입니다」 → 「8월 평균 단가는 비공개입니다」, 「작업자 사번 W-1023 배치」 → 「작업자 사번 비공개 배치」
+     * 2. [maskRows] 가 표에서 가린 값 그대로(2자 이상) — 표의 값이 문장에 풀어 쓰인 경우. 값이 라벨보다 앞에 오는 문장도 이 규칙으로는 가려진다
+     * HTML 태그(`<…>`)는 넘지 않는다. 일반 한글 낱말 값(고객사명·작업자명)은 1번으로는 못 찾고 2번으로만 가려진다.
+     * WEB(f6bb760 · 9ca5bf8)의 문장 필터와 같은 원칙이다 — 라벨 후보 · 값 토막 · 「라벨은 남기고 값만」.
      *
      * @return 가린 문장 · 치환 수
      */
@@ -256,7 +261,7 @@ class DataFieldService(
             out = re.replace(out!!) { cnt++; MASK }
         }
         keywordsOfBlindFields(principal).forEach { kw ->
-            // 숫자 앞이 영문·숫자·'-' 면 식별자(모델 코드)의 일부라 값으로 보지 않는다
+            // 값 토막은 앞이 영문·숫자·'-' 가 아닌 자리에서 시작한다(식별자 한가운데의 숫자를 값으로 보지 않는다)
             val re = Regex("(${Regex.escape(kw)})([^0-9<>]{0,24}?)(?<![A-Za-z0-9-])(${VALUE_PATTERN})", RegexOption.IGNORE_CASE)
             out = re.replace(out!!) { m -> cnt++; m.groupValues[1] + m.groupValues[2] + MASK }
         }
@@ -291,14 +296,14 @@ class DataFieldService(
         return cnt
     }
 
-    /** 이 사용자가 열람할 수 없는 적용 중 항목의 키워드 — 항목명 전체 · `·`/`/` 조각(2자 이상) · 응답 필드명. 긴 것부터 */
+    /** 이 사용자가 열람할 수 없는 적용 중 항목의 키워드 — 항목명 전체 · `·`/`,`/`()` 조각(2자 이상) · 응답 필드명. 공백으로는 나누지 않는다. 긴 것부터 */
     internal fun keywordsOfBlindFields(principal: UserPrincipal): List<String> {
         if (principal.superAdmin) return emptyList()
         return appliedFieldsCached().filterNot { principal.canReadField(it["key"] as String) }.flatMap { f ->
             val name = (f["name"] as? String).orEmpty().trim()
             @Suppress("UNCHECKED_CAST")
             val attrs = (f["attrs"] as? List<String>).orEmpty()
-            (listOf(name) + name.split('·', '/') + attrs).map { it.trim() }.filter { it.length >= 2 }
+            (listOf(name) + name.split('·', '/', ',', '(', ')') + attrs).map { it.trim() }.filter { it.length >= 2 }
         }.distinct().sortedByDescending { it.length }
     }
 
