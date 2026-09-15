@@ -96,6 +96,8 @@ ON CONFLICT (attr_name) DO NOTHING;
 ```
 `price`·`plan`·`worker` 는 응답 키가 조건 분기(`planAllowed`·`priceAllowed`) 안에 흩어져 있어 위 목록에 없다 — 화면 쪽 카탈로그로 보태는 것이 정확하다.
 `name`·`code`·`value` 같은 흔한 이름은 전 화면을 가리므로 등록하지 않는다.
+**`worker` 에 `empNo`·`userId`·`by`·`byEmpNo` 를 붙이지 않는다** — 계정 관리 · 승인 대기 · 변경 이력 · 감사 로그 · 다운로드 이력이 사번을 행 키로 쓰고 있어
+`worker` 권한이 없는 관리자의 관리 화면이 통째로 가려진다(2026-09-16 WEB 확인). 위 목록(32개)에는 사번 키가 없다.
 
 ## 7. 바뀐 파일
 
