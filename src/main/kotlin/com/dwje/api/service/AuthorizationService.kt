@@ -47,8 +47,9 @@ class AuthorizationService(
         val deptId = user["deptId"] as Int
         val superAdmin = user["superAdmin"] as Boolean
 
-        // 3. 부서 기준 메뉴/데이터 권한 조회 (통합관리자는 조회 없이 전 권한)
-        val menuPerms = if (superAdmin) emptySet() else authRepository.findMenuPermissions(deptId)
+        // 3. 화면 권한은 부서 ∪ 계정 추가 허용(사번 기준, V30 뷰), 데이터 권한은 부서 기준. 통합관리자는 조회 없이 전 권한.
+        //    매 요청 다시 읽으므로 추가 허용을 넣고 빼면 발급된 토큰에도 바로 반영된다.
+        val menuPerms = if (superAdmin) emptySet() else authRepository.findEffectiveMenuPermissions(user["userId"] as String)
         val dataPerms = if (superAdmin) emptySet() else authRepository.findDataPermissions(deptId)
 
         return UserPrincipal(
@@ -86,7 +87,7 @@ class AuthorizationService(
 
         val deptId = user["deptId"] as Int
         val superAdmin = user["superAdmin"] as Boolean
-        val menuPerms = if (superAdmin) emptySet() else authRepository.findMenuPermissions(deptId)
+        val menuPerms = if (superAdmin) emptySet() else authRepository.findEffectiveMenuPermissions(user["userId"] as String)
         val dataPerms = if (superAdmin) emptySet() else authRepository.findDataPermissions(deptId)
 
         return UserPrincipal(

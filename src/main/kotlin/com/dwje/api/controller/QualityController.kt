@@ -1,9 +1,13 @@
 package com.dwje.api.controller
 
+import com.dwje.api.common.exception.InvalidParameterException
 import com.dwje.api.common.response.ApiResponse
+import com.dwje.api.common.security.UserContext
+import com.dwje.api.common.util.DateUtils
 import com.dwje.api.common.util.MenuId
 import com.dwje.api.model.request.EvidenceImageRequest
 import com.dwje.api.model.request.ExportFormatRequest
+import com.dwje.api.model.request.QualityDefectExportRequest
 import com.dwje.api.model.request.QualityReportDraftRequest
 import com.dwje.api.model.request.ReasonRequest
 import com.dwje.api.model.request.ReportCorrectionRequest
@@ -13,7 +17,10 @@ import com.dwje.api.service.AoiDefectService
 import com.dwje.api.service.AoiPredictionService
 import com.dwje.api.service.DownloadLogService
 import com.dwje.api.service.ExportService
+import com.dwje.api.service.DefectExportConditions
+import com.dwje.api.service.DefectTreeLevel
 import com.dwje.api.service.QualityDefectService
+import com.dwje.api.service.QualityDefectWorkbook
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.Parameter
 import io.swagger.v3.oas.annotations.tags.Tag
@@ -49,7 +56,8 @@ class QualityController(
     private val aoiPredictionService: AoiPredictionService,
     private val aoiDefectService: AoiDefectService,
     private val exportService: ExportService,
-    private val downloadLogService: DownloadLogService
+    private val downloadLogService: DownloadLogService,
+    private val defectWorkbook: QualityDefectWorkbook
 ) {
 
     // =================================================================================
@@ -81,17 +89,180 @@ class QualityController(
         return ApiResponse.ok(data, mask.maskedKeys())
     }
 
-    /** 라인별 불량률 (No.75) */
-    @Operation(summary = "라인별 불량률", description = "설비별 불량 수량·불량률과 주 불량 유형을 반환한다.")
+    /** 라인별 불량률 + 설비별 불량 유형 내역 (No.75) */
+    @Operation(
+        summary = "라인별 불량률",
+        description = "설비별 정상·불량 수량, 불량률, 주 불량 유형과 그 설비의 불량 유형 내역(children)을 반환한다. " +
+            "topN 을 비우거나 0 이면 전체 설비(불량 수량 내림차순). 비용은 기간 길이에 비례하고 N 과 무관하다."
+    )
     @GetMapping("/defects/by-line")
     fun defectByLine(
         @RequestParam(required = false) from: String?,
         @RequestParam(required = false) to: String?,
         @RequestParam(required = false) processId: String?,
-        @RequestParam(required = false, defaultValue = "5") topN: Int
+        @Parameter(description = "상위 조회 대수. 비우거나 0 이면 전체 설비, 양수는 그 수만큼(상한 2000)")
+        @RequestParam(required = false) topN: Int?
     ): ApiResponse<Map<String, Any?>> {
         val (data, mask) = qualityDefectService.getByLine(from, to, processId, topN)
         return ApiResponse.ok(data, mask.maskedKeys())
+    }
+
+    /**
+     * 불량 상세 분해 트리 (QC-01 드릴다운)
+     */
+    @Operation(
+        summary = "불량 상세 분해 트리",
+        description = "정상·불량 수량과 불량률을 공정 > 제품 > 설비 > 불량 유형 트리로 반환한다(children 중첩). " +
+            "levels 로 순서를 바꿀 수 있고(예 wc,eqpt,item,defect) defect 는 마지막에만 온다. " +
+            "모든 단계 행에 plantCd/plantNm·wcCd/wcNm·itemCd/itemNm·eqptCd/eqptNm·defectCd/defectNm 열이 있고 그 단계까지 확정된 값만 채운다. " +
+            "상위 수량은 하위 합과 같다. 유형 행은 ngQty 와 ratio(상위 ngQty 대비 %)만 있다. 전량 응답 — 30일 약 3천 노드."
+    )
+    @GetMapping("/defects/tree")
+    fun defectTree(
+        @RequestParam(required = false) from: String?,
+        @RequestParam(required = false) to: String?,
+        @RequestParam(required = false) processId: String?,
+        @Parameter(description = "단계 순서 — wc,item,eqpt,defect 중 골라 콤마로. 비우면 wc,item,eqpt,defect")
+        @RequestParam(required = false) levels: String?
+    ): ApiResponse<Map<String, Any?>> {
+        val (data, mask) = qualityDefectService.getDefectTree(from, to, processId, levels)
+        return ApiResponse.ok(data, mask.maskedKeys())
+    }
+
+    /**
+     * 제품별 불량 현황 트리 (QC-01 제품별 불량 현황 카드)
+     */
+    @Operation(
+        summary = "제품별 불량 현황 트리",
+        description = "제품 > 불량 유형 > 설비(라인) > 공정 트리를 반환한다(children 중첩). " +
+            "제품 행은 원장 총량·정상·불량·불량률과 전체 불량 중 비중(ratio). 유형 이하 행의 totalQty 는 그 단계의 원장 분모라 형제끼리 더하면 안 되고, " +
+            "okQty 는 null, ngQty 는 안분 불량(상위 = 하위 합, 유형 미상 포함), ratio 는 상위 불량 대비 비중이다."
+    )
+    @GetMapping("/defects/by-product")
+    fun defectByProduct(
+        @RequestParam(required = false) from: String?,
+        @RequestParam(required = false) to: String?,
+        @RequestParam(required = false) processId: String?
+    ): ApiResponse<Map<String, Any?>> {
+        val (data, mask) = qualityDefectService.getByProduct(from, to, processId)
+        return ApiResponse.ok(data, mask.maskedKeys())
+    }
+
+    /**
+     * 불량 유형별 분포 내려받기 (xlsx)
+     *
+     * 계약은 실적 집계 화면 전체 내려받기(`production/results/export?scope=screen`)와 같다 —
+     * xlsx 바이너리 + `Content-Disposition` 파일명 + 다운로드 이력 + 권한 마스킹.
+     */
+    @Operation(
+        summary = "불량 유형별 분포 내려받기",
+        description = "불량 유형별 분포(by-type)를 조회 조건 시트와 함께 xlsx 로 내려받는다. format 은 xlsx 만 받는다."
+    )
+    @PostMapping("/defects/by-type/export")
+    fun defectByTypeExport(
+        @Valid @RequestBody(required = false) request: QualityDefectExportRequest?
+    ): ResponseEntity<ByteArrayResource> {
+        val req = request ?: QualityDefectExportRequest()
+        requireXlsx(req.format)
+        val (fromDate, toDate) = DateUtils.periodOf(req.from, req.to)
+        val (data, mask) = qualityDefectService.getByType(req.from, req.to, req.processId)
+        val items = itemsOf(data)
+
+        val bytes = defectWorkbook.byType(conditionsOf(req, fromDate, toDate, mask.maskedKeys()), items)
+        val fileName = "불량_유형별_분포_${fromDate}_${toDate}.xlsx"
+        val response = exportService.xlsx(bytes, fileName)
+
+        recordDefectExport("불량 유형별 분포", req, fromDate, toDate, items.size, mask, fileName, bytes.size)
+        return response
+    }
+
+    /**
+     * 설비별 불량률 내려받기 (xlsx) — 설비별 표 + 설비별 불량 유형 상세 시트
+     */
+    @Operation(
+        summary = "설비별 불량률 내려받기",
+        description = "설비별 불량률(by-line, 전체 설비)과 설비별 불량 유형 상세를 조회 조건 시트와 함께 xlsx 로 내려받는다. format 은 xlsx 만 받는다."
+    )
+    @PostMapping("/defects/by-line/export")
+    fun defectByLineExport(
+        @Valid @RequestBody(required = false) request: QualityDefectExportRequest?
+    ): ResponseEntity<ByteArrayResource> {
+        val req = request ?: QualityDefectExportRequest()
+        requireXlsx(req.format)
+        val (fromDate, toDate) = DateUtils.periodOf(req.from, req.to)
+        // 내려받기는 화면과 같이 전체 설비다. 불량 상세 분해 트리도 같은 조건으로 함께 담는다.
+        val (data, mask) = qualityDefectService.getByLine(req.from, req.to, req.processId, null)
+        val items = itemsOf(data)
+        val levels = DefectTreeLevel.parse(req.levels)
+        val (tree, _) = qualityDefectService.getDefectTree(req.from, req.to, req.processId, req.levels)
+
+        val bytes = defectWorkbook.byLine(
+            conditionsOf(req, fromDate, toDate, mask.maskedKeys()), items, levels, itemsOf(tree)
+        )
+        val fileName = "설비별_불량률_${fromDate}_${toDate}.xlsx"
+        val response = exportService.xlsx(bytes, fileName)
+
+        recordDefectExport("설비별 불량률", req, fromDate, toDate, items.size, mask, fileName, bytes.size)
+        return response
+    }
+
+    private fun requireXlsx(format: String?) {
+        val normalized = (format ?: "xlsx").trim().lowercase()
+        if (normalized !in setOf("xlsx", "xls", "excel")) {
+            throw InvalidParameterException("불량 현황 내려받기는 xlsx 만 지원합니다. [format=$format]", "format")
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun itemsOf(data: Map<String, Any?>): List<Map<String, Any?>> =
+        (data["items"] as? List<Map<String, Any?>>).orEmpty()
+
+    private fun conditionsOf(
+        req: QualityDefectExportRequest,
+        fromDate: java.time.LocalDate,
+        toDate: java.time.LocalDate,
+        maskedFields: List<String>
+    ): DefectExportConditions = DefectExportConditions(
+        from = fromDate,
+        to = toDate,
+        processId = req.processId?.trim()?.takeIf { it.isNotEmpty() },
+        defectTypeCd = req.defectTypeCd?.trim()?.takeIf { it.isNotEmpty() },
+        maskedFields = maskedFields,
+        downloadedBy = UserContext.currentOrNull()?.let { "${it.userName}(${it.userId})" }
+    )
+
+    /** 파일을 만든 뒤에 이력을 남긴다 — 만들다 실패하면 DONE 으로 기록되지 않는다. */
+    private fun recordDefectExport(
+        reportNm: String,
+        req: QualityDefectExportRequest,
+        fromDate: java.time.LocalDate,
+        toDate: java.time.LocalDate,
+        rowCnt: Int,
+        mask: com.dwje.api.common.util.MaskingSupport,
+        fileName: String,
+        fileSize: Int
+    ) {
+        downloadLogService.record(
+            reportId = null,
+            reportNm = reportNm,
+            menuId = MenuId.QC_DEFECT,
+            format = "xlsx",
+            // scope_desc 는 100자 컬럼이다 — 조건 전문은 params 에 있다.
+            scope = "from=$fromDate, to=$toDate, processId=${req.processId ?: "전체"}".take(100),
+            rowCnt = rowCnt,
+            blindCnt = mask.maskedCount(),
+            blindCells = mask.maskedKeys().associateWith { rowCnt },
+            fileNm = fileName,
+            params = mapOf(
+                "from" to fromDate.toString(),
+                "to" to toDate.toString(),
+                "processId" to req.processId,
+                "defectTypeCd" to req.defectTypeCd,
+                "levels" to req.levels,
+                "format" to "xlsx"
+            ),
+            fileSize = fileSize.toLong()
+        )
     }
 
     // =================================================================================

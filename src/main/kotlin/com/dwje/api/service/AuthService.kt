@@ -264,7 +264,7 @@ class AuthService(
     @Transactional(readOnly = true)
     fun getMenuTree(): MenuTreeResponse {
         val principal = UserContext.current()
-        val rows = authRepository.findMenuTree(principal.deptId, principal.superAdmin)
+        val rows = authRepository.findMenuTree(principal.userId, principal.superAdmin)
 
         // 그룹 단위로 묶되 DB 정렬 순서(sort_seq)를 유지한다.
         val groups = rows

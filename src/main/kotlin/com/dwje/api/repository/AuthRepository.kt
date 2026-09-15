@@ -74,6 +74,17 @@ class AuthRepository(
      * @param deptId 부서 ID
      * @return 읽기 권한이 있는 menu_id 집합
      */
+    /**
+     * 계정의 **유효** 화면 권한 — 부서 권한 ∪ 계정 추가 허용(`ax.tb_sys_user_menu_grant`). (V30 · 2026-09-13)
+     *
+     * 규칙은 뷰 `ax.vw_sys_user_menu_perm` 한 곳에 있다(사용 중지 화면 제외 포함). 통합관리자 전 화면 허용은
+     * 뷰에 없으므로 호출 측이 `superAdmin` 이면 조회하지 않고 통과시킨다(기존 판정 그대로).
+     */
+    fun findEffectiveMenuPermissions(userId: String): Set<String> {
+        val sql = "SELECT menu_id FROM ax.vw_sys_user_menu_perm WHERE user_id = :userId"
+        return jdbcTemplate.query(sql, MapSqlParameterSource("userId", userId)) { rs, _ -> rs.getString("menu_id") }.toSet()
+    }
+
     fun findMenuPermissions(deptId: Int): Set<String> {
         val sql = """
             SELECT p.menu_id
@@ -244,7 +255,11 @@ class AuthRepository(
      * @param deptId     부서 ID
      * @param superAdmin 통합관리자 여부 — true 면 전체 메뉴를 반환한다.
      */
-    fun findMenuTree(deptId: Int, superAdmin: Boolean): List<Map<String, Any?>> {
+    /**
+     * 좌측 메뉴 트리 — 통합관리자가 아니면 **유효 화면 권한**(부서 ∪ 계정 추가 허용, `ax.vw_sys_user_menu_perm`)으로 거른다.
+     * 부서만 보면 계정에만 열어 준 화면이 메뉴에서 빠진다(2026-09-13 V30).
+     */
+    fun findMenuTree(userId: String, superAdmin: Boolean): List<Map<String, Any?>> {
         // 기본 SQL 정의 — 메뉴에 노출되지 않는 하위 화면(is_sub_page)은 트리에서 제외한다.
         val sql = StringBuilder(
             """
@@ -268,21 +283,20 @@ class AuthRepository(
 
         val params = MapSqlParameterSource()
 
-        // 통합관리자가 아니면 부서 메뉴 권한으로 필터링한다.
+        // 통합관리자가 아니면 유효 화면 권한(부서 ∪ 계정 추가 허용)으로 필터링한다.
         if (!superAdmin) {
             sql.append(
                 """
 
                 AND EXISTS (
                     SELECT 1
-                      FROM ax.tb_sys_dept_menu_perm p
-                     WHERE p.menu_id  = m.menu_id
-                       AND p.dept_id  = :deptId
-                       AND p.can_read = true
+                      FROM ax.vw_sys_user_menu_perm v
+                     WHERE v.menu_id = m.menu_id
+                       AND v.user_id = :userId
                 )
                 """.trimIndent()
             )
-            params.addValue("deptId", deptId)
+            params.addValue("userId", userId)
         }
 
         sql.append("\nORDER BY g.sort_seq, m.sort_seq")

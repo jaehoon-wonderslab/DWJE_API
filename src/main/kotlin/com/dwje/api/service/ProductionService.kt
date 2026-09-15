@@ -9,13 +9,19 @@ import com.dwje.api.common.util.MaskingSupport
 import com.dwje.api.common.util.MenuId
 import com.dwje.api.common.util.PageRequestParam
 import com.dwje.api.common.util.ProductionMonitorPeriod
+import com.dwje.api.common.util.TimeWindow
+import com.dwje.api.common.util.WorkcenterNames
+import com.dwje.api.common.util.safeRate
 import com.dwje.api.config.AppProperties
 import com.dwje.api.repository.DashboardAiRepository
 import com.dwje.api.repository.ProductionRepository
 import com.dwje.api.repository.ResultFilter
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import java.math.BigDecimal
+import java.math.RoundingMode
 import java.time.LocalDate
+import java.time.temporal.ChronoUnit
 
 /**
  * 생산 모니터링 · 실적 집계 서비스 (PR-01, PR-02)
@@ -39,6 +45,9 @@ class ProductionService(
 
         /** 실적 집계 허용 단위 */
         private val ALLOWED_UNITS = setOf("day", "week", "month")
+
+        /** 화면 전체 내려받기 기간 상한(일) — 추이 차트의 구간 상한(366)과 같다 */
+        private const val MAX_SCREEN_EXPORT_DAYS = 366
 
         /** 기준일 모니터의 기본 설비 화면은 C-프레스 10대(MT-001~010)다. */
         private const val DEFAULT_MONITOR_PRESS_PROCESS = "W120"
@@ -264,6 +273,136 @@ class ProductionService(
         val rows = productionRepository.findResults(filter, normalizeUnit(unit), 10000, 0)
         return maskResultRows(rows, mask) to mask
     }
+
+    /**
+     * 실적 집계·조회 화면 **전체** 내려받기 재료 (scope=screen).
+     *
+     * 화면이 보여 주는 것을 그대로 담는다 — 조회 조건은 일별·전체 제품·전체 설비로 고정이고,
+     * 트리는 화면이 세 API 로 조립하던 것을 서버가 같은 기준으로 한 번에 만든다.
+     *
+     *   일자 행   : [ProductionRepository.findResults] unit=day (실적 집계 표 · 추이 차트와 같은 행)
+     *   제품 소계 : 설비 행을 (일자, 제품) 으로 더한 값 — `/dashboard/process/product-production` 과 같은 원장·같은 식
+     *   설비 행   : [DashboardAiRepository.findLineProductsByDay] — `/dashboard/ai/line-products` 와 같은 SQL
+     *
+     * 세 층 모두 `mes.tb_pop_label_hist`(del_flg='N', ins_date 일 단위) 하나에서 나오므로 층끼리 합이 맞는다.
+     * 가동률·비가동 시간은 일자 행에만 출처가 있다(지표·비가동 원장이 일 단위) — 제품·설비 행은 null 로 둔다.
+     *
+     * 페이지 제한이 없다. 대신 기간을 366일로 막는다(추이 차트와 같은 상한).
+     *
+     * @param from 시작일. 비우면 종료일 −7일 — 화면 기본값과 같다
+     * @param to   종료일(포함). 비우면 오늘
+     */
+    @Transactional(readOnly = true)
+    fun getResultScreenExport(from: String?, to: String?): ResultScreenExport {
+        val (principal, mask) = authorizationService.guard(MenuId.PROD_RESULT)
+        val (fromDate, toDate) = DateUtils.periodOf(from, to, defaultDays = 7)
+        if (ChronoUnit.DAYS.between(fromDate, toDate) >= MAX_SCREEN_EXPORT_DAYS) {
+            throw InvalidParameterException(
+                "화면 전체 내려받기는 최대 ${MAX_SCREEN_EXPORT_DAYS}일까지 가능합니다. [from=$fromDate, to=$toDate]", "from"
+            )
+        }
+
+        val filter = resultFilterOf(fromDate, toDate, null, null, null)
+        val plantCd = appProperties.defaultPlantCd
+
+        // 1. 일자 행 — 표·차트와 같은 조회. DESC 로 오므로 그대로 트리 순서에 쓴다.
+        val dayRows = maskResultRows(productionRepository.findResults(filter, "day", MAX_SCREEN_EXPORT_DAYS, 0), mask)
+
+        // 2. 기간 전체 합계 — 화면 합계 요약 바. 평균 가동률·비가동 합계는 일자 행에서 낸다(측정이 없으면 null).
+        val summary = productionRepository.findResultSummary(filter).toMutableMap()
+        mask.applyTo(
+            summary,
+            mapOf(
+                "inputQty" to DataField.QTY, "okQty" to DataField.QTY, "ngQty" to DataField.QTY,
+                "defectRate" to DataField.YIELD, "yield" to DataField.YIELD
+            )
+        )
+        summary["avgUptimeRate"] = dayRows.mapNotNull { it["uptimeRate"] as? Double }
+            .takeIf { it.isNotEmpty() }
+            ?.let { BigDecimal(it.average()).setScale(2, RoundingMode.HALF_UP).toDouble() }
+        summary["downtimeMin"] = dayRows.mapNotNull { it["downtimeMin"] as? Int }
+            .takeIf { it.isNotEmpty() }?.sum()
+
+        // 3. 설비 행 — 마스킹 전 원값으로 제품 소계를 먼저 더한다(소계 비율은 원값 합에서 나와야 한다).
+        val window = TimeWindow(fromDate.atStartOfDay(), toDate.plusDays(1).atStartOfDay())
+        val lineRowsByDay = dashboardAiRepository.findLineProductsByDay(plantCd, window)
+            .groupBy { it["period"] as String }
+
+        val qtyAllowed = mask.check(DataField.QTY)
+        val yieldAllowed = mask.check(DataField.YIELD)
+        val rows = mutableListOf<ResultScreenExportRow>()
+        dayRows.forEach { d ->
+            val period = d["period"] as String
+            rows += ResultScreenExportRow(
+                level = 1, period = period,
+                inputQty = d["inputQty"] as? Long, okQty = d["okQty"] as? Long, ngQty = d["ngQty"] as? Long,
+                defectRate = d["defectRate"] as? Double,
+                uptimeRate = d["uptimeRate"] as? Double, downtimeMin = d["downtimeMin"] as? Int
+            )
+            val byProduct = lineRowsByDay[period].orEmpty().groupBy { (it["product"] as? String) ?: "" }
+            byProduct.map { (code, lines) -> productSubtotal(period, code, lines) to lines }
+                // 화면의 제품 소계 순서 — 투입 수량 내림차순(product-production 의 ORDER BY total_qty DESC)
+                .sortedWith(compareByDescending<Pair<ResultScreenExportRow, List<Map<String, Any?>>>> { it.first.inputQty ?: -1L }
+                    .thenBy { it.first.productCd ?: "" })
+                .forEach { (product, lines) ->
+                    rows += product.masked(qtyAllowed, yieldAllowed)
+                    lines.map { equipmentRow(period, it) }
+                        // 화면의 설비 행 순서 — 불량률 내림차순(편차가 큰 설비가 위로)
+                        .sortedWith(compareByDescending<ResultScreenExportRow> { it.defectRate ?: -1.0 }.thenBy { it.eqptCd ?: "" })
+                        .forEach { rows += it.masked(qtyAllowed, yieldAllowed) }
+                }
+        }
+
+        return ResultScreenExport(
+            from = fromDate,
+            to = toDate,
+            summary = summary.toMap(),
+            dayRows = dayRows.sortedBy { it["period"] as String },
+            rows = rows,
+            maskedFields = mask.maskedKeys(),
+            downloadedBy = "${principal.userName}(${principal.userId})"
+        )
+    }
+
+    /** (일자, 제품) 소계 — 설비 행의 원값 합. 모델명은 매핑이 있는 행에서 하나 고른다. */
+    private fun productSubtotal(period: String, code: String, lines: List<Map<String, Any?>>): ResultScreenExportRow {
+        val ok = lines.sumOf { (it["okQty"] as? Long) ?: 0L }
+        val ng = lines.sumOf { (it["ngQty"] as? Long) ?: 0L }
+        val total = lines.sumOf { (it["qty"] as? Long) ?: 0L }
+        return ResultScreenExportRow(
+            level = 2, period = period,
+            productCd = code.takeIf { it.isNotBlank() },
+            productNm = lines.firstNotNullOfOrNull { (it["productNm"] as? String)?.takeIf { s -> s.isNotBlank() } },
+            inputQty = total, okQty = ok, ngQty = ng,
+            defectRate = safeRate(BigDecimal(ng), BigDecimal(total))
+        )
+    }
+
+    /** 설비 행 — 공장은 작업장 이름에서만 읽고, 공정명은 공장 열과 같은 괄호 표기만 지운다. */
+    private fun equipmentRow(period: String, line: Map<String, Any?>): ResultScreenExportRow {
+        val processNm = line["processNm"] as? String
+        val plantNm = WorkcenterNames.plantOf(processNm)
+        return ResultScreenExportRow(
+            level = 3, period = period,
+            productCd = line["product"] as? String,
+            productNm = line["productNm"] as? String,
+            plantNm = plantNm,
+            processNm = WorkcenterNames.withoutPlant(processNm, plantNm) ?: line["processId"] as? String,
+            eqptCd = line["eqptCd"] as? String,
+            eqptNm = line["eqptNm"] as? String,
+            inputQty = line["qty"] as? Long, okQty = line["okQty"] as? Long, ngQty = line["ngQty"] as? Long,
+            defectRate = line["defectRate"] as? Double
+        )
+    }
+
+    /** 트리 행에 데이터 접근 권한 마스킹을 적용한다. 가동률·비가동은 마스킹 대상이 아니다(표와 같다). */
+    private fun ResultScreenExportRow.masked(qtyAllowed: Boolean, yieldAllowed: Boolean): ResultScreenExportRow =
+        if (qtyAllowed && yieldAllowed) this else copy(
+            inputQty = if (qtyAllowed) inputQty else null,
+            okQty = if (qtyAllowed) okQty else null,
+            ngQty = if (qtyAllowed) ngQty else null,
+            defectRate = if (yieldAllowed) defectRate else null
+        )
 
     /**
      * 실적 집계 조회 조건을 만들면서 코드를 검증한다.

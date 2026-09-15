@@ -22,8 +22,17 @@ data class UserSaveRequest(
     val state: String? = null,
     val switchable: Boolean? = null,
     val plantCd: String? = null,
+    /**
+     * 등록: 초기 비밀번호(비우면 `사번!Dwje1234`). 수정: **관리자 비밀번호 변경** — 비우거나 미전달이면 그대로,
+     * 값이 있으면 통합관리자 또는 부서 기본 sys-account 권한자만 바꿀 수 있다(그 외 403). 정책 검사 후 해시로만 저장하고 이력에 값은 남기지 않는다.
+     */
     val password: String? = null,
-    val remark: String? = null
+    val remark: String? = null,
+    /**
+     * 계정별 추가 허용 화면(menu_id) — 부서 권한에 **더해** 이 계정에만 열어 주는 화면 (V30 `ax.tb_sys_user_menu_grant`).
+     * `null`(미전달) 이면 그대로 두고, `[]` 면 전부 회수, 목록이면 그 목록으로 **치환**한다. 계정 정보와 한 트랜잭션으로 저장된다.
+     */
+    val extraMenuIds: List<String>? = null
 )
 
 /**

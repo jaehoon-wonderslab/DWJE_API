@@ -52,7 +52,7 @@ class SystemUserController(
         ApiResponse.ok(systemUserService.getAccountSummary())
 
     /** 계정 목록 조회 (No.128) */
-    @Operation(summary = "계정 목록 조회", description = "사번·이름·부서·상태로 계정을 조회한다.")
+    @Operation(summary = "계정 목록 조회", description = "계정을 조회한다. keyword 는 전 열 검색(사번·이름·부서명·약칭·직급·상태·마지막 접속). 행마다 extraMenuIds(계정별 추가 허용 화면)를 포함한다.")
     @GetMapping("/users")
     fun users(
         @RequestParam(required = false) keyword: String?,
@@ -70,10 +70,11 @@ class SystemUserController(
     @Operation(summary = "승인 대기 계정 목록", description = "회원가입 신청 후 승인을 기다리는 계정을 조회한다.")
     @GetMapping("/users/pending")
     fun pendingUsers(
+        @Parameter(description = "전 열 검색 — 사번·이름·부서·직급·상태·접속") @RequestParam(required = false) keyword: String?,
         @RequestParam(required = false) page: Int?,
         @RequestParam(required = false) size: Int?
     ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta) = systemUserService.getPendingUsers(page, size)
+        val (rows, meta) = systemUserService.getPendingUsers(page, size, keyword)
         return ApiResponse.page(mapOf("items" to rows), meta)
     }
 
@@ -90,13 +91,13 @@ class SystemUserController(
         )
 
     /** 계정 등록 (No.129) */
-    @Operation(summary = "계정 등록", description = "새 계정을 등록한다. 초기 비밀번호는 BCrypt 로 저장한다.")
+    @Operation(summary = "계정 등록", description = "새 계정을 등록한다. extraMenuIds 를 주면 계정별 추가 허용 화면을 같은 트랜잭션으로 저장한다.")
     @PostMapping("/users")
     fun createUser(@Valid @RequestBody request: UserSaveRequest): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(systemUserService.createUser(request), "계정이 등록되었습니다.")
 
     /** 계정 수정 (No.130) */
-    @Operation(summary = "계정 수정", description = "계정 정보를 수정한다.")
+    @Operation(summary = "계정 수정", description = "계정 정보를 수정한다. extraMenuIds — 미전달이면 그대로, [] 면 전부 회수, 목록이면 치환. 없는 화면 ID 가 있으면 400 이고 아무것도 바뀌지 않는다.")
     @PutMapping("/users/{empNo}")
     fun updateUser(
         @PathVariable empNo: String,
@@ -137,13 +138,14 @@ class SystemUserController(
     fun permLogs(
         @RequestParam(required = false) from: String?,
         @RequestParam(required = false) to: String?,
+        @Parameter(description = "전 열 검색 — 대상·구분·내용·수행자(사번/이름/부서)") @RequestParam(required = false) keyword: String?,
         @RequestParam(required = false) target: String?,
         @Parameter(description = "변경 구분 — ACCOUNT|DEPT|MENU_PERM|DATA_PERM")
         @RequestParam(required = false) actType: String?,
         @RequestParam(required = false) page: Int?,
         @RequestParam(required = false) size: Int?
     ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta) = auditLogService.getPermLogs(from, to, target, actType, page, size)
+        val (rows, meta) = auditLogService.getPermLogs(from, to, target, actType, page, size, keyword)
         return ApiResponse.page(mapOf("items" to rows), meta)
     }
 
@@ -158,10 +160,20 @@ class SystemUserController(
         ApiResponse.ok(systemUserService.getDeptPermStatus())
 
     /** 부서 목록 조회 (No.135) */
-    @Operation(summary = "부서 목록 조회", description = "부서 목록과 소속 계정·권한 수를 반환한다.")
+    @Operation(
+        summary = "부서 목록 조회",
+        description = "부서 목록과 소속 계정·권한 수를 반환한다. keyword 는 부서명·약칭·설명 검색. " +
+            "page/size 를 주면 meta 와 함께 쪽으로, 없거나 size=0 이면 전량(items)으로 — 기존 선택지 호출과 호환된다."
+    )
     @GetMapping("/depts")
-    fun depts(): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(systemUserService.getDepts())
+    fun depts(
+        @RequestParam(required = false) keyword: String?,
+        @RequestParam(required = false) page: Int?,
+        @RequestParam(required = false) size: Int?
+    ): ApiResponse<Map<String, Any?>> {
+        val (rows, meta) = systemUserService.getDepts(keyword, page, size)
+        return if (meta == null) ApiResponse.ok(mapOf("items" to rows)) else ApiResponse.page(mapOf("items" to rows), meta)
+    }
 
     /** 부서 등록 (No.136) */
     @Operation(summary = "부서 등록", description = "부서를 등록하고 지정 부서의 초기 권한을 복사한다.")
@@ -189,7 +201,7 @@ class SystemUserController(
     // =================================================================================
 
     /** 메뉴 권한 매트릭스 조회 (No.140) */
-    @Operation(summary = "메뉴 권한 매트릭스 조회", description = "부서 × 화면 메뉴 권한 매트릭스를 반환한다.")
+    @Operation(summary = "메뉴 권한 매트릭스 조회", description = "부서 × 화면 메뉴 권한 매트릭스를 반환한다. 조회는 sys-menu 또는 sys-account 권한(계정별 추가 화면 선택지), 변경은 sys-menu 만.")
     @GetMapping("/menu-perms")
     fun menuPerms(): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(systemUserService.getMenuPermMatrix())

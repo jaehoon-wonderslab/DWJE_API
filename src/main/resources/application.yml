@@ -94,6 +94,72 @@ app:
     aoi-root: "${AX_NAS_AOI_ROOT:./data/nas-aoi}"
     # 이미지 프록시 URL 서명의 유효시간(초). 상세 응답을 받은 뒤 이 시간 안에 그려야 한다.
     image-url-ttl-sec: 900
+  # AOI 치수 원천(MSSQL EDGE.dbo.TB_SAMSUN_DIMENSION) 직접 조회 — 적재 배치·집계 테이블은 만들지 않는다(현업 결정 13).
+  # 계정은 환경변수로만 준다(AX_MSSQL_URL · AX_MSSQL_USER · AX_MSSQL_PASSWORD). 계정이 비면 SOURCE_NOT_CONFIGURED 를 낸다.
+  aoi:
+    mssql:
+      enabled: true
+      # sendStringParametersAsUnicode=false — varchar 키 열에 nvarchar 파라미터가 오면 PK 탐색이 스캔이 된다. URL 에 없으면 서버가 붙인다.
+      url: "${AX_MSSQL_URL:jdbc:sqlserver://192.168.7.203:1433;databaseName=EDGE;encrypt=true;trustServerCertificate=true;sendStringParametersAsUnicode=false}"
+      username: "${AX_MSSQL_USER:}"
+      password: "${AX_MSSQL_PASSWORD:}"
+      # 원천 동시 접속 상한 — 조회 하나가 설비 수만큼 쿼리를 내므로 이 수가 원천 부담의 상한이다.
+      pool-size: 3
+      parallelism: 3
+      # 쿼리 하나의 제한 시간(초). 실측 하루치 설비 전체 43초(콜드).
+      query-timeout-sec: 180
+    # 조회 기간 상한(일) — 실측으로 정했다(docs/AOI_DIMENSION_API_20260913.md 2절). 화면은 이 값을 넘게 고를 수 없다.
+    max-days: 7
+    # AOI 외관 판정 원천(EDGE.dbo.TB_SAMSUN_COSMETIC) — 2026-09-14 발주자 지시로 AOI 는 이 표만 쓴다.
+    # 치수(DIMENSION)와 설비가 겹치지 않는다: 외관 MN-*(S135 레이저·S138/W160 PACKING), 치수 GP-*·MQ-*(S110 도금·S120 도장).
+    cosmetic:
+      enabled: true
+      # 기간 상한 3일 — 행수 3,022만으로 치수(696만)의 4.3배라 7일을 그대로 쓰면 쿼리 제한(180초)에 걸린다.
+      # 실측 근거 docs/AOI_COSMETIC_SOURCE_SURVEY_20260914.md 8절.
+      max-days: 3
+      date-index: "SAMSUN_COSMETIC_DATE_TIME"
+      # 검사 항목 코드 → 한글 이름. 원천에 이름이 없다(2026-09-14 발주자 확인) — 비면 화면이 코드를 그대로 쓴다.
+      # 발주자가 이름을 주면 여기에 적는다. 예: { DF003: "치수 이상", DF021: "이물" }
+      item-names: {}
+      # 합부를 정하지 않는 항목 — 이 항목의 PASSED=0 은 불량이 아니라 「값 없음」이다.
+      # DF009 실측(09-12 전수): DF009 만 불량인 제품 50,976개 중 최종 불량 0개(0.00%).
+      # 다른 항목은 그 항목만 불량이면 100% 최종 불량이다. 귀속·설명률에서 빼되 목록에는 verdict:false 로 남긴다.
+      non-verdict-items:
+        - DF009
+    # 조회 결과 보관(초). 지난 기간 30분, 오늘이 든 기간 10분 — 현업 요구 최신성 30분~1시간.
+    cache-ttl-sec: 1800
+    today-cache-ttl-sec: 600
+    cache-max-entries: 200
+    # 측정 실패 판정 — 사용 FAI 중 0 이 아닌 값이 이 개수 이하면 측정 실패.
+    zero-row-nonzero-max: 5
+    briefing-top-fai: 5
+    # 확정 한계 세트 — PASSED 라벨 포화로 되찾은 값(docs/AOI_DIMENSION_SPEC_BACKCALC_20260913.md · S110_AND_DAILY_DESIGN).
+    # 여러 날짜·설비 표본에서 분해능 단위까지 일치한 것만 적었다. 확정되지 않은 FAI 는 적지 않는다(한계 없음).
+    limits:
+      # S120 도장(MQ-*) — MQ-008 3일 · MQ-003 · MQ018 5표본 일치. 상한 9 · 하한 2. 설비 공통.
+      - wc-cd: S120
+        eqpt-cd: "*"
+        resolution: 0.001
+        fai-count: 58
+        usl: { "1": 0.040, "2": 24.435, "4": 24.622, "5": 24.622, "7": 19.859, "10": 22.880, "11": 22.880, "32": 4.222, "52": 3.760 }
+        lsl: { "51": 3.560, "52": 3.560 }
+        basis: "MQ-008 2026-09-09~11 · MQ-003 · MQ018 09-11 (5표본 일치, 합격 오탐 0)"
+      # S110 도금(GP-*) 기본 — GP-009 3일 동일값. GP-013·GP-014 도 같은 값(합격 오탐 0).
+      - wc-cd: S110
+        eqpt-cd: "*"
+        resolution: 0.0001
+        fai-count: 45
+        usl: { "1": 0.070, "15": 20.169 }
+        lsl: { "15": 20.069, "16": 20.069, "17": 20.069, "34": 0.258 }
+        basis: "GP-009 2026-09-09~11 3일 일치 · GP-013·014 09-11 검증 (합격 오탐 0)"
+      # S110 GP-015 — 다른 규격(다른 제품 추정). 09-11 하루 표본의 포화값이라 재확정 대상이다.
+      - wc-cd: S110
+        eqpt-cd: GP-015
+        resolution: 0.0001
+        fai-count: 45
+        usl: { "1": 0.070, "15": 20.164 }
+        lsl: { "15": 20.074, "16": 20.074, "17": 20.074, "34": 0.258 }
+        basis: "GP-015 2026-09-11 단일 표본 포화값 — 7일 표본으로 재확정 필요"
   # 도금·코팅 작업장 — Plating·Coating 아침회의 자료의 기본 범위 (18개)
   plating-workcenters: [V110, V111, V112, V113,
                         S114, S115, S140, S116, S110, S117, S118, S112, S113,

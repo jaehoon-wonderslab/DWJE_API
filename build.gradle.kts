@@ -35,6 +35,8 @@ dependencies {
 
     // --- DB (PostgreSQL / Native SQL Direct Binding) ---
     runtimeOnly("org.postgresql:postgresql")
+    // --- AOI 치수 원천(MSSQL EDGE) 직접 조회 — 버전은 Spring Boot BOM 이 관리한다 ---
+    runtimeOnly("com.microsoft.sqlserver:mssql-jdbc")
 
     // --- 메일 발송 (이메일 인증) ---
     implementation("org.springframework.boot:spring-boot-starter-mail")

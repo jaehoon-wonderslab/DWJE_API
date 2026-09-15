@@ -344,8 +344,9 @@ class AuditLogRepository(
         to: LocalDate,
         target: String?,
         actType: String?,
-        limit: Int,
-        offset: Int
+        limit: Int?,
+        offset: Int,
+        keyword: String? = null
     ): List<Map<String, Any?>> {
         val sql = StringBuilder(
             """
@@ -354,6 +355,7 @@ class AuditLogRepository(
                 p.actor_user_id, p.actor_dept_nm, u.user_nm AS actor_nm
             FROM ax.tb_sys_perm_log p
             LEFT JOIN ax.tb_sys_user u ON u.user_id = p.actor_user_id
+            LEFT JOIN ax.tb_sys_code ac ON ac.group_cd = 'SYS_PERM_ACT' AND ac.code = p.act_cd
             WHERE p.log_at >= :from AND p.log_at < :toExclusive
             """.trimIndent()
         )
@@ -362,17 +364,19 @@ class AuditLogRepository(
             .addValue("from", from.atStartOfDay())
             .addValue("toExclusive", to.plusDays(1).atStartOfDay())
 
-        SqlLikeUtils.contains(target)?.let {
-            sql.append(" AND p.target_nm LIKE :target ESCAPE '\\'")
-            params.addValue("target", it)
-        }
-        if (!actType.isNullOrBlank()) {
-            sql.append(" AND p.act_cd = :actType")
-            params.addValue("actType", actType.trim())
-        }
+        appendPermLogFilters(sql, params, target, actType, keyword)
 
-        sql.append("\nORDER BY p.log_at DESC\nLIMIT :limit OFFSET :offset")
-        params.addValue("limit", limit).addValue("offset", offset)
+        sql.append("\nORDER BY p.log_at DESC")
+
+        // limit 이 null 이면 전량(size=0)
+
+        if (limit != null) {
+
+            sql.append("\nLIMIT :limit OFFSET :offset")
+
+            params.addValue("limit", limit).addValue("offset", offset)
+
+        }
 
         return jdbcTemplate.query(sql.toString(), params) { rs, _ ->
             mapOf(
@@ -389,11 +393,13 @@ class AuditLogRepository(
     }
 
     /** 계정·권한 변경 이력 전체 건수 */
-    fun countPermLogs(from: LocalDate, to: LocalDate, target: String?, actType: String?): Long {
+    fun countPermLogs(from: LocalDate, to: LocalDate, target: String?, actType: String?, keyword: String? = null): Long {
         val sql = StringBuilder(
             """
             SELECT count(*)
             FROM ax.tb_sys_perm_log p
+            LEFT JOIN ax.tb_sys_user u ON u.user_id = p.actor_user_id
+            LEFT JOIN ax.tb_sys_code ac ON ac.group_cd = 'SYS_PERM_ACT' AND ac.code = p.act_cd
             WHERE p.log_at >= :from AND p.log_at < :toExclusive
             """.trimIndent()
         )
@@ -402,6 +408,16 @@ class AuditLogRepository(
             .addValue("from", from.atStartOfDay())
             .addValue("toExclusive", to.plusDays(1).atStartOfDay())
 
+        appendPermLogFilters(sql, params, target, actType, keyword)
+
+        return jdbcTemplate.queryForObject(sql.toString(), params, Long::class.java) ?: 0L
+    }
+
+    /**
+     * 변경 이력 공통 조건. `keyword` 는 표의 전 열 검색(2026-09-13 WEB 요청) —
+     * 대상·구분 코드/이름·내용·수행자 사번/이름/부서.
+     */
+    private fun appendPermLogFilters(sql: StringBuilder, params: MapSqlParameterSource, target: String?, actType: String?, keyword: String?) {
         SqlLikeUtils.contains(target)?.let {
             sql.append(" AND p.target_nm LIKE :target ESCAPE '\\'")
             params.addValue("target", it)
@@ -410,7 +426,15 @@ class AuditLogRepository(
             sql.append(" AND p.act_cd = :actType")
             params.addValue("actType", actType.trim())
         }
-
-        return jdbcTemplate.queryForObject(sql.toString(), params, Long::class.java) ?: 0L
+        SqlLikeUtils.contains(keyword)?.let {
+            sql.append(
+                " AND (p.target_nm LIKE :keyword ESCAPE '\\' OR p.detail LIKE :keyword ESCAPE '\\'" +
+                    " OR p.act_cd LIKE :keyword ESCAPE '\\' OR coalesce(ac.code_nm, '') LIKE :keyword ESCAPE '\\'" +
+                    " OR p.target_kind_cd LIKE :keyword ESCAPE '\\' OR coalesce(p.target_user_id, '') LIKE :keyword ESCAPE '\\'" +
+                    " OR p.actor_user_id LIKE :keyword ESCAPE '\\' OR coalesce(u.user_nm, '') LIKE :keyword ESCAPE '\\'" +
+                    " OR coalesce(p.actor_dept_nm, '') LIKE :keyword ESCAPE '\\')"
+            )
+            params.addValue("keyword", it)
+        }
     }
 }

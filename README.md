@@ -66,6 +66,7 @@ DB 비밀번호는 `PROD_DB_PASSWORD`에 설정한다. DB가 별도 서버라면
 | dev | `DEV_DB_PASSWORD` · `DEV_JWT_SECRET` · `DEV_MAIL_HOST` · `DEV_MAIL_USERNAME` · `DEV_MAIL_PASSWORD` | **기동 실패** (5개 전부 필수) |
 | prod | `PROD_DB_PASSWORD` · `PROD_JWT_SECRET` · `PROD_MAIL_HOST` · `PROD_MAIL_USERNAME` · `PROD_MAIL_PASSWORD` | **기동 실패** (5개 전부 필수) |
 | 공통(선택) | `AX_UPLOAD_DIR` (기본 `./data/ax-uploads`) · `AX_NAS_AOI_ROOT` (기본 `./data/nas-aoi`) | 기본값으로 기동 — 업로드 리포트 원본 저장소 · AOI 이미지 NAS 마운트 루트 |
+| 공통(선택) | `AX_MSSQL_URL` (기본 EDGE 192.168.7.203) · `AX_MSSQL_USER` · `AX_MSSQL_PASSWORD` | 기본값으로 기동 — 계정이 비면 AOI 치수 API 가 `SOURCE_NOT_CONFIGURED` 를 낸다(원천 MSSQL 직접 조회, `docs/AOI_DIMENSION_API_20260913.md`) |
 
 > 메일 3종은 이 표에 없었다. 그래서 안내대로 DB·JWT 두 개만 채우면
 > `Could not resolve placeholder 'DEV_MAIL_HOST'` 로 기동조차 못 했다.

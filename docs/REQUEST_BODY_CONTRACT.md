@@ -8,8 +8,8 @@
 > `RequestBodyContractTest` 가 `Map` 본문 개수가 코드와 맞는지 검사한다 —
 > 이 문서를 처음 쓴 날 용어 API 4개를 DTO 로 바꾸고 갱신하지 않아 같은 날 안에 틀렸다.
 
-- 본문을 받는 엔드포인트 **59개**
-- 타입 DTO **54개** — 모르는 키는 400
+- 본문을 받는 엔드포인트 **62개**
+- 타입 DTO **56개** — 모르는 키는 400
 - `Map` 본문 **0개** — **전부 타입 DTO 로 전환 완료**
 
 ## 왜 켰는가
@@ -36,7 +36,7 @@
 > 키·타입이 어긋난 항목만 빠지고 200 이 나가서, 10개를 보냈는데 3개만 반영되고도
 > 화면은 성공으로 읽었다. 지금은 어긋난 항목이 하나라도 있으면 400 이다.
 
-## B. 타입 DTO 54개 — 선언 키만 허용
+## B. 타입 DTO 56개 — 선언 키만 허용
 
 ### `AiAskRequest`
 
@@ -266,6 +266,19 @@
 허용 키 — `imageIds`, `images`
 
 
+### `AoiBriefingRequest`
+
+허용 키 — `from`, `to`, `wcCd`, `eqptCd`
+
+- `POST /api/v1/quality/aoi/dimension/briefing`
+
+### `QualityDefectExportRequest`
+
+허용 키 — `from`, `to`, `processId`, `defectTypeCd`, `format`, `levels`
+
+- `POST /api/v1/quality/defects/by-type/export`
+- `POST /api/v1/quality/defects/by-line/export`
+
 ### `ScrapDraftRequest`
 
 허용 키 — `step`, `cond`, `pickedVoucherIds`, `form`, `review`
@@ -356,7 +369,7 @@
 
 ### `UserSaveRequest`
 
-허용 키 — `empNo`, `name`, `deptId`, `pos`, `state`, `switchable`, `plantCd`, `password`, `remark`
+허용 키 — `empNo`, `name`, `deptId`, `pos`, `state`, `switchable`, `plantCd`, `password`, `remark`, `extraMenuIds`
 
 - `POST /api/v1/system/users`
 - `PUT /api/v1/system/users/{empNo}`

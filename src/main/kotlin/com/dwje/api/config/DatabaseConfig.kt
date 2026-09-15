@@ -23,7 +23,10 @@ class DatabaseConfig {
      *
      * @param dataSource Spring Boot 자동 구성 DataSource (HikariCP)
      */
+    // AOI 원천용 보조 템플릿(AoiMssqlConfig.aoiJdbcTemplate)이 하나 더 있다.
+    // 전 Repository 가 타입으로 주입받으므로 이 빈이 기본이어야 한다.
     @Bean
+    @org.springframework.context.annotation.Primary
     fun namedParameterJdbcTemplate(dataSource: DataSource): NamedParameterJdbcTemplate {
         val template = NamedParameterJdbcTemplate(dataSource)
         // 대량 목록 조회 시 커서 페치 크기를 지정해 메모리 사용을 억제한다.

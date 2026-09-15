@@ -124,6 +124,21 @@ class ExportService {
     }
 
     /**
+     * 이미 만들어진 xlsx 바이트를 첨부파일 응답으로 감싼다.
+     *
+     * 시트가 여럿이거나 차트가 있는 통합 문서는 호출 측이 직접 만들고 여기로 넘긴다.
+     * (표 한 장짜리는 [excel] 을 쓴다)
+     *
+     * @param fileName 파일명 — `.xlsx` 가 없으면 붙인다
+     */
+    fun xlsx(bytes: ByteArray, fileName: String): ResponseEntity<ByteArrayResource> =
+        download(
+            bytes,
+            if (fileName.endsWith(".xlsx", ignoreCase = true)) fileName else "$fileName.xlsx",
+            MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        )
+
+    /**
      * CSV 파일을 생성한다. (Excel 한글 깨짐 방지를 위해 UTF-8 BOM 을 붙인다)
      */
     fun csv(

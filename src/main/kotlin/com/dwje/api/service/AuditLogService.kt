@@ -139,15 +139,18 @@ class AuditLogService(
         target: String?,
         actType: String?,
         page: Int?,
-        size: Int?
+        size: Int?,
+        keyword: String? = null
     ): Pair<List<Map<String, Any?>>, PageMeta> {
         authorizationService.requireAnyMenu(MenuId.SYS_ACCOUNT, MenuId.SYS_MENU, MenuId.SYS_DATA)
 
         val (fromDate, toDate) = DateUtils.periodOf(from, to, 90)
-        val paging = PageRequestParam.of(page, size)
+        // size=0 이면 전량 — 화면이 열 필터를 전체 결과에 걸고 쪽은 브라우저에서 나눈다.
+        val paging = PageRequestParam.ofAllowAll(page, size)
 
-        val total = auditLogRepository.countPermLogs(fromDate, toDate, target, actType)
-        val rows = auditLogRepository.findPermLogs(fromDate, toDate, target, actType, paging.limit, paging.offset)
+        val total = auditLogRepository.countPermLogs(fromDate, toDate, target, actType, keyword)
+        val rows = auditLogRepository.findPermLogs(fromDate, toDate, target, actType, paging.limitOrNull, paging.offset, keyword)
+        if (paging.isAll) return rows to PageMeta.all(total)
 
         return rows to PageMeta.of(paging.page, paging.size, total)
     }

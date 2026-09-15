@@ -1,10 +1,14 @@
 package com.dwje.api.service
 
+import com.dwje.api.common.exception.BusinessException
 import com.dwje.api.common.exception.BusinessRuleException
+import com.dwje.api.common.response.ErrorCode
+import com.dwje.api.common.security.UserPrincipal
 import com.dwje.api.common.exception.DuplicatedValueException
 import com.dwje.api.common.exception.InvalidParameterException
 import com.dwje.api.common.exception.ResourceNotFoundException
 import com.dwje.api.common.response.PageMeta
+import com.dwje.api.common.util.DataField
 import com.dwje.api.common.util.MenuId
 import com.dwje.api.common.util.PageRequestParam
 import com.dwje.api.model.request.DataPermRequest
@@ -50,11 +54,15 @@ class SystemUserService(
     fun getAccountSummary(): Map<String, Any?> {
         val principal = authorizationService.requireMenu(MenuId.SYS_ACCOUNT)
         val summary = systemUserRepository.findAccountSummary().toMutableMap()
+        val canChangePassword = canChangePassword(principal)
         summary["currentUser"] = mapOf(
             "empNo" to principal.userId,
             "name" to principal.userName,
-            "dept" to principal.deptName
+            "dept" to principal.deptName,
+            "canChangePassword" to canChangePassword
         )
+        // 화면이 비밀번호 필드를 보일지 정하는 기준 — 통합관리자 또는 소속 부서가 기본으로 계정 관리 권한을 가진 사람
+        summary["canChangePassword"] = canChangePassword
         return summary.toMap()
     }
 
@@ -69,12 +77,13 @@ class SystemUserService(
         size: Int?
     ): Pair<List<Map<String, Any?>>, PageMeta> {
         authorizationService.requireMenu(MenuId.SYS_ACCOUNT)
-        val paging = PageRequestParam.of(page, size)
+        // size=0 이면 전량 — 화면이 Tabulator 열 필터를 전체 결과에 걸고 쪽은 브라우저에서 나눈다.
+        val paging = PageRequestParam.ofAllowAll(page, size)
 
         val total = systemUserRepository.countUsers(keyword, deptId, state, switchable)
-        val rows = systemUserRepository.findUsers(keyword, deptId, state, switchable, paging.limit, paging.offset)
+        val rows = withExtraMenus(systemUserRepository.findUsers(keyword, deptId, state, switchable, paging.limitOrNull, paging.offset))
 
-        return rows to PageMeta.of(paging.page, paging.size, total)
+        return rows to (if (paging.isAll) PageMeta.all(total) else PageMeta.of(paging.page, paging.size, total))
     }
 
     /** 계정 등록 (No.129) */
@@ -122,8 +131,10 @@ class SystemUserService(
             targetUserId = empNo
         )
 
+        // 추가 허용 화면도 같은 트랜잭션에서 저장한다(계정 정보 + 추가 메뉴 원자 저장).
+        val grants = applyExtraMenus(empNo, "$name($empNo)", validateExtraMenus(request.extraMenuIds), principal.userId)
         log.info("계정 등록 : empNo={} name={} by={}", empNo, name, principal.userId)
-        return mapOf("empNo" to empNo)
+        return mapOf("empNo" to empNo, "extraMenuIds" to grants)
     }
 
     /** 계정 수정 (No.130) */
@@ -133,6 +144,10 @@ class SystemUserService(
         requireUser(empNo)
 
         val stateCd = request.state?.let { systemUserRepository.normalizeUserState(it) }
+        // 추가 허용 화면은 계정 정보와 **한 트랜잭션**이다 — 없는 화면 ID 가 하나라도 있으면 이름·부서도 바뀌지 않는다.
+        val requestedMenus = validateExtraMenus(request.extraMenuIds)
+        // 비밀번호 — 비어 있으면 그대로. 값이 있으면 관리자 판정·정책 검사를 저장 전에 끝내 실패 시 아무것도 바뀌지 않게 한다.
+        val newPasswordHash = preparePasswordChange(request.password, empNo, principal)
 
         // 자기 자신의 계정을 사용 상태에서 내릴 수 없다. (PENDING 도 로그인이 막힌다)
         if (stateCd != null && stateCd != "ACTIVE" && empNo == principal.userId) {
@@ -159,7 +174,22 @@ class SystemUserService(
             targetUserId = empNo
         )
 
-        return mapOf("success" to true, "empNo" to empNo)
+        val grants = applyExtraMenus(empNo, empNo, requestedMenus, principal.userId)
+        val passwordChanged = newPasswordHash != null
+        if (newPasswordHash != null) {
+            systemUserRepository.updatePasswordHash(empNo, newPasswordHash, principal.userId)
+            // 비밀번호 값은 어디에도 남기지 않는다 — 바뀌었다는 사실과 누가 바꿨는지만.
+            auditLogService.recordPermChange(
+                actCd = "ACCOUNT", targetKindCd = "USER", targetNm = empNo,
+                detail = "비밀번호 변경(관리자 ${principal.userId})", targetUserId = empNo
+            )
+            auditLogService.record(
+                logType = "AUTO_GEN", menuId = MenuId.SYS_ACCOUNT,
+                targetDesc = "비밀번호 변경 [$empNo]", remark = "관리자 변경 by ${principal.userId}"
+            )
+            log.info("비밀번호 변경(관리자) : empNo={} by={}", empNo, principal.userId)
+        }
+        return mapOf("success" to true, "empNo" to empNo, "extraMenuIds" to grants, "passwordChanged" to passwordChanged)
     }
 
     /** 계정 삭제 (No.131) */
@@ -262,6 +292,21 @@ class SystemUserService(
     fun getDepts(): Map<String, Any?> {
         authorizationService.requireAnyMenu(MenuId.SYS_ACCOUNT, MenuId.SYS_MENU, MenuId.SYS_DATA)
         return mapOf("items" to systemUserRepository.findDepts())
+    }
+
+    /**
+     * 부서 목록 — 키워드(부서명·약칭·설명)와 쪽 나눔 (2026-09-13 WEB 요청).
+     * `page`·`size` 가 없거나 `size=0` 이면 전량(기존 선택지 호출 호환)이고 meta 는 null 이다.
+     */
+    @Transactional(readOnly = true)
+    fun getDepts(keyword: String?, page: Int?, size: Int?): Pair<List<Map<String, Any?>>, PageMeta?> {
+        authorizationService.requireAnyMenu(MenuId.SYS_ACCOUNT, MenuId.SYS_MENU, MenuId.SYS_DATA)
+        val paged = page != null || (size != null && size > 0)
+        if (!paged) return systemUserRepository.findDepts(keyword, null, 0) to null
+        val paging = PageRequestParam.of(page, size)
+        val total = systemUserRepository.countDepts(keyword)
+        val rows = systemUserRepository.findDepts(keyword, paging.limit, paging.offset)
+        return rows to PageMeta.of(paging.page, paging.size, total)
     }
 
     /** 부서별 권한 비교 (No.134) / 부서별 적용 현황 (No.144) */
@@ -372,7 +417,8 @@ class SystemUserService(
     /** 메뉴 권한 매트릭스 조회 (No.140) */
     @Transactional(readOnly = true)
     fun getMenuPermMatrix(): Map<String, Any?> {
-        authorizationService.requireMenu(MenuId.SYS_MENU)
+        // 조회만 계정 관리(SYS_ACCOUNT)에도 열어 준다 — 계정별 추가 허용 화면의 선택지가 이 매트릭스다. 쓰기는 SYS_MENU 그대로.
+        authorizationService.requireAnyMenu(MenuId.SYS_MENU, MenuId.SYS_ACCOUNT)
 
         val screens = systemUserRepository.findAllMenus()
         val depts = systemUserRepository.findDepts()
@@ -635,13 +681,113 @@ class SystemUserService(
      * 승인 대기 계정 목록을 조회한다.
      */
     @Transactional(readOnly = true)
-    fun getPendingUsers(page: Int?, size: Int?): Pair<List<Map<String, Any?>>, PageMeta> {
+    fun getPendingUsers(page: Int?, size: Int?, keyword: String? = null): Pair<List<Map<String, Any?>>, PageMeta> {
         authorizationService.requireMenu(MenuId.SYS_ACCOUNT)
-        val paging = PageRequestParam.of(page, size)
+        val paging = PageRequestParam.ofAllowAll(page, size)
 
-        val total = systemUserRepository.countUsers(null, null, "PENDING", null)
-        val rows = systemUserRepository.findUsers(null, null, "PENDING", null, paging.limit, paging.offset)
+        val total = systemUserRepository.countUsers(keyword, null, "PENDING", null)
+        val rows = withExtraMenus(systemUserRepository.findUsers(keyword, null, "PENDING", null, paging.limitOrNull, paging.offset))
 
-        return rows to PageMeta.of(paging.page, paging.size, total)
+        return rows to (if (paging.isAll) PageMeta.all(total) else PageMeta.of(paging.page, paging.size, total))
     }
+
+    // =================================================================================
+    // 계정별 추가 허용 화면 (V30 ax.tb_sys_user_menu_grant) — 부서 권한에 더하는 화면. 열람만 부여한다(can_write=false).
+    // =================================================================================
+
+    /** 목록 행에 계정별 추가 허용 화면(`extraMenuIds`)을 붙인다 — 없는 계정도 빈 배열로, 화면이 배열로만 읽는다. */
+    private fun withExtraMenus(rows: List<Map<String, Any?>>): List<Map<String, Any?>> {
+        val grants = systemUserRepository.findUserGrants(rows.mapNotNull { it["empNo"] as? String })
+        return rows.map { it + mapOf("extraMenuIds" to (grants[it["empNo"]] ?: emptyList<String>())) }
+    }
+
+    /**
+     * 요청한 화면 ID 를 검증한다. `null` 은 "그대로 둔다". 없는·사용 중지 화면이 있으면 400 — 저장 전에 걸러 원자성을 지킨다.
+     */
+    internal fun validateExtraMenus(requested: List<String>?): List<String>? {
+        if (requested == null) return null
+        val ids = requested.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        val active = systemUserRepository.findActiveMenuIds(ids)
+        val unknown = ids.filterNot { it in active }
+        if (unknown.isNotEmpty()) {
+            throw InvalidParameterException("존재하지 않거나 사용 중지된 화면 ID 입니다. [${unknown.joinToString(", ")}]", "extraMenuIds")
+        }
+        return ids
+    }
+
+    /**
+     * 추가 허용 화면을 요청 목록으로 **치환**한다 — 없던 것은 부여, 목록에서 빠진 것은 회수. 바뀐 것만 이력에 남긴다.
+     *
+     * @param validated [validateExtraMenus] 를 거친 목록. null 이면 아무것도 하지 않고 현재 값을 돌려준다
+     * @return 저장 뒤의 추가 허용 화면 목록(사용 중인 화면만, 메뉴 순)
+     */
+    internal fun applyExtraMenus(empNo: String, targetNm: String, validated: List<String>?, actor: String): List<String> {
+        if (validated != null) {
+            val plan = planGrantChanges(systemUserRepository.findUserGrantIds(empNo), validated)
+            systemUserRepository.insertUserGrants(empNo, plan.add, actor)
+            systemUserRepository.deleteUserGrants(empNo, plan.remove)
+            if (plan.add.isNotEmpty() || plan.remove.isNotEmpty()) {
+                auditLogService.recordPermChange(
+                    actCd = "USER_MENU_PERM",
+                    targetKindCd = "USER",
+                    targetNm = targetNm,
+                    detail = buildString {
+                        append("계정 추가 화면 ")
+                        if (plan.add.isNotEmpty()) append("부여 [${plan.add.joinToString(", ")}]")
+                        if (plan.add.isNotEmpty() && plan.remove.isNotEmpty()) append(" · ")
+                        if (plan.remove.isNotEmpty()) append("회수 [${plan.remove.joinToString(", ")}]")
+                    },
+                    targetUserId = empNo
+                )
+                auditLogService.record(
+                    logType = "PERM_CHANGE",
+                    menuId = MenuId.SYS_ACCOUNT,
+                    targetDesc = "계정 추가 화면 변경 [$empNo]",
+                    remark = "부여 ${plan.add.size}건 · 회수 ${plan.remove.size}건"
+                )
+                log.info("계정 추가 화면 변경 : empNo={} add={} remove={} by={}", empNo, plan.add, plan.remove, actor)
+            }
+        }
+        return systemUserRepository.findUserGrants(listOf(empNo))[empNo] ?: emptyList()
+    }
+
+    // =================================================================================
+    // 관리자 비밀번호 변경 (2026-09-14) — PUT /system/users/{empNo} 의 password
+    // =================================================================================
+
+    /**
+     * 비밀번호를 바꿀 수 있는 관리자 — 통합관리자, 또는 **소속 부서가 기본으로** 계정 관리(sys-account) 권한을 가진 사람.
+     * 계정 추가 허용(extraMenuIds)으로만 sys-account 를 받은 사용자는 아니다 — 부서 권한 표만 본다.
+     */
+    fun canChangePassword(principal: UserPrincipal): Boolean =
+        principal.superAdmin || systemUserRepository.deptHasMenuPerm(principal.deptId, MenuId.SYS_ACCOUNT)
+
+    /**
+     * 요청의 비밀번호를 검사해 저장할 해시를 만든다. 비어 있으면 null(그대로 둔다).
+     *
+     * 순서 — 관리자 판정(403) → 정책(400) → 사번 포함 금지(400). 저장 전에 전부 끝내 실패하면 계정 정보도 바뀌지 않는다.
+     */
+    internal fun preparePasswordChange(rawPassword: String?, empNo: String, principal: UserPrincipal): String? {
+        val password = rawPassword?.takeIf { it.isNotBlank() } ?: return null
+        if (!canChangePassword(principal)) {
+            throw BusinessException(
+                ErrorCode.AUTH_MENU_DENIED,
+                "비밀번호 변경은 통합관리자 또는 계정 관리 권한을 기본으로 가진 부서의 관리자만 할 수 있습니다."
+            )
+        }
+        passwordEncoderService.validatePolicy(password, "password")
+        if (password.contains(empNo, ignoreCase = true)) {
+            throw InvalidParameterException("비밀번호에 사번을 포함할 수 없습니다.", "password")
+        }
+        return passwordEncoderService.encode(password)
+    }
+
+}
+
+/** 추가 허용 치환 계획 — 현재 집합과 요청 목록의 차이. 순수 함수라 테스트로 고정한다. */
+data class GrantPlan(val add: List<String>, val remove: List<String>)
+
+fun planGrantChanges(current: Set<String>, requested: List<String>): GrantPlan {
+    val wanted = requested.toSet()
+    return GrantPlan(add = requested.distinct().filter { it !in current }, remove = current.filter { it !in wanted }.sorted())
 }

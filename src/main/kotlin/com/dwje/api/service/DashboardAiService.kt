@@ -6,6 +6,7 @@ import com.dwje.api.common.security.UserContext
 import com.dwje.api.common.util.DataField
 import com.dwje.api.common.util.DefectSql
 import com.dwje.api.common.util.TimeWindow
+import com.dwje.api.common.util.WorkcenterNames
 import com.dwje.api.common.util.withUntypedSegment
 import com.dwje.api.common.util.DateUtils
 import com.dwje.api.common.util.MaskingSupport
@@ -61,14 +62,6 @@ class DashboardAiService(
         internal const val MODEL_BUSY = "MODEL_BUSY"
 
         /** 모델에 넘기는 불량 유형 상위 건수 */
-        /**
-         * 작업장 이름에 적힌 공장 표기 — `(M-3공장)` 의 안쪽을 잡는다.
-         *
-         * 괄호까지 포함해 맞춘다. `M-\d` 만 보면 금형코드(`MPM-058`)나
-         * 설비명의 `M-` 패턴에 걸린다.
-         */
-        private val PLANT_IN_NAME = Regex("""\((M-\d+공장)\)""")
-
         /** 공장 값의 출처 — 이름에서 읽은 값임을 응답에 밝힌다. */
         private const val PLANT_SOURCE_WC_NM = "wc_nm"
 
@@ -1065,8 +1058,7 @@ class DashboardAiService(
      *
      * 뽑는 규칙을 화면과 서버 두 곳에 두면 나중에 어긋나므로 서버에만 둔다.
      */
-    private fun plantOf(processNm: String?): String? =
-        processNm?.let { PLANT_IN_NAME.find(it)?.groupValues?.get(1) }
+    private fun plantOf(processNm: String?): String? = WorkcenterNames.plantOf(processNm)
 
     /**
      * 구간을 사람이 읽는 문자열로 만든다.

@@ -31,6 +31,7 @@ import org.springframework.validation.annotation.Validated
  * @param ai                     sLLM 서빙 설정
  * @param upload                 업로드 문서 저장소 설정
  * @param nas                    NAS 이미지 경로 설정
+ * @param aoi                    AOI 치수 원천(MSSQL) 직접 조회·한계 세트 설정
  */
 @Validated
 @ConfigurationProperties(prefix = "app")
@@ -100,5 +101,9 @@ data class AppProperties(
 
     /** NAS 이미지 경로 — [NasProperties] */
     @field:jakarta.validation.Valid
-    val nas: NasProperties = NasProperties()
+    val nas: NasProperties = NasProperties(),
+
+    /** AOI 치수 원천(MSSQL) 직접 조회·한계 세트 — [AoiProperties] */
+    @field:jakarta.validation.Valid
+    val aoi: AoiProperties = AoiProperties()
 )

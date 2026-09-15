@@ -256,29 +256,38 @@ class QualityRepository(
     }
 
     /**
-     * 라인(설비)별 불량률을 조회한다. (No.75)
+     * 라인(설비)별 불량률과 설비별 불량 유형 내역을 조회한다. (No.75)
      *
-     * @param topN 상위 조회 건수
+     * ## 한 번의 집계로 설비 전부를 낸다 — LATERAL 을 걷어냈다
+     * 예전에는 설비마다 LATERAL 로 주 불량 유형을 따로 구했다. GROUP BY 앞에 있을 때는 라벨 행마다
+     * 돌아 9월 2일치(라벨 11,992행)에서 60초 타임아웃이 났고, 상위 N 대로 자른 뒤에도 N 회 반복이라
+     * "전체 설비" 를 줄 수 없었다. 지금은 기간 라벨 원장 하나를 만들어 설비별 수량(prod)과
+     * 설비×유형 안분 수량(types)을 같은 원장에서 집계한다. 비용은 **기간 길이**에만 비례하고 N 과 무관하다.
+     * (로컬 7.3M 라벨 실측 — 1일 0.26초, 30일 1.1초, 90일 3.2초, 365일 10.3초)
+     *
+     * ## 유형 수량은 by-type 와 같은 안분식이다
+     * `라벨.defect × (그 유형 qty ÷ 그 라벨의 유형 qty 합)` — [DefectSql.apportionedTypeCte] 와 같다.
+     * 그래서 한 설비의 유형 합 = 그 설비의 불량 수량(라벨 원장)이고, 유형이 붙지 않은 몫은
+     * [assembleDefectByLine] 이 '유형 미상' 으로 채운다. 주 불량 유형(mainType)은 그 설비에서 안분 수량이
+     * 가장 큰 유형이다. (예전 LATERAL 은 `defect_hist.qty` 원값 순이었다 — 재작업 표시 코드를 걸러도
+     * 라벨 불량과 어긋나는 분모라 유형 비중을 낼 수 없었다)
+     *
+     * @param topN 상위 조회 대수. null 이면 전체 설비(설비 마스터 1,540대가 상한이다)
+     * @return 설비 한 대가 한 항목 — eqptCd · eqptNm · model · ngQty · okQty · totalQty · defectRate · mainType ·
+     *         children[{defectCd, defectType, ngQty, ratio}] (ratio 는 그 설비 불량 합 대비 %)
      */
     fun findDefectByLine(
         plantCd: String,
         from: LocalDate,
         to: LocalDate,
         processId: String?,
-        topN: Int
+        topN: Int?
     ): List<Map<String, Any?>> {
-        // 설비별로 집계해 상위 N 대를 먼저 고르고, 주 불량 유형은 **그 N 대에만** 산출한다.
-        //
-        // 예전에는 LATERAL 이 GROUP BY 앞에 있어 라벨 행마다 평가됐다.
-        // 9월 2일치(라벨 11,992행)에서 60초를 넘겨 타임아웃 500 이 났다.
-        // 상위 N 을 먼저 자르면 LATERAL 이 N 회(기본 5회)만 돈다.
-        val sql = StringBuilder(
-            """
-            WITH prod AS (
-                SELECT
-                    lh.eqpt_cd,
-                    coalesce(sum(lh.defect), 0)                               AS ng_qty,
-                    coalesce(sum(lh.normal), 0) + coalesce(sum(lh.defect), 0) AS total_qty
+        val sql = """
+            WITH label AS (
+                SELECT lh.plant_cd, lh.wc_cd, lh.lot_no, lh.serial_no, lh.eqpt_cd,
+                       coalesce(lh.normal, 0) AS ok_qty,
+                       coalesce(lh.defect, 0) AS ng_qty
                 FROM mes.tb_pop_label_hist lh
                 WHERE lh.plant_cd  = :plantCd
                   AND lh.del_flg   = 'N'
@@ -286,49 +295,61 @@ class QualityRepository(
                   AND lh.ins_date >= :from
                   AND lh.ins_date <  :toExclusive
                   {PROCESS_FILTER}
-                GROUP BY lh.eqpt_cd
-                -- label_hist.defect 는 nullable 이라 sum() 이 NULL 일 수 있다.
-                -- PostgreSQL 의 DESC 는 NULL 을 먼저 정렬하므로 coalesce 없이는
-                -- 불량이 하나도 없는 설비가 상위를 차지한다.
-                ORDER BY coalesce(sum(lh.defect), 0) DESC
-                LIMIT :topN
+            ),
+            prod AS (
+                SELECT eqpt_cd,
+                       sum(ng_qty)               AS ng_qty,
+                       sum(ok_qty)               AS ok_qty,
+                       sum(ok_qty) + sum(ng_qty) AS total_qty
+                FROM label
+                GROUP BY eqpt_cd
+                -- coalesce 로 0 을 채운 값이라 NULL 이 상위에 오는 일은 없다.
+                ORDER BY sum(ng_qty) DESC, eqpt_cd
+                {LIMIT}
+            ),
+            type_join AS (
+                SELECT l.eqpt_cd, dh.defect_cd, l.ng_qty,
+                       sum(dh.qty)                                 AS type_qty,
+                       sum(sum(dh.qty)) OVER (
+                           PARTITION BY l.plant_cd, l.wc_cd, l.lot_no, l.serial_no
+                       )                                           AS label_type_total
+                FROM label l
+                INNER JOIN mes.tb_pop_defect_hist dh
+                        ON dh.plant_cd  = l.plant_cd
+                       AND dh.wc_cd     = l.wc_cd
+                       AND dh.lot_no    = l.lot_no
+                       AND dh.serial_no = l.serial_no
+                       ${DefectSql.excludeNonProduction()}
+                -- 기간 필터는 라벨 이력에만 건다. 불량 이력에 따로 걸면 집합이 어긋난다.
+                WHERE l.ng_qty > 0
+                GROUP BY l.plant_cd, l.wc_cd, l.lot_no, l.serial_no, l.ng_qty, l.eqpt_cd, dh.defect_cd
+            ),
+            types AS (
+                SELECT eqpt_cd, defect_cd,
+                       coalesce(sum(ng_qty * type_qty / nullif(label_type_total, 0)), 0) AS ng_qty
+                FROM type_join
+                GROUP BY eqpt_cd, defect_cd
             )
             SELECT
                 p.eqpt_cd,
                 e.eqpt_nm,
                 e.model_nm,
                 p.ng_qty,
+                p.ok_qty,
                 p.total_qty,
-                md.main_defect_nm AS main_type
+                t.defect_cd,
+                coalesce(md.defect_nm, t.defect_cd) AS defect_nm,
+                t.ng_qty                            AS type_ng_qty
             FROM prod p
             LEFT JOIN mes.tb_md_eqpt e
                    ON e.plant_cd = :plantCd AND e.eqpt_cd = p.eqpt_cd
-            LEFT JOIN LATERAL (
-                SELECT coalesce(d.defect_nm, dh.defect_cd) AS main_defect_nm
-                FROM mes.tb_pop_defect_hist dh
-                INNER JOIN mes.tb_pop_label_hist lh2
-                        ON lh2.plant_cd  = dh.plant_cd
-                       AND lh2.wc_cd     = dh.wc_cd
-                       AND lh2.lot_no    = dh.lot_no
-                       AND lh2.serial_no = dh.serial_no
-                LEFT JOIN mes.tb_md_defect d
-                       ON d.plant_cd = dh.plant_cd AND d.defect_cd = dh.defect_cd
-                WHERE lh2.eqpt_cd   = p.eqpt_cd
-                  AND lh2.plant_cd  = :plantCd
-                  AND lh2.del_flg   = 'N'
-                  -- 기간 필터는 라벨 이력에만 건다. 불량 이력에 따로 걸면 집합이 어긋난다.
-                  AND lh2.ins_date >= :from
-                  AND lh2.ins_date <  :toExclusive
-                  ${DefectSql.excludeNonProduction()}
-                GROUP BY dh.defect_cd, d.defect_nm
-                ORDER BY sum(dh.qty) DESC
-                LIMIT 1
-            ) md ON true
-            ORDER BY p.ng_qty DESC
-            """.trimIndent()
-        )
+            LEFT JOIN types t ON t.eqpt_cd = p.eqpt_cd
+            LEFT JOIN mes.tb_md_defect md
+                   ON md.plant_cd = :plantCd AND md.defect_cd = t.defect_cd
+            ORDER BY p.ng_qty DESC, p.eqpt_cd, t.ng_qty DESC NULLS LAST, t.defect_cd
+        """.trimIndent()
 
-        val params = periodParams(plantCd, from, to).addValue("topN", topN)
+        val params = periodParams(plantCd, from, to)
 
         val processFilter = if (!processId.isNullOrBlank()) {
             params.addValue("processId", processId.trim())
@@ -336,18 +357,132 @@ class QualityRepository(
         } else {
             ""
         }
+        val limit = if (topN != null) {
+            params.addValue("topN", topN)
+            "LIMIT :topN"
+        } else {
+            ""
+        }
 
-        return jdbcTemplate.query(sql.toString().replace("{PROCESS_FILTER}", processFilter), params) { rs, _ ->
-            mapOf(
-                "eqptCd" to rs.getString("eqpt_cd"),
-                "eqptNm" to rs.getString("eqpt_nm"),
-                "model" to rs.getString("model_nm"),
-                "ngQty" to Rs.qty(rs, "ng_qty"),
-                "defectRate" to safeRate(rs.getBigDecimal("ng_qty"), rs.getBigDecimal("total_qty")),
-                "mainType" to rs.getString("main_type")
+        val flat = jdbcTemplate.query(
+            sql.replace("{PROCESS_FILTER}", processFilter).replace("{LIMIT}", limit), params
+        ) { rs, _ ->
+            DefectByLineRow(
+                eqptCd = rs.getString("eqpt_cd"),
+                eqptNm = rs.getString("eqpt_nm"),
+                model = rs.getString("model_nm"),
+                ngQty = Rs.qty(rs, "ng_qty") ?: 0L,
+                okQty = Rs.qty(rs, "ok_qty") ?: 0L,
+                totalQty = Rs.qty(rs, "total_qty") ?: 0L,
+                defectCd = rs.getString("defect_cd"),
+                defectNm = rs.getString("defect_nm"),
+                typeNgQty = Rs.qty(rs, "type_ng_qty")
+            )
+        }
+        return assembleDefectByLine(flat)
+    }
+
+    /**
+     * 불량 상세 분해 트리의 **수량 원장** — (공정, 설비, 제품) 단위 정상·불량 수량. (QC-01 트리)
+     *
+     * 라벨 이력을 세 차원으로 묶은 것이라 어떤 순서로 중첩해도 상위 = 하위 합이 성립한다.
+     * 설비가 비어 있는 라벨(2026-08~09 실측 30일 7건, 불량 0)은 `eqptCd = null` 행으로 남긴다 — 빼면 요약 카드와 어긋난다.
+     * 30일 1,267행 · 365일 4천 행 안팎, 0.3초/1.5초.
+     */
+    fun findDefectTreeBase(plantCd: String, from: LocalDate, to: LocalDate, processId: String?): List<DefectTreeBaseRow> {
+        val params = periodParams(plantCd, from, to)
+        val processFilter = processFilterOf(params, processId)
+        val sql = """
+            SELECT
+                lh.wc_cd,
+                max(w.wc_nm)                AS wc_nm,
+                lh.eqpt_cd,
+                max(e.eqpt_nm)              AS eqpt_nm,
+                lh.item_cd,
+                max(i.item_nm)              AS item_nm,
+                coalesce(sum(lh.normal), 0) AS ok_qty,
+                coalesce(sum(lh.defect), 0) AS ng_qty
+            FROM mes.tb_pop_label_hist lh
+            LEFT JOIN mes.tb_md_workcenter w ON w.plant_cd = lh.plant_cd AND w.wc_cd = lh.wc_cd
+            LEFT JOIN mes.tb_md_eqpt e       ON e.plant_cd = lh.plant_cd AND e.eqpt_cd = lh.eqpt_cd
+            LEFT JOIN mes.tb_md_item i       ON i.plant_cd = lh.plant_cd AND i.item_cd = lh.item_cd
+            WHERE lh.plant_cd  = :plantCd
+              AND lh.del_flg   = 'N'
+              AND lh.ins_date >= :from
+              AND lh.ins_date <  :toExclusive
+              $processFilter
+            GROUP BY lh.wc_cd, lh.eqpt_cd, lh.item_cd
+        """.trimIndent()
+        return jdbcTemplate.query(sql, params) { rs, _ ->
+            DefectTreeBaseRow(
+                wcCd = rs.getString("wc_cd"), wcNm = rs.getString("wc_nm"),
+                eqptCd = rs.getString("eqpt_cd"), eqptNm = rs.getString("eqpt_nm"),
+                itemCd = rs.getString("item_cd"), itemNm = rs.getString("item_nm"),
+                okQty = Rs.qty(rs, "ok_qty") ?: 0L, ngQty = Rs.qty(rs, "ng_qty") ?: 0L
             )
         }
     }
+
+    /**
+     * 불량 상세 분해 트리의 **유형 안분행** — (공정, 설비, 제품, 불량 유형) 단위 안분 불량 수량. (QC-01 트리)
+     *
+     * 안분식은 by-type · by-line 과 같다(`라벨.defect × 유형 qty ÷ 그 라벨 유형 qty 합`, 생산 불량이 아닌 코드 제외).
+     * 불량이 있는 라벨만 불량 이력과 붙이므로 30일 0.5초 · 365일 3초다(라벨 7.3M · 불량 이력 9.1M 실측).
+     * 반올림하지 않은 값을 돌려준다 — 조립 단계에서 차원을 합친 뒤 한 번만 반올림해야 잔차가 쌓이지 않는다.
+     */
+    fun findDefectTreeTypes(plantCd: String, from: LocalDate, to: LocalDate, processId: String?): List<DefectTreeTypeRow> {
+        val params = periodParams(plantCd, from, to)
+        val processFilter = processFilterOf(params, processId)
+        val sql = """
+            WITH label AS (
+                SELECT lh.plant_cd, lh.wc_cd, lh.lot_no, lh.serial_no, lh.eqpt_cd, lh.item_cd,
+                       coalesce(lh.defect, 0) AS ng_qty
+                FROM mes.tb_pop_label_hist lh
+                WHERE lh.plant_cd  = :plantCd
+                  AND lh.del_flg   = 'N'
+                  AND lh.ins_date >= :from
+                  AND lh.ins_date <  :toExclusive
+                  AND coalesce(lh.defect, 0) > 0
+                  $processFilter
+            ),
+            type_join AS (
+                SELECT l.wc_cd, l.eqpt_cd, l.item_cd, dh.defect_cd, l.ng_qty,
+                       sum(dh.qty)                                 AS type_qty,
+                       sum(sum(dh.qty)) OVER (
+                           PARTITION BY l.plant_cd, l.wc_cd, l.lot_no, l.serial_no
+                       )                                           AS label_type_total
+                FROM label l
+                INNER JOIN mes.tb_pop_defect_hist dh
+                        ON dh.plant_cd  = l.plant_cd
+                       AND dh.wc_cd     = l.wc_cd
+                       AND dh.lot_no    = l.lot_no
+                       AND dh.serial_no = l.serial_no
+                       ${DefectSql.excludeNonProduction()}
+                GROUP BY l.plant_cd, l.wc_cd, l.lot_no, l.serial_no, l.ng_qty, l.eqpt_cd, l.item_cd, dh.defect_cd
+            )
+            SELECT
+                t.wc_cd, t.eqpt_cd, t.item_cd, t.defect_cd,
+                coalesce(md.defect_nm, t.defect_cd)                                   AS defect_nm,
+                coalesce(sum(t.ng_qty * t.type_qty / nullif(t.label_type_total, 0)), 0) AS ng_qty
+            FROM type_join t
+            LEFT JOIN mes.tb_md_defect md ON md.plant_cd = :plantCd AND md.defect_cd = t.defect_cd
+            GROUP BY t.wc_cd, t.eqpt_cd, t.item_cd, t.defect_cd, md.defect_nm
+        """.trimIndent()
+        return jdbcTemplate.query(sql, params) { rs, _ ->
+            DefectTreeTypeRow(
+                wcCd = rs.getString("wc_cd"), eqptCd = rs.getString("eqpt_cd"), itemCd = rs.getString("item_cd"),
+                defectCd = rs.getString("defect_cd"), defectNm = rs.getString("defect_nm"),
+                ngQty = rs.getBigDecimal("ng_qty") ?: BigDecimal.ZERO
+            )
+        }
+    }
+
+    /** 공정 조건절 — 비어 있으면 전체. 별칭 `lh`. */
+    private fun processFilterOf(params: MapSqlParameterSource, processId: String?): String =
+        if (processId.isNullOrBlank()) "" else {
+            params.addValue("processId", processId.trim())
+            "AND lh.wc_cd = :processId"
+        }
 
     /**
      * 시간 단위 불량률 시계열을 조회한다. (No.77 예측 밴드 학습 데이터)
@@ -774,3 +909,95 @@ class QualityRepository(
             .addValue("from", from.atStartOfDay())
             .addValue("toExclusive", to.plusDays(1).atStartOfDay())
 }
+
+/**
+ * [QualityRepository.findDefectByLine] 의 평면 행 — 설비 × 불량 유형 한 줄.
+ * 유형이 하나도 없는 설비는 `defectCd`/`typeNgQty` 가 null 인 한 줄로 온다.
+ */
+data class DefectByLineRow(
+    val eqptCd: String,
+    val eqptNm: String?,
+    val model: String?,
+    val ngQty: Long,
+    val okQty: Long,
+    val totalQty: Long,
+    val defectCd: String?,
+    val defectNm: String?,
+    val typeNgQty: Long?
+)
+
+/**
+ * 설비 × 유형 평면 행을 `설비 → children[유형]` 트리로 조립한다.
+ *
+ * - 설비 순서는 입력 순서(불량 수량 내림차순)를 지킨다.
+ * - `children` 은 안분 수량 내림차순. `ratio` 는 그 설비 불량 합(`ngQty`) 대비 %.
+ * - 유형 합이 설비 불량 수량에 못 미치면 차액을 [DefectSql.UNTYPED_LABEL] 행으로 덧붙여
+ *   `children.ngQty 합 = ngQty`, `ratio 합 = 100%` 가 응답 안에서 성립하게 한다.
+ *   반올림 뒤 표시값 기준으로 차액을 잡는다(by-type 와 같은 방식).
+ * - `mainType` 은 첫 자식(가장 큰 유형)의 이름. 유형이 없는 설비는 null 이다 — '유형 미상' 을 주 유형으로
+ *   올리지 않는다(그건 유형이 아니라 유형이 없다는 뜻이다).
+ */
+internal fun assembleDefectByLine(rows: List<DefectByLineRow>): List<Map<String, Any?>> {
+    val byEqpt = LinkedHashMap<String, MutableList<DefectByLineRow>>()
+    rows.forEach { byEqpt.getOrPut(it.eqptCd) { mutableListOf() }.add(it) }
+
+    return byEqpt.values.map { group ->
+        val head = group.first()
+        val ngQty = BigDecimal.valueOf(head.ngQty)
+
+        val typed = group.filter { it.defectCd != null }
+            .sortedWith(compareByDescending<DefectByLineRow> { it.typeNgQty ?: 0L }.thenBy { it.defectCd })
+            .map {
+                val qty = it.typeNgQty ?: 0L
+                mapOf<String, Any?>(
+                    "defectCd" to it.defectCd,
+                    "defectType" to (it.defectNm ?: it.defectCd),
+                    "ngQty" to qty,
+                    "ratio" to safeRate(BigDecimal.valueOf(qty), ngQty)
+                )
+            }
+
+        val untyped = head.ngQty - typed.sumOf { (it["ngQty"] as Long) }
+        val children = if (untyped > 0L) typed + mapOf<String, Any?>(
+            // 실제 불량코드가 아니므로 코드는 비운다. 화면이 일반 유형과 구분해 그릴 수 있다.
+            "defectCd" to null,
+            "defectType" to DefectSql.UNTYPED_LABEL,
+            "ngQty" to untyped,
+            "ratio" to safeRate(BigDecimal.valueOf(untyped), ngQty)
+        ) else typed
+
+        mapOf(
+            "eqptCd" to head.eqptCd,
+            "eqptNm" to head.eqptNm,
+            "model" to head.model,
+            "ngQty" to head.ngQty,
+            "okQty" to head.okQty,
+            "totalQty" to head.totalQty,
+            "defectRate" to safeRate(ngQty, BigDecimal.valueOf(head.totalQty)),
+            "mainType" to typed.firstOrNull()?.get("defectType"),
+            "children" to children
+        )
+    }
+}
+
+/** [QualityRepository.findDefectTreeBase] 의 한 행 — (공정, 설비, 제품) 정상·불량 수량. 설비가 없는 라벨은 `eqptCd = null`. */
+data class DefectTreeBaseRow(
+    val wcCd: String,
+    val wcNm: String?,
+    val eqptCd: String?,
+    val eqptNm: String?,
+    val itemCd: String,
+    val itemNm: String?,
+    val okQty: Long,
+    val ngQty: Long
+)
+
+/** [QualityRepository.findDefectTreeTypes] 의 한 행 — (공정, 설비, 제품, 유형) 안분 불량 수량(반올림 전). */
+data class DefectTreeTypeRow(
+    val wcCd: String,
+    val eqptCd: String?,
+    val itemCd: String,
+    val defectCd: String,
+    val defectNm: String?,
+    val ngQty: BigDecimal
+)

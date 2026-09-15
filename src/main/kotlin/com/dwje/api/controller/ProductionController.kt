@@ -1,5 +1,6 @@
 package com.dwje.api.controller
 
+import com.dwje.api.common.exception.InvalidParameterException
 import com.dwje.api.common.response.ApiResponse
 import com.dwje.api.common.util.DateUtils
 import com.dwje.api.common.util.ProductionMonitorPeriod
@@ -18,6 +19,7 @@ import com.dwje.api.service.DayTargetService
 import com.dwje.api.service.DowntimeService
 import com.dwje.api.service.DownloadLogService
 import com.dwje.api.service.ExportService
+import com.dwje.api.service.ProductionResultScreenWorkbook
 import com.dwje.api.service.ProductionService
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.Parameter
@@ -49,7 +51,8 @@ class ProductionController(
     private val dayTargetService: DayTargetService,
     private val downtimeService: DowntimeService,
     private val exportService: ExportService,
-    private val downloadLogService: DownloadLogService
+    private val downloadLogService: DownloadLogService,
+    private val resultScreenWorkbook: ProductionResultScreenWorkbook
 ) {
 
     // =================================================================================
@@ -171,15 +174,28 @@ class ProductionController(
     /**
      * 실적 집계 내려받기
      */
-    @Operation(summary = "실적 집계 내려받기", description = "실적 집계 결과를 엑셀·CSV 로 내려받는다.")
+    @Operation(
+        summary = "실적 집계 내려받기",
+        description = "실적 집계 결과를 엑셀·CSV 로 내려받는다. " +
+            "scope=screen 이면 실적 집계·조회 화면 전체(조회 요약 · 일별 추이+차트 · 일자→제품→설비 트리)를 " +
+            "xlsx 한 파일로 내려받는다 — 이때 unit 은 day 만, 제품·설비는 전체이며 페이지 제한이 없다."
+    )
     @PostMapping("/results/export")
     fun resultsExport(
         @Valid @RequestBody(required = false) request: ExportFormatRequest?,
+        @Parameter(description = "내려받기 범위 — 비우면 집계 표 한 장, screen 이면 화면 전체 통합 문서(xlsx)")
+        @RequestParam(required = false) scope: String?,
         @RequestParam(required = false) unit: String?,
         @Parameter(description = "실적 품목 코드 정확 일치 — 예 D63A-S") @RequestParam(required = false) itemCd: String?,
         @Parameter(description = "제품 모델 코드 — 그 모델의 품목 전부. common/masters/products 의 code, 예 D63A") @RequestParam(required = false) modelCd: String?,
         @Parameter(description = "설비 코드 — 예 MT-007. 공정 코드가 아니다") @RequestParam(required = false) lineCd: String?
     ): ResponseEntity<ByteArrayResource> {
+        when (scope?.trim()?.lowercase()) {
+            null, "" -> Unit
+            "screen" -> return resultsExportScreen(request, unit)
+            else -> throw InvalidParameterException("scope 는 비우거나 screen 만 허용합니다. [scope=$scope]", "scope")
+        }
+
         val format = request?.format ?: "xls"
         val (rows, mask) = productionService.getResultRowsForExport(
             request?.from, request?.to, unit, itemCd, modelCd, lineCd
@@ -217,6 +233,68 @@ class ProductionController(
         )
 
         return response
+    }
+
+    /**
+     * 실적 집계·조회 화면 전체 내려받기 (scope=screen)
+     *
+     * 계약 — `POST /results/export?scope=screen&unit=day` + 본문 `{from, to, format:"xlsx"}`.
+     * 응답은 xlsx 바이너리(`Content-Disposition: attachment; filename*=UTF-8''실적_집계_전체_{from}_{to}.xlsx`).
+     * 화면은 일별·전체 제품으로 고정이므로 unit 은 day 만, csv 는 받지 않는다(시트 3장·차트를 담을 수 없다).
+     */
+    private fun resultsExportScreen(request: ExportFormatRequest?, unit: String?): ResponseEntity<ByteArrayResource> {
+        val format = (request?.format ?: "xlsx").trim().lowercase()
+        if (format !in SCREEN_EXPORT_FORMATS) {
+            throw InvalidParameterException("scope=screen 은 xlsx 만 지원합니다. [format=$format]", "format")
+        }
+        if (!unit.isNullOrBlank() && unit.trim().lowercase() != "day") {
+            throw InvalidParameterException("scope=screen 은 일별(unit=day)만 지원합니다. [unit=$unit]", "unit")
+        }
+
+        val data = productionService.getResultScreenExport(request?.from, request?.to)
+
+        // 파일을 먼저 만든다 — 크기를 이력에 남겨야 하고, 만들다 실패하면 'DONE' 으로 기록되는 것도 막힌다.
+        val bytes = resultScreenWorkbook.build(data)
+        val fileName = "실적_집계_전체_${data.from}_${data.to}.xlsx"
+        val response = exportService.xlsx(bytes, fileName)
+
+        downloadLogService.record(
+            reportId = null,
+            reportNm = "생산 실적 집계(화면 전체)",
+            menuId = MenuId.PROD_RESULT,
+            format = "xlsx",
+            // scope_desc 는 100자 컬럼이다 — 조건 전문은 params 에 있다.
+            scope = "screen from=${data.from}, to=${data.to}, unit=day",
+            rowCnt = data.rows.size,
+            blindCnt = data.maskedFields.size,
+            blindCells = data.maskedFields.associateWith { data.rows.size },
+            fileNm = fileName,
+            params = mapOf(
+                "scope" to "screen",
+                "from" to data.from.toString(),
+                "to" to data.to.toString(),
+                "unit" to "day",
+                "modelCd" to null,
+                "lineCd" to null,
+                "format" to "xlsx",
+                "sheets" to listOf(
+                    ProductionResultScreenWorkbook.SHEET_SUMMARY,
+                    ProductionResultScreenWorkbook.SHEET_TREND,
+                    ProductionResultScreenWorkbook.SHEET_TREE
+                ),
+                "dayRows" to data.countOf(1),
+                "productRows" to data.countOf(2),
+                "equipmentRows" to data.countOf(3)
+            ),
+            fileSize = bytes.size.toLong()
+        )
+
+        return response
+    }
+
+    private companion object {
+        /** scope=screen 이 받는 형식 — 전부 xlsx 로 낸다 */
+        val SCREEN_EXPORT_FORMATS = setOf("xlsx", "xls", "excel")
     }
 
     // =================================================================================

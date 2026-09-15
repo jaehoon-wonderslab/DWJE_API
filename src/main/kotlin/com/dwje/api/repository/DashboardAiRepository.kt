@@ -1062,6 +1062,45 @@ class DashboardAiRepository(
     }
 
     /**
+     * 일자 × 설비 × 제품 실적 — 실적 집계 화면 전체 내려받기(일자→제품→설비 트리)용.
+     *
+     * [findLineProducts] 와 **같은 본문 SQL** 에 일자 그룹만 더한 것이다. 화면은 일자마다
+     * `/dashboard/ai/line-products?date=` 를 한 번씩 부르는데, 내려받기는 기간을 한 번에 읽어
+     * 같은 행을 만든다. 정렬은 일자 내림차순(화면 표와 같다) → 제품 → 공정 → 설비.
+     *
+     * 페이지 제한이 없다 — 화면이 쪽을 나누어 보여 준 것을 전부 담아야 하기 때문이다.
+     * (하루 620행 안팎 · 2026-09-03 기준. 31일이면 2만 행 규모)
+     */
+    fun findLineProductsByDay(plantCd: String, window: TimeWindow): List<Map<String, Any?>> {
+        val sql = lineProductBaseSql()
+            .replaceFirst(
+                Regex("""SELECT\s+lh\.eqpt_cd,"""),
+                "SELECT\n    to_char(date_trunc('day', lh.ins_date), 'YYYY-MM-DD') AS period,\n    lh.eqpt_cd,"
+            ) +
+            "\nGROUP BY 1, lh.eqpt_cd, lh.wc_cd, coalesce(p.model_cd, lh.item_cd)" +
+            "\nORDER BY 1 DESC, coalesce(p.model_cd, lh.item_cd), lh.wc_cd, lh.eqpt_cd"
+        require(sql.contains("AS period")) { "line-products 본문 SQL 의 SELECT 머리가 바뀌어 일자 열을 끼울 수 없다." }
+
+        return jdbcTemplate.query(sql, dayParams(plantCd, window)) { rs, _ ->
+            mapOf(
+                "period" to rs.getString("period"),
+                "eqptCd" to rs.getString("eqpt_cd"),
+                "eqptNm" to rs.getString("eqpt_nm"),
+                "processId" to rs.getString("wc_cd"),
+                "processNm" to rs.getString("wc_nm"),
+                "product" to rs.getString("product"),
+                "productNm" to rs.getString("product_nm"),
+                "qty" to Rs.qty(rs, "total_qty"),
+                "okQty" to Rs.qty(rs, "ok_qty"),
+                "ngQty" to Rs.qty(rs, "ng_qty"),
+                "defectRate" to com.dwje.api.common.util.safeRate(
+                    rs.getBigDecimal("ng_qty"), rs.getBigDecimal("total_qty")
+                )
+            )
+        }
+    }
+
+    /**
      * 설비 × 제품 실적의 본문 SQL.
      *
      * 제품 식별자는 [findLines] 의 `product` 와 같은 식(`coalesce(model_cd, item_cd)`)이다
