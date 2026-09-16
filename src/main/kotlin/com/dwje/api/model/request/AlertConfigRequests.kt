@@ -80,26 +80,6 @@ data class RecipientRequest(
 )
 
 /**
- * 당번 등록·수정 요청 — POST/PUT /api/v1/alert-duties
- *
- * @param from       시작일
- * @param to         종료일
- * @param groupId    수신 그룹 ID
- * @param mainEmpNo  주 담당자 사번
- * @param subEmpNo   대리 담당자 사번
- * @param reason     당번 사유 (ALM_DUTY_REASON)
- */
-data class DutyRequest(
-    val from: String? = null,
-    val to: String? = null,
-    val groupId: Int? = null,
-    val mainEmpNo: String? = null,
-    val subEmpNo: String? = null,
-    val reason: String? = null,
-    val remark: String? = null
-)
-
-/**
  * 승격 규칙 수정 요청 — PUT /api/v1/alert-escalation-rules
  *
  * @param stages 단계별 설정 목록

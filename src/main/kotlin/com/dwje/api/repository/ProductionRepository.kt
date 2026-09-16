@@ -1,13 +1,14 @@
 package com.dwje.api.repository
 
+import com.dwje.api.common.util.BusinessDay
 import com.dwje.api.common.util.Rs
 import com.dwje.api.common.util.SqlLikeUtils
 import com.dwje.api.common.util.TimeWindow
 import com.dwje.api.common.util.safeRate
+import java.time.LocalDate
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Repository
-import java.time.LocalDate
 
 /**
  * 생산 모니터링 · 실적 집계 Repository (PR-01, PR-02)
@@ -357,6 +358,16 @@ class ProductionRepository(
         params.addValue("from", window.from).addValue("toExclusive", window.toExclusive)
     }
 
+    /**
+     * 실시간 모니터링의 "오늘" — **자정 기준을 그대로 둔다.** (2026-09-16 결정)
+     *
+     * 날짜·기간을 고르는 조회는 [BusinessDay] 를 따라 08:00 교대로 끊지만, 이 화면은
+     * 지금 현장이 어떤지 보는 곳이라 "오늘 아침부터 지금까지"가 아니라 "자정부터 지금까지"가
+     * 현장 감각과 맞는다. 08:00 이전에 열면 실적이 비어 보이는 문제도 생긴다.
+     *
+     * `window` 가 들어오면(일일 생산현황 보고가 넘긴다) 그 구간을 그대로 쓴다.
+     * 여기를 BusinessDay 로 바꾸려면 BusinessDayTest 의 경계 테스트부터 함께 고친다.
+     */
     private fun monitorProductionPeriod(window: TimeWindow?): String =
         if (window == null) "lh.ins_date >= date_trunc('day', now())" else
             "lh.ins_date >= :from AND lh.ins_date < :toExclusive"
@@ -520,7 +531,7 @@ class ProductionRepository(
         return """
             WITH prod AS (
                 SELECT
-                    to_char(date_trunc('$truncUnit', lh.ins_date), $fmt)       AS period,
+                    to_char(date_trunc('$truncUnit', lh.ins_date + ${BusinessDay.BUCKET_SHIFT_SQL}), $fmt)       AS period,
                     coalesce(sum(lh.normal), 0)                               AS ok_qty,
                     coalesce(sum(lh.defect), 0)                               AS ng_qty,
                     coalesce(sum(lh.normal), 0) + coalesce(sum(lh.defect), 0) AS total_qty
@@ -536,7 +547,7 @@ class ProductionRepository(
             ),
             uptime AS (
                 SELECT
-                    to_char(date_trunc('$truncUnit', mv.measured_at), $fmt) AS period,
+                    to_char(date_trunc('$truncUnit', mv.measured_at + ${BusinessDay.BUCKET_SHIFT_SQL}), $fmt) AS period,
                     round(avg(mv.metric_value), 2)                          AS uptime_rate
                 FROM ax.tb_met_metric_value mv
                 INNER JOIN ax.tb_met_metric_std ms ON ms.metric_id = mv.metric_id
@@ -548,7 +559,7 @@ class ProductionRepository(
             ),
             downtime AS (
                 SELECT
-                    to_char(date_trunc('$truncUnit', dt.stop_at), $fmt) AS period,
+                    to_char(date_trunc('$truncUnit', dt.stop_at + ${BusinessDay.BUCKET_SHIFT_SQL}), $fmt) AS period,
                     coalesce(sum(dt.elapsed_min), 0)                    AS downtime_min
                 FROM ax.tb_prod_downtime dt
                 WHERE dt.plant_cd  = :plantCd
@@ -578,13 +589,16 @@ class ProductionRepository(
     }
 
     /** 실적 집계 공통 파라미터 */
-    private fun resultParams(filter: ResultFilter): MapSqlParameterSource = MapSqlParameterSource()
-        .addValue("plantCd", filter.plantCd)
-        .addValue("from", filter.window?.from ?: filter.from.atStartOfDay())
-        .addValue("toExclusive", filter.window?.toExclusive ?: filter.to.plusDays(1).atStartOfDay())
-        .addValue("itemCd", filter.itemCd)
-        .addValue("lineCd", filter.lineCd)
-        .apply { if (filter.modelCd != null) addValue("modelCd", filter.modelCd) }
+    private fun resultParams(filter: ResultFilter): MapSqlParameterSource {
+        val window = filter.window ?: BusinessDay.ofRange(filter.from, filter.to)
+        return MapSqlParameterSource()
+            .addValue("plantCd", filter.plantCd)
+            .addValue("from", window.from)
+            .addValue("toExclusive", window.toExclusive)
+            .addValue("itemCd", filter.itemCd)
+            .addValue("lineCd", filter.lineCd)
+            .apply { if (filter.modelCd != null) addValue("modelCd", filter.modelCd) }
+    }
 
     /**
      * 모델 코드 필터절.
@@ -620,7 +634,7 @@ data class ResultFilter(
     /**
      * 시각 단위 집계 구간 — 지정하면 `from`/`to` 로 만든 날짜 경계를 대체한다.
      *
-     * 일일 생산현황 보고처럼 자정을 넘는 구간(전일 20:00 ~ 당일 08:00)에 쓴다.
+     * 일일 생산현황 보고처럼 자정을 넘는 구간(전일 08:00 ~ 당일 08:00)에 쓴다.
      * `from`/`to` 는 기간 표기·그룹핑에 그대로 남으므로 함께 채워 보낸다.
      */
     val window: TimeWindow? = null

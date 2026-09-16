@@ -3,6 +3,7 @@ package com.dwje.api.service
 import com.dwje.api.common.exception.InvalidParameterException
 import com.dwje.api.common.exception.ResourceNotFoundException
 import com.dwje.api.common.response.PageMeta
+import com.dwje.api.common.util.BusinessDay
 import com.dwje.api.common.util.DataField
 import com.dwje.api.common.util.DateUtils
 import com.dwje.api.common.util.MaskingSupport
@@ -12,8 +13,6 @@ import com.dwje.api.config.AoiProperties
 import com.dwje.api.config.AppProperties
 import com.dwje.api.repository.AoiCosmeticRepository
 import com.dwje.api.repository.AoiCosmeticRepository.SerialKey
-import org.slf4j.LoggerFactory
-import org.springframework.stereotype.Service
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.temporal.ChronoUnit
@@ -21,6 +20,8 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import org.slf4j.LoggerFactory
+import org.springframework.stereotype.Service
 
 /**
  * AOI 외관 판정 집계 — `TB_SAMSUN_COSMETIC` (2026-09-14 발주자 지시: AOI 는 이 표만 쓴다).
@@ -458,9 +459,9 @@ class AoiCosmeticService(
      */
     private fun compute(key: CacheKey): Snapshot {
         val started = System.currentTimeMillis()
+        val window = BusinessDay.ofRange(key.from, key.to)
         val data = repository.periodData(
-            key.wcCd, key.eqptCd,
-            key.from.atStartOfDay(), key.to.plusDays(1).atStartOfDay(),
+            key.wcCd, key.eqptCd, window.from, window.toExclusive,
             cos.nonVerdictItems
         )
 

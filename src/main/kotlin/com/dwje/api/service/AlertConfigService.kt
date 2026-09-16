@@ -5,11 +5,9 @@ import com.dwje.api.common.exception.DuplicatedValueException
 import com.dwje.api.common.exception.InvalidParameterException
 import com.dwje.api.common.exception.ResourceNotFoundException
 import com.dwje.api.common.response.PageMeta
-import com.dwje.api.common.util.DateUtils
 import com.dwje.api.common.util.MenuId
 import com.dwje.api.common.util.PageRequestParam
 import com.dwje.api.model.request.AlertConditionRequest
-import com.dwje.api.model.request.DutyRequest
 import com.dwje.api.model.request.EscalationRuleRequest
 import com.dwje.api.model.request.RecipientGroupRequest
 import com.dwje.api.model.request.RecipientRequest
@@ -19,7 +17,6 @@ import com.dwje.api.repository.SystemUserRepository
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
-import java.time.LocalDate
 
 /**
  * 이상 알림 발송 조건 · 수신자 관리 서비스 (SY-04, SY-05)
@@ -399,75 +396,6 @@ class AlertConfigService(
 
         alertConfigRepository.updateRecipientState(recipientId, state, principal.userId)
         return mapOf("success" to true, "state" to alertConfigRepository.normalizeRecvState(state))
-    }
-
-    /** 당번·대리 목록 (No.166) */
-    @Transactional(readOnly = true)
-    fun getDuties(from: String?, to: String?, groupId: Int?): Map<String, Any?> {
-        authorizationService.requireMenu(MenuId.SYS_RECIP)
-        val (fromDate, toDate) = DateUtils.periodOf(from, to, 30)
-        return mapOf("items" to alertConfigRepository.findDuties(fromDate, toDate, groupId))
-    }
-
-    /** 당번 등록 (No.167) */
-    @Transactional
-    fun createDuty(request: DutyRequest): Map<String, Any?> {
-        val principal = authorizationService.requireMenu(MenuId.SYS_RECIP)
-
-        val groupId = request.groupId
-            ?: throw InvalidParameterException("수신 그룹을 선택해 주세요.", "groupId")
-        val mainEmpNo = request.mainEmpNo
-            ?: throw InvalidParameterException("주 담당자를 선택해 주세요.", "mainEmpNo")
-        val subEmpNo = request.subEmpNo
-            ?: throw InvalidParameterException("대리 담당자를 선택해 주세요.", "subEmpNo")
-
-        // 주 담당자와 대리 담당자는 같을 수 없다. (DDL CHECK 제약과 동일)
-        if (mainEmpNo == subEmpNo) {
-            throw InvalidParameterException("주 담당자와 대리 담당자는 같을 수 없습니다.", "subEmpNo")
-        }
-
-        val fromDate = DateUtils.parseDate(request.from, "from", LocalDate.now())
-        val toDate = DateUtils.parseDate(request.to, "to", fromDate.plusDays(6))
-        if (toDate.isBefore(fromDate)) {
-            throw InvalidParameterException("종료일이 시작일보다 빠릅니다.", "to")
-        }
-
-        val dutyId = alertConfigRepository.insertDuty(
-            groupId, fromDate, toDate, mainEmpNo, subEmpNo, request.reason ?: "ROTATION",
-            request.remark, principal.userId
-        )
-
-        return mapOf("dutyId" to dutyId)
-    }
-
-    /** 당번 수정 (No.168) */
-    @Transactional
-    fun updateDuty(dutyId: Int, request: DutyRequest): Map<String, Any?> {
-        authorizationService.requireMenu(MenuId.SYS_RECIP)
-
-        val updated = alertConfigRepository.updateDuty(
-            dutyId,
-            request.from?.let { DateUtils.parseDate(it, "from") },
-            request.to?.let { DateUtils.parseDate(it, "to") },
-            request.mainEmpNo,
-            request.subEmpNo,
-            request.reason,
-            request.remark
-        )
-        if (updated == 0) throw ResourceNotFoundException("당번 정보를 찾을 수 없습니다. [dutyId=$dutyId]")
-
-        return mapOf("success" to true)
-    }
-
-    /** 당번 삭제 (No.168) */
-    @Transactional
-    fun deleteDuty(dutyId: Int): Map<String, Any?> {
-        authorizationService.requireMenu(MenuId.SYS_RECIP)
-
-        val deleted = alertConfigRepository.deleteDuty(dutyId)
-        if (deleted == 0) throw ResourceNotFoundException("당번 정보를 찾을 수 없습니다. [dutyId=$dutyId]")
-
-        return mapOf("success" to true)
     }
 
     /** 승격 규칙 조회 (No.169) */

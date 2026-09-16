@@ -1,14 +1,15 @@
 package com.dwje.api.repository
 
+import com.dwje.api.common.util.BusinessDay
 import com.dwje.api.common.util.DefectSql
 import com.dwje.api.common.util.ProcessPeriod
 import com.dwje.api.common.util.ProcessPeriodRow
 import com.dwje.api.common.util.Rs
 import com.dwje.api.common.util.safeRate
+import java.time.LocalDate
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Repository
-import java.time.LocalDate
 
 /**
  * 공정 및 제품 대시보드 Repository (DB-02)
@@ -33,7 +34,7 @@ class DashboardProcessRepository(
         val productFilter = if (productCodes.isEmpty()) "" else "AND p.model_cd IN (:productCodes)"
         val sql = """
             WITH base AS MATERIALIZED (
-                SELECT date_trunc(:unit, lh.ins_date)::date AS period,
+                SELECT date_trunc(:unit, lh.ins_date + ${BusinessDay.BUCKET_SHIFT_SQL})::date AS period,
                        lh.wc_cd, p.model_cd, p.model_nm, lh.normal, lh.defect
                 FROM mes.tb_pop_label_hist lh
                 LEFT JOIN ax.tb_prod_item_map pm
@@ -63,9 +64,10 @@ class DashboardProcessRepository(
             WHERE g.kind <> 'products' OR g.model_cd IS NOT NULL
             ORDER BY g.kind, g.period, g.model_cd, w.sort_seq NULLS LAST, g.wc_cd
         """.trimIndent()
+        val window = BusinessDay.ofRange(range.from, range.to)
         val params = MapSqlParameterSource("plantCd", plantCd)
-            .addValue("from", range.from.atStartOfDay())
-            .addValue("toExclusive", range.to.plusDays(1).atStartOfDay())
+            .addValue("from", window.from)
+            .addValue("toExclusive", window.toExclusive)
             .addValue("unit", range.unit).addValue("processId", processId)
             .addValue("productCodes", productCodes)
         return jdbcTemplate.query(sql, params) { rs, _ ->

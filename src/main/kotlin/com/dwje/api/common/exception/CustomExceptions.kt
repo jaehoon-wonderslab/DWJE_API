@@ -41,6 +41,17 @@ class DuplicatedValueException(message: String, field: String? = null) :
 class BusinessRuleException(message: String) :
     BusinessException(ErrorCode.RULE_VIOLATION, message)
 
+/**
+ * E-RULE-001(409) : 다른 행이 이미 그 값을 쓰고 있어 저장할 수 없다
+ *
+ * [DuplicatedValueException] 과 뜻은 같지만 상태 코드가 다르다. 그쪽은 400 이고
+ * 회원가입 사번·이메일 중복이 WEB 에 400 으로 문서화돼 있어(AUTH_API_FOR_WEB.md) 바꿀 수 없다.
+ * "이미 있는 자원과 충돌" 을 409 로 내보내야 하는 곳은 이 예외를 쓴다 —
+ * [BusinessRuleException] 과 달리 `field` 를 실어 WEB 이 입력칸을 짚어 줄 수 있다.
+ */
+class ConflictingValueException(message: String, field: String? = null) :
+    BusinessException(ErrorCode.RULE_VIOLATION, message, field)
+
 /** E-NOTFOUND : 대상 없음 */
 class ResourceNotFoundException(message: String = ErrorCode.NOT_FOUND.defaultMessage) :
     BusinessException(ErrorCode.NOT_FOUND, message)

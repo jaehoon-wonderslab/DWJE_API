@@ -15,7 +15,7 @@ import java.time.LocalDateTime
 /**
  * 일일 생산현황 보고 집계 구간 계약 테스트
  *
- * 집계 구간은 **전일 20:00 ~ 당일 08:00** 이고, 화면은 대상일 하나만 고른다.
+ * 집계 구간은 **전일 08:00 ~ 당일 08:00** 이고, 화면은 대상일 하나만 고른다.
  *
  * 이 테스트가 있는 이유: 고치기 전 초안은 `from`/`to` 를 **날짜**로 넘겨
  * 실제로는 48시간(09-01 00:00 ~ 09-03 00:00)을 집계했다. 문서에 적힌
@@ -28,20 +28,20 @@ import java.time.LocalDateTime
 class DailyReportPeriodTest {
 
     @Test
-    @DisplayName("1. 대상일 구간은 전일 20:00 ~ 당일 08:00 이다")
+    @DisplayName("1. 대상일 구간은 전일 08:00 ~ 당일 08:00 이다")
     fun dailyWindow() {
         val w = DailyReportPeriod.of(LocalDate.of(2026, 9, 2))
-        assertEquals(LocalDateTime.of(2026, 9, 1, 20, 0), w.from)
+        assertEquals(LocalDateTime.of(2026, 9, 1, 8, 0), w.from)
         assertEquals(LocalDateTime.of(2026, 9, 2, 8, 0), w.toExclusive)
     }
 
     @Test
-    @DisplayName("2. 구간은 12시간이고 자정을 넘는다")
+    @DisplayName("2. 구간은 24시간이고 자정을 넘는다")
     fun spansMidnight() {
         val w = DailyReportPeriod.of(LocalDate.of(2026, 9, 2))
         assertEquals(
-            12L, Duration.between(w.from, w.toExclusive).toHours(),
-            "야간 교대 20:00 부터 주간 교대 시작 08:00 까지는 12시간이다"
+            24L, Duration.between(w.from, w.toExclusive).toHours(),
+            "전일 주간 교대 시작 08:00 부터 당일 08:00 까지는 24시간이다"
         )
         assertTrue(
             w.from.toLocalDate() != w.toExclusive.toLocalDate(),
@@ -50,11 +50,11 @@ class DailyReportPeriodTest {
     }
 
     @Test
-    @DisplayName("3. 주간 누적은 그 주 월요일 20:00 에 시작한다")
+    @DisplayName("3. 주간 누적은 그 주 월요일 08:00 에 시작한다")
     fun weeklyStartsMonday() {
         // 2026-09-02 는 수요일, 그 주 월요일은 2026-08-31.
         val w = DailyReportPeriod.ofWeek(LocalDate.of(2026, 9, 2))
-        assertEquals(LocalDateTime.of(2026, 8, 31, 20, 0), w.from)
+        assertEquals(LocalDateTime.of(2026, 8, 31, 8, 0), w.from)
         assertEquals(LocalDateTime.of(2026, 9, 2, 8, 0), w.toExclusive)
     }
 
@@ -123,7 +123,8 @@ class DailyReportPeriodTest {
         )
         assertTrue(
             !Regex("""TimeWindow\.ofDay|window = TimeWindow\.ofDay""").containsMatchIn(sheet),
-            "하루 전체 구간(TimeWindow.ofDay)으로 되돌아가면 안 된다 — 보고 구간은 12시간이다"
+            "달력 하루 구간(TimeWindow.ofDay, 00:00~00:00)으로 되돌아가면 안 된다 — " +
+                "보고 구간도 24시간이지만 08:00 에 시작해 달력 하루와 8시간 어긋난다"
         )
     }
 
@@ -226,8 +227,8 @@ class DailyReportPeriodTest {
         assertEquals(DailyReportPeriod.weekDays(target), windows.size, "구간 개수는 weekDays 와 같다")
         assertEquals(
             listOf(
-                LocalDateTime.of(2026, 8, 31, 20, 0) to LocalDateTime.of(2026, 9, 1, 8, 0),
-                LocalDateTime.of(2026, 9, 1, 20, 0) to LocalDateTime.of(2026, 9, 2, 8, 0)
+                LocalDateTime.of(2026, 8, 31, 8, 0) to LocalDateTime.of(2026, 9, 1, 8, 0),
+                LocalDateTime.of(2026, 9, 1, 8, 0) to LocalDateTime.of(2026, 9, 2, 8, 0)
             ),
             windows.map { it.from to it.toExclusive }
         )
@@ -254,8 +255,8 @@ class DailyReportPeriodTest {
 
             windows.forEach { w ->
                 assertEquals(
-                    12L, Duration.between(w.from, w.toExclusive).toHours(),
-                    "$target : 보고 구간은 12시간이다"
+                    24L, Duration.between(w.from, w.toExclusive).toHours(),
+                    "$target : 보고 구간은 24시간이다"
                 )
             }
             windows.zipWithNext().forEach { (a, b) ->
@@ -277,12 +278,14 @@ class DailyReportPeriodTest {
         assertTrue(
             sheet.contains("FILTER (WHERE is_report_shift)"),
             "주간 실적(week_qty)은 보고 구간에 든 것만 더해야 한다. " +
-                "연속 구간으로 더하면 주간 교대가 섞여 주간목표(일목표 x 보고 일수)와 짝이 맞지 않는다 " +
-                "(D64S/W110 09-02 : 606,225 vs 915,009)"
+                "보고 구간이 24시간이 된 지금은 연속 구간과 합이 같지만, 구간이 다시 좁아지면 " +
+                "연속 구간에는 보고 대상이 아닌 시간이 섞여 주간목표(일목표 x 보고 일수)와 짝이 맞지 않는다 " +
+                "(20:00 시작이던 때 D64S/W110 09-02 : 606,225 vs 915,009)"
         )
         assertTrue(
             sheet.contains("week_qty_all_shift"),
-            "연속 구간 합은 지우지 말고 별도 열로 남긴다 — 낮 근무 실적을 보려는 화면이 있다"
+            "연속 구간 합은 지우지 말고 별도 열로 남긴다 — 지금은 week_qty 와 값이 같지만 " +
+                "구간 규칙이 바뀌면 두 기준이 다시 갈라진다"
         )
 
         // timestamptz::time 은 세션 TimeZone 을 따라 경계가 조용히 밀린다.
@@ -290,7 +293,7 @@ class DailyReportPeriodTest {
             !sheet.contains("::time"),
             "보고 구간 경계를 SQL 의 ::time 으로 판정하면 안 된다 — " +
                 "timestamptz::time 은 세션 TimeZone 설정을 따르므로 접속 세션이 UTC 면 " +
-                "20:00/08:00 경계가 9시간 밀린 채 집계된다. 경계는 파라미터로 넘긴다"
+                "08:00 경계가 9시간 밀린 채 집계된다. 경계는 파라미터로 넘긴다"
         )
         assertTrue(
             sheet.contains("shiftFrom") && sheet.contains("shiftTo"),

@@ -1,13 +1,14 @@
 package com.dwje.api.repository
 
+import com.dwje.api.common.util.BusinessDay
 import com.dwje.api.common.util.DefectSql
 import com.dwje.api.common.util.Rs
 import com.dwje.api.common.util.safeRate
+import java.math.BigDecimal
+import java.time.LocalDate
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Repository
-import java.math.BigDecimal
-import java.time.LocalDate
 
 /**
  * 품질 현황 · AOI 판정 분석 Repository (QC-01, QC-02)
@@ -903,11 +904,13 @@ class QualityRepository(
         return Math.round((current.toDouble() - previous.toDouble()) / previous.toDouble() * 10000) / 100.0
     }
 
-    private fun periodParams(plantCd: String, from: LocalDate, to: LocalDate): MapSqlParameterSource =
-        MapSqlParameterSource()
+    private fun periodParams(plantCd: String, from: LocalDate, to: LocalDate): MapSqlParameterSource {
+        val window = BusinessDay.ofRange(from, to)
+        return MapSqlParameterSource()
             .addValue("plantCd", plantCd)
-            .addValue("from", from.atStartOfDay())
-            .addValue("toExclusive", to.plusDays(1).atStartOfDay())
+            .addValue("from", window.from)
+            .addValue("toExclusive", window.toExclusive)
+    }
 }
 
 /**

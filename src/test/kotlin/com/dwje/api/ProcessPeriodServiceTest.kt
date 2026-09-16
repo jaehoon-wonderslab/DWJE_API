@@ -33,18 +33,19 @@ class ProcessPeriodServiceTest {
             menuPerms = setOf(MenuId.DASH_PROC), dataPerms = setOf(DataField.YIELD))
         `when`(authorization.guard(MenuId.DASH_PROC)).thenReturn(principal to MaskingSupport(principal))
         val row = ProcessPeriodRow.of(BigDecimal("90"), BigDecimal.TEN)
-        `when`(repository.findPeriod("PL01", ProcessPeriod.parse("2026-08-01", "2026-08-02", "day"), null, listOf("P1", "P2")))
-            .thenReturn(listOf("summary" to row, "periods" to row.copy(period = "2026-08-01"),
+        `when`(repository.findPeriod("PL01", ProcessPeriod.parse("2026-08-01", "2026-08-03", "day"), null, listOf("P1", "P2")))
+            .thenReturn(listOf("summary" to row, "periods" to row.copy(period = "2026-08-02"),
                 "products" to row.copy(code = "P1", productNm = "Product"),
                 "processes" to row.copy(processId = "W110", process = "Press")))
-        val (data, mask) = service.getPeriod("2026-08-01", "2026-08-02", "day", listOf(" P1,P2", "P1"), null)
+        // 08-01 ~ 08-03 이 덮는 업무일은 08-02 · 08-03 두 개다(구간이 08-01 08:00 에 시작한다).
+        val (data, mask) = service.getPeriod("2026-08-01", "2026-08-03", "day", listOf(" P1,P2", "P1"), null)
         val rows = listOf(data["summary"] as ProcessPeriodRow) + listOf("periods", "products", "processes").flatMap {
             (data[it] as List<*>).filterIsInstance<ProcessPeriodRow>()
         }
         assertEquals(5, rows.size)
         rows.forEach { assertNull(it.qty); assertNull(it.okQty); assertNull(it.ngQty) }
         assertEquals(90.0, rows.first().yieldRate)
-        assertNull(rows.single { it.period == "2026-08-02" }.yieldRate)
+        assertNull(rows.single { it.period == "2026-08-03" }.yieldRate)
         assertEquals(listOf(DataField.QTY), mask.maskedKeys())
     }
 }

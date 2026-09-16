@@ -3,6 +3,7 @@ package com.dwje.api.service
 import com.dwje.api.common.exception.InvalidParameterException
 import com.dwje.api.common.exception.ResourceNotFoundException
 import com.dwje.api.common.response.PageMeta
+import com.dwje.api.common.util.BusinessDay
 import com.dwje.api.common.util.DataField
 import com.dwje.api.common.util.DateUtils
 import com.dwje.api.common.util.MaskingSupport
@@ -13,8 +14,6 @@ import com.dwje.api.repository.AoiDimensionRepository
 import com.dwje.api.repository.AoiDimensionRepository.DaySerial
 import com.dwje.api.repository.AoiDimensionRepository.SerialKey
 import com.dwje.api.repository.AoiDimensionRepository.SerialStat
-import org.slf4j.LoggerFactory
-import org.springframework.stereotype.Service
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.temporal.ChronoUnit
@@ -22,6 +21,8 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import org.slf4j.LoggerFactory
+import org.springframework.stereotype.Service
 
 /**
  * AOI 판정 목록·상세 — DIMENSION(MSSQL) 시리얼 단위 (실측 문서 C-1 · C-2, 6차 요청).
@@ -126,8 +127,9 @@ class AoiSerialService(
 
     /** 원천을 실제로 읽는다 — 인덱스 목록 1회 + 시리얼 통계(40개씩 묶어 병렬) */
     private fun compute(key: CacheKey): List<SerialRow> {
-        val from = key.from.atStartOfDay()
-        val toEx = key.to.plusDays(1).atStartOfDay()
+        val window = BusinessDay.ofRange(key.from, key.to)
+        val from = window.from
+        val toEx = window.toExclusive
         val days = repository.findDaySerials(from, toEx, key.wcCd, key.eqptCd)
         if (days.isEmpty()) return emptyList()
 

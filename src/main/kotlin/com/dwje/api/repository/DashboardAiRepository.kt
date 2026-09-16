@@ -1,13 +1,14 @@
 package com.dwje.api.repository
 
+import com.dwje.api.common.util.BusinessDay
 import com.dwje.api.common.util.DefectSql
 import com.dwje.api.common.util.Rs
 import com.dwje.api.common.util.SlotBucket
 import com.dwje.api.common.util.TimeWindow
+import java.time.LocalDate
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Repository
-import java.time.LocalDate
 
 /**
  * AI 통합 대시보드 Repository (DB-01)
@@ -1364,10 +1365,12 @@ class DashboardAiRepository(
     }
 
     /**
-     * 일자 범위 공통 파라미터 (당일 00:00 ~ 익일 00:00)
+     * 일자 범위 공통 파라미터 — 업무일 기준 (전날 08:00 ~ 그 날 08:00)
+     *
+     * 달력 하루가 아니다. 공장의 하루는 08:00 교대로 끊기므로 [BusinessDay] 를 쓴다.
      */
     private fun dayParams(plantCd: String, date: LocalDate): MapSqlParameterSource =
-        dayParams(plantCd, TimeWindow.ofDay(date))
+        dayParams(plantCd, BusinessDay.of(date))
 
     /**
      * 집계 구간 파라미터 — 자정을 넘는 구간(일일 생산현황 보고)도 담을 수 있다.

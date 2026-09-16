@@ -17,8 +17,15 @@ data class ProcessPeriod(val from: LocalDate, val to: LocalDate, val unit: Strin
         else -> date
     }
 
-    fun buckets(): List<String> = generateSequence(from) { it.plusDays(1) }
-        .takeWhile { !it.isAfter(to) }.map { bucket(it).toString() }.distinct().toList()
+    /**
+     * 축에 세울 구간 라벨. 조회 구간이 실제로 덮는 업무일에서 뽑는다.
+     *
+     * 달력 날짜(from..to)로 만들면 시작일 쪽에 빈 막대가 하나 생긴다 —
+     * 구간이 `시작일 08:00` 에 시작하므로 그 날은 업무일로 들어오지 않는다.
+     * 구간과 라벨은 [BusinessDay] 한 곳에서 나와야 어긋나지 않는다.
+     */
+    fun buckets(): List<String> =
+        BusinessDay.daysOf(from, to).map { bucket(it).toString() }.distinct()
 
     companion object {
         fun parse(from: String, to: String, unit: String): ProcessPeriod {

@@ -5,14 +5,13 @@ import org.springframework.jdbc.core.namedparam.MapSqlParameterSource
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Repository
 import java.math.BigDecimal
-import java.time.LocalDate
 
 /**
  * 이상 알림 발송 조건 · 수신자 관리 Repository (SY-04, SY-05)
  *
  * 참조 테이블 : ax.tb_alm_cond, ax.tb_alm_cond_channel, ax.tb_alm_cond_group,
  *              ax.tb_alm_cond_escalation, ax.tb_alm_recip_group, ax.tb_alm_recip_group_channel,
- *              ax.tb_alm_recip_group_member, ax.tb_alm_recipient, ax.tb_alm_duty,
+ *              ax.tb_alm_recip_group_member, ax.tb_alm_recipient,
  *              ax.tb_alm_escalation_rule
  */
 @Repository
@@ -457,9 +456,7 @@ class AlertConfigRepository(
                 (SELECT count(*) FROM ax.tb_alm_recip_group WHERE use_flg = 'Y')          AS group_cnt,
                 (SELECT count(*) FROM ax.tb_alm_recipient WHERE recv_state_cd = 'RECV')   AS receiving_cnt,
                 (SELECT count(*) FROM ax.tb_alm_recipient WHERE recv_state_cd = 'ABSENT') AS absent_cnt,
-                (SELECT count(*) FROM ax.tb_alm_recipient WHERE night_recv)               AS night_cnt,
-                (SELECT count(*) FROM ax.tb_alm_duty
-                  WHERE current_date BETWEEN from_date AND to_date)                       AS active_duty_cnt
+                (SELECT count(*) FROM ax.tb_alm_recipient WHERE night_recv)               AS night_cnt
         """.trimIndent()
 
         return jdbcTemplate.queryForObject(sql, MapSqlParameterSource()) { rs, _ ->
@@ -469,8 +466,7 @@ class AlertConfigRepository(
                     "receiving" to rs.getLong("receiving_cnt"),
                     "absent" to rs.getLong("absent_cnt")
                 ),
-                "nightCnt" to rs.getLong("night_cnt"),
-                "activeDutyCnt" to rs.getLong("active_duty_cnt")
+                "nightCnt" to rs.getLong("night_cnt")
             )
         } ?: emptyMap()
     }
@@ -638,11 +634,20 @@ class AlertConfigRepository(
         val sql = StringBuilder(
             """
             SELECT
-                r.user_id, u.user_nm, d.dept_nm, u.position_cd,
-                r.email, r.mobile_no, r.messenger_id, r.night_recv, r.recv_state_cd, r.remark
+                r.user_id, u.user_nm, d.dept_nm, u.position_cd, pc.code_nm AS position_nm,
+                r.email, r.mobile_no, r.messenger_id, r.night_recv,
+                r.recv_state_cd, sc.code_nm AS recv_state_nm, r.remark,
+                (
+                    SELECT string_agg(g.group_nm, ',' ORDER BY g.group_nm)
+                      FROM ax.tb_alm_recip_group_member m
+                     INNER JOIN ax.tb_alm_recip_group g ON g.group_id = m.group_id AND g.use_flg = 'Y'
+                     WHERE m.user_id = r.user_id
+                ) AS group_names
             FROM ax.tb_alm_recipient r
             INNER JOIN ax.tb_sys_user u ON u.user_id = r.user_id
             LEFT  JOIN ax.tb_sys_dept d ON d.dept_id = u.dept_id
+            LEFT  JOIN ax.tb_sys_code pc ON pc.group_cd = 'SYS_POSITION'   AND pc.code = u.position_cd
+            LEFT  JOIN ax.tb_sys_code sc ON sc.group_cd = 'ALM_RECV_STATE' AND sc.code = r.recv_state_cd
             WHERE 1 = 1
             """.trimIndent()
         )
@@ -663,11 +668,15 @@ class AlertConfigRepository(
                 "name" to rs.getString("user_nm"),
                 "dept" to rs.getString("dept_nm"),
                 "pos" to rs.getString("position_cd"),
+                "posNm" to (rs.getString("position_nm") ?: rs.getString("position_cd")),
                 "mail" to rs.getString("email"),
                 "hp" to rs.getString("mobile_no"),
                 "messenger" to rs.getString("messenger_id"),
                 "night" to rs.getBoolean("night_recv"),
                 "state" to rs.getString("recv_state_cd"),
+                "stateNm" to rs.getString("recv_state_nm"),
+                // 소속 수신 그룹 — 화면이 그룹으로 좁혀 보는 기준이다 (없으면 빈 배열)
+                "groups" to (rs.getString("group_names")?.split(",") ?: emptyList()),
                 "remark" to rs.getString("remark")
             )
         }
@@ -772,131 +781,6 @@ class AlertConfigRepository(
         val sql = "SELECT count(*) FROM ax.tb_alm_recipient WHERE user_id = :empNo"
         return (jdbcTemplate.queryForObject(sql, MapSqlParameterSource("empNo", empNo), Long::class.java) ?: 0L) > 0
     }
-
-    /**
-     * 당번·대리 목록을 조회한다. (No.166)
-     */
-    fun findDuties(from: LocalDate, to: LocalDate, groupId: Int?): List<Map<String, Any?>> {
-        val sql = StringBuilder(
-            """
-            SELECT
-                d.duty_id, d.group_id, g.group_nm, d.from_date, d.to_date,
-                d.main_user_id, mu.user_nm AS main_nm,
-                d.sub_user_id,  su.user_nm AS sub_nm,
-                d.reason_cd, rc.code_nm AS reason_nm, d.remark
-            FROM ax.tb_alm_duty d
-            INNER JOIN ax.tb_alm_recip_group g ON g.group_id = d.group_id
-            LEFT  JOIN ax.tb_sys_user mu ON mu.user_id = d.main_user_id
-            LEFT  JOIN ax.tb_sys_user su ON su.user_id = d.sub_user_id
-            LEFT  JOIN ax.tb_sys_code rc ON rc.group_cd = 'ALM_DUTY_REASON' AND rc.code = d.reason_cd
-            WHERE d.to_date >= :from AND d.from_date <= :to
-            """.trimIndent()
-        )
-
-        val params = MapSqlParameterSource().addValue("from", from).addValue("to", to)
-
-        if (groupId != null) {
-            sql.append(" AND d.group_id = :groupId")
-            params.addValue("groupId", groupId)
-        }
-
-        sql.append("\nORDER BY d.from_date DESC, g.group_nm")
-
-        return jdbcTemplate.query(sql.toString(), params) { rs, _ ->
-            mapOf(
-                "dutyId" to rs.getInt("duty_id"),
-                "groupId" to rs.getInt("group_id"),
-                "group" to rs.getString("group_nm"),
-                "from" to Rs.dateTime(rs, "from_date"),
-                "to" to Rs.dateTime(rs, "to_date"),
-                "main" to rs.getString("main_nm"),
-                "mainEmpNo" to rs.getString("main_user_id"),
-                "sub" to rs.getString("sub_nm"),
-                "subEmpNo" to rs.getString("sub_user_id"),
-                "reason" to (rs.getString("reason_nm") ?: rs.getString("reason_cd")),
-                "remark" to rs.getString("remark")
-            )
-        }
-    }
-
-    /**
-     * 당번을 등록한다. (No.167)
-     *
-     * @return 생성된 당번 ID
-     */
-    fun insertDuty(
-        groupId: Int,
-        fromDate: LocalDate,
-        toDate: LocalDate,
-        mainEmpNo: String,
-        subEmpNo: String,
-        reasonCd: String,
-        remark: String?,
-        actor: String
-    ): Int {
-        val sql = """
-            INSERT INTO ax.tb_alm_duty (
-                group_id, from_date, to_date, main_user_id, sub_user_id, reason_cd, remark, ins_user
-            ) VALUES (
-                :groupId, :fromDate, :toDate, :mainEmpNo, :subEmpNo, :reasonCd, :remark, :actor
-            )
-            RETURNING duty_id
-        """.trimIndent()
-
-        val params = MapSqlParameterSource()
-            .addValue("groupId", groupId)
-            .addValue("fromDate", fromDate)
-            .addValue("toDate", toDate)
-            .addValue("mainEmpNo", mainEmpNo)
-            .addValue("subEmpNo", subEmpNo)
-            .addValue("reasonCd", reasonCd)
-            .addValue("remark", remark?.take(300))
-            .addValue("actor", actor)
-
-        return jdbcTemplate.queryForObject(sql, params, Int::class.java) ?: 0
-    }
-
-    /**
-     * 당번을 수정한다. (No.168)
-     */
-    fun updateDuty(
-        dutyId: Int,
-        fromDate: LocalDate?,
-        toDate: LocalDate?,
-        mainEmpNo: String?,
-        subEmpNo: String?,
-        reasonCd: String?,
-        remark: String?
-    ): Int {
-        val sql = """
-            UPDATE ax.tb_alm_duty
-               SET from_date    = coalesce(:fromDate, from_date),
-                   to_date      = coalesce(:toDate, to_date),
-                   main_user_id = coalesce(:mainEmpNo, main_user_id),
-                   sub_user_id  = coalesce(:subEmpNo, sub_user_id),
-                   reason_cd    = coalesce(:reasonCd, reason_cd),
-                   remark       = coalesce(:remark, remark)
-             WHERE duty_id = :dutyId
-        """.trimIndent()
-
-        val params = MapSqlParameterSource()
-            .addValue("dutyId", dutyId)
-            .addValue("fromDate", fromDate)
-            .addValue("toDate", toDate)
-            .addValue("mainEmpNo", mainEmpNo)
-            .addValue("subEmpNo", subEmpNo)
-            .addValue("reasonCd", reasonCd)
-            .addValue("remark", remark?.take(300))
-
-        return jdbcTemplate.update(sql, params)
-    }
-
-    /** 당번을 삭제한다. (No.168) */
-    fun deleteDuty(dutyId: Int): Int =
-        jdbcTemplate.update(
-            "DELETE FROM ax.tb_alm_duty WHERE duty_id = :dutyId",
-            MapSqlParameterSource("dutyId", dutyId)
-        )
 
     /**
      * 승격 규칙을 조회한다. (No.169)

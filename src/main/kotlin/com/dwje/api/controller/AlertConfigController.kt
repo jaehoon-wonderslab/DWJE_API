@@ -2,7 +2,6 @@ package com.dwje.api.controller
 
 import com.dwje.api.common.response.ApiResponse
 import com.dwje.api.model.request.AlertConditionRequest
-import com.dwje.api.model.request.DutyRequest
 import com.dwje.api.model.request.EscalationRuleRequest
 import com.dwje.api.model.request.RecipientGroupRequest
 import com.dwje.api.model.request.RecipientRequest
@@ -180,38 +179,12 @@ class AlertRecipientController(
             "수신 상태가 변경되었습니다."
         )
 
-    /** 당번·대리 목록 (No.166) */
-    @Operation(summary = "당번·대리 목록", description = "기간·그룹별 당번과 대리 담당자를 조회한다.")
-    @GetMapping("/alert-duties")
-    fun duties(
-        @RequestParam(required = false) from: String?,
-        @RequestParam(required = false) to: String?,
-        @RequestParam(required = false) groupId: Int?
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(alertConfigService.getDuties(from, to, groupId))
-
-    /** 당번 등록 (No.167) */
-    @Operation(summary = "당번 등록", description = "기간별 주 담당자와 대리 담당자를 등록한다.")
-    @PostMapping("/alert-duties")
-    fun createDuty(@Valid @RequestBody request: DutyRequest): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(alertConfigService.createDuty(request), "당번이 등록되었습니다.")
-
-    /** 당번 수정 (No.168) */
-    @Operation(summary = "당번 수정", description = "당번 정보를 수정한다.")
-    @PutMapping("/alert-duties/{dutyId}")
-    fun updateDuty(
-        @PathVariable dutyId: Int,
-        @Valid @RequestBody request: DutyRequest
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(alertConfigService.updateDuty(dutyId, request), "당번이 수정되었습니다.")
-
-    /** 당번 삭제 (No.168) */
-    @Operation(summary = "당번 삭제", description = "당번 정보를 삭제한다.")
-    @DeleteMapping("/alert-duties/{dutyId}")
-    fun deleteDuty(@PathVariable dutyId: Int): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(alertConfigService.deleteDuty(dutyId), "당번이 삭제되었습니다.")
-
-    /** 승격 규칙 조회 (No.169) */
+    /**
+     * 승격 규칙 조회 (No.169)
+     *
+     * 수신자 관리 화면에서는 걷어냈다(2026-09-16). 규칙 자체는 알림 현황의
+     * 「승격 대상」(GET /alerts/escalation-targets)이 그대로 읽으므로 조회·수정 API 는 남긴다.
+     */
     @Operation(summary = "승격 규칙 조회", description = "승격 단계별 대기 시간과 승격 대상 그룹을 반환한다.")
     @GetMapping("/alert-escalation-rules")
     fun escalationRules(): ApiResponse<Map<String, Any?>> =

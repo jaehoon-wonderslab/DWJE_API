@@ -1,11 +1,12 @@
 package com.dwje.api.repository
 
+import com.dwje.api.common.util.BusinessDay
 import com.dwje.api.common.util.DateUtils
 import com.dwje.api.common.util.Rs
+import java.time.LocalDate
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Repository
-import java.time.LocalDate
 
 /**
  * AOI 불량 상세 Repository (요구 9)
@@ -185,14 +186,16 @@ class AoiDefectRepository(
     private fun baseParams(
         plantCd: String, from: LocalDate, to: LocalDate,
         eqptCd: String?, defectTypeCd: String?, lotNo: String?, wcCd: String?
-    ): MapSqlParameterSource = MapSqlParameterSource()
-        .addValue("plantCd", plantCd)
-        .addValue("from", from.atStartOfDay())
-        .addValue("toExclusive", to.plusDays(1).atStartOfDay())
-        .addValue("eqptCd", eqptCd?.trim()?.takeIf { it.isNotBlank() })
-        .addValue("defectTypeCd", defectTypeCd?.trim()?.takeIf { it.isNotBlank() })
-        .addValue("lotNo", lotNo?.trim()?.takeIf { it.isNotBlank() })
-        .addValue("wcCd", wcCd?.trim()?.takeIf { it.isNotBlank() })
+    ): MapSqlParameterSource = BusinessDay.ofRange(from, to).let { window ->
+        MapSqlParameterSource()
+            .addValue("plantCd", plantCd)
+            .addValue("from", window.from)
+            .addValue("toExclusive", window.toExclusive)
+            .addValue("eqptCd", eqptCd?.trim()?.takeIf { it.isNotBlank() })
+            .addValue("defectTypeCd", defectTypeCd?.trim()?.takeIf { it.isNotBlank() })
+            .addValue("lotNo", lotNo?.trim()?.takeIf { it.isNotBlank() })
+            .addValue("wcCd", wcCd?.trim()?.takeIf { it.isNotBlank() })
+    }
 
     private fun mapRow(rs: java.sql.ResultSet): Map<String, Any?> = mapOf(
         "defectId" to rs.getString("defect_id"),

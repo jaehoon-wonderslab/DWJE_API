@@ -79,13 +79,6 @@
 - `PATCH /api/v1/alert-recipients/{recipientId}/state`
 - `PATCH /api/v1/system/users/{empNo}/state`
 
-### `DutyRequest`
-
-허용 키 — `from`, `to`, `groupId`, `mainEmpNo`, `subEmpNo`, `reason`, `remark`
-
-- `POST /api/v1/alert-duties`
-- `PUT /api/v1/alert-duties/{dutyId}`
-
 ### `EscalationRuleRequest`
 
 허용 키 — `stages`

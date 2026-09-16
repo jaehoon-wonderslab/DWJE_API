@@ -1,7 +1,7 @@
 package com.dwje.api.service
 
 import com.dwje.api.common.exception.BusinessRuleException
-import com.dwje.api.common.exception.DuplicatedValueException
+import com.dwje.api.common.exception.ConflictingValueException
 import com.dwje.api.common.exception.InvalidParameterException
 import com.dwje.api.common.exception.ResourceNotFoundException
 import com.dwje.api.common.response.PageMeta
@@ -11,6 +11,7 @@ import com.dwje.api.model.request.GlossaryNormalizeRequest
 import com.dwje.api.repository.GlossaryRepository
 import com.dwje.api.repository.VectorIndexRepository
 import org.slf4j.LoggerFactory
+import org.springframework.dao.DuplicateKeyException
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
@@ -91,9 +92,10 @@ class GlossaryService(
         val domain = domainCd?.trim()
             ?: throw InvalidParameterException("도메인을 선택해 주세요.", "domainCd")
 
+        // 대소문자·앞뒤 공백을 무시하고 먼저 본다 — DB 의 uq_gls_term_lower 와 같은 기준이다.
         val existing = glossaryRepository.findTermByName(termName)
         if (existing?.get("active") == true) {
-            throw DuplicatedValueException("이미 등록된 용어입니다. [$termName]", "term")
+            throw duplicatedTerm(existing, termName)
         }
 
         val domainId = glossaryRepository.findDomainId(domain)
@@ -113,17 +115,26 @@ class GlossaryService(
                 revivedId, termName, restoredVariants
             )
 
+            // 표기는 되살린 행의 것을 그대로 둔다. 'can' 으로 되살려도 'CAN' 이면 'CAN' 이다 —
+            // 어떤 표기로 돌아왔는지 응답에 담아, 화면이 입력한 대로 보여 주고 어긋나지 않게 한다.
             return mapOf(
                 "termId" to revivedId,
+                "term" to existing["term"],
                 "restored" to true,
                 "restoredVariants" to restoredVariants
             )
         }
 
-        val termId = glossaryRepository.insertTerm(termName, def, domainId, principal.userId)
+        // 앞에서 봤어도 그 사이 다른 요청이 같은 이름을 넣을 수 있다.
+        // 유니크 위반은 500 이 아니라 위와 같은 409 로 나가야 한다.
+        val termId = try {
+            glossaryRepository.insertTerm(termName, def, domainId, principal.userId)
+        } catch (e: DuplicateKeyException) {
+            throw duplicatedTerm(null, termName)
+        }
         log.info("공식 용어 등록 : termId={} term={}", termId, termName)
 
-        return mapOf("termId" to termId)
+        return mapOf("termId" to termId, "term" to termName)
     }
 
     /** 공식 용어 수정 (No.173) */
@@ -137,15 +148,16 @@ class GlossaryService(
 
         val termName = term?.trim()?.takeIf { it.isNotBlank() }
             ?: throw InvalidParameterException("용어를 입력해 주세요.", "term")
+        // 자기 자신은 빼고 본다 — 표기만 대문자로 바꾸는 수정(can → CAN)이 막히면 안 된다.
         val holder = glossaryRepository.findTermByName(termName)
         if (holder != null && holder["termId"] != termId) {
-            // 삭제된 용어도 UNIQUE (term) 때문에 이름을 계속 점유한다.
+            // 삭제된 용어도 유니크 인덱스 때문에 이름을 계속 점유한다.
             // 목록에 안 보이는 이름이 막히는 이유를 응답에서 알 수 있게 구분해 안내한다.
             if (holder["active"] == true) {
-                throw DuplicatedValueException("이미 등록된 용어입니다. [$termName]", "term")
+                throw duplicatedTerm(holder, termName)
             }
-            throw DuplicatedValueException(
-                "삭제된 용어가 이 이름을 쓰고 있어 바꿀 수 없습니다. [$termName] " +
+            throw ConflictingValueException(
+                "삭제된 용어가 이 이름을 쓰고 있어 바꿀 수 없습니다. [${holder["term"]}] " +
                     "그 용어를 되살리려면 같은 이름으로 새로 등록하세요.",
                 "term"
             )
@@ -155,11 +167,15 @@ class GlossaryService(
             glossaryRepository.findDomainId(it) ?: throw ResourceNotFoundException("도메인을 찾을 수 없습니다. [$it]")
         } ?: throw InvalidParameterException("도메인을 선택해 주세요.", "domainCd")
 
-        glossaryRepository.updateTerm(
-            termId, termName, definition?.trim() ?: "", domainId, principal.userId
-        )
+        try {
+            glossaryRepository.updateTerm(
+                termId, termName, definition?.trim() ?: "", domainId, principal.userId
+            )
+        } catch (e: DuplicateKeyException) {
+            throw duplicatedTerm(null, termName)
+        }
 
-        return mapOf("success" to true)
+        return mapOf("success" to true, "term" to termName)
     }
 
     /**
@@ -202,11 +218,18 @@ class GlossaryService(
         val variantWord = word?.trim()?.takeIf { it.isNotBlank() }
             ?: throw InvalidParameterException("유사어를 입력해 주세요.", "word")
 
-        val variantId = glossaryRepository.insertVariant(
-            termId, variantWord, principal.userId, principal.deptName
-        )
+        // uq_gls_variant_word 는 표 전체에서 한 번만 쓰게 한다 — 다른 용어에 붙은 것도 걸린다.
+        glossaryRepository.findVariantByWord(variantWord)?.let { throw duplicatedVariant(it, variantWord) }
 
-        return mapOf("variantId" to variantId)
+        val variantId = try {
+            glossaryRepository.insertVariant(
+                termId, variantWord, principal.userId, principal.deptName
+            )
+        } catch (e: DuplicateKeyException) {
+            throw duplicatedVariant(null, variantWord)
+        }
+
+        return mapOf("variantId" to variantId, "word" to variantWord)
     }
 
     /** 유사어 수정 (No.175 — 본인 등록 건만) */
@@ -221,14 +244,22 @@ class GlossaryService(
         // "본인 것만 수정할 수 있습니다" 가 나가, 사용자는 남의 것을 건드린 줄 알게 된다.
         requireVariantExists(variantId)
 
-        val updated = glossaryRepository.updateVariant(
-            variantId, variantWord, principal.userId, principal.superAdmin
-        )
+        // 자기 자신은 빼고 본다 — 표기만 바꾸는 수정(can → CAN)이 제 이름에 막히면 안 된다.
+        glossaryRepository.findVariantByWord(variantWord, variantId)
+            ?.let { throw duplicatedVariant(it, variantWord) }
+
+        val updated = try {
+            glossaryRepository.updateVariant(
+                variantId, variantWord, principal.userId, principal.superAdmin
+            )
+        } catch (e: DuplicateKeyException) {
+            throw duplicatedVariant(null, variantWord)
+        }
         if (updated == 0) {
             throw BusinessRuleException("본인이 등록한 유사어만 수정할 수 있습니다.")
         }
 
-        return mapOf("success" to true)
+        return mapOf("success" to true, "word" to variantWord)
     }
 
     /** 유사어 삭제 (No.176 — 본인 등록 건만) */
@@ -244,6 +275,46 @@ class GlossaryService(
         }
 
         return mapOf("success" to true)
+    }
+
+    /**
+     * 용어 중복 409 를 만든다.
+     *
+     * 사전 조회에서 잡았으면 [existing] 으로 **이미 등록된 표기**를 알려 준다 —
+     * 사용자가 'can' 을 넣었을 때 "이미 등록된 용어입니다. [CAN]" 이라야 왜 막혔는지 안다.
+     *
+     * 경합으로 DB 유니크에 걸린 경우에는 [existing] 이 null 이다. 트랜잭션이 이미 중단된
+     * 상태라 표기를 다시 조회할 수 없다 — 여기서 SELECT 를 하면 "current transaction is
+     * aborted" 가 나서 409 대신 500 이 나간다. 그래서 입력값만으로 메시지를 만든다.
+     */
+    private fun duplicatedTerm(existing: Map<String, Any?>?, input: String): ConflictingValueException {
+        val stored = existing?.get("term") as? String
+        return ConflictingValueException(
+            if (stored != null && stored != input) {
+                "이미 등록된 용어입니다. [$stored] 대소문자·앞뒤 공백만 다른 이름은 같은 용어로 봅니다. (입력: $input)"
+            } else {
+                "이미 등록된 용어입니다. [${stored ?: input}]"
+            },
+            "term"
+        )
+    }
+
+    /**
+     * 유사어 중복 409 를 만든다.
+     *
+     * 유사어는 용어별이 아니라 표 전체에서 한 번만 쓸 수 있다(uq_gls_variant_word).
+     * 그래서 "어느 공식 용어가 이미 쓰고 있는지" 를 함께 알려 줘야 사용자가 다음 행동을 정한다.
+     * [existing] 이 null 인 경우의 사정은 [duplicatedTerm] 과 같다.
+     */
+    private fun duplicatedVariant(existing: Map<String, Any?>?, input: String): ConflictingValueException {
+        val stored = existing?.get("word") as? String ?: input
+        val owner = existing?.get("term") as? String
+        return ConflictingValueException(
+            "이미 등록된 유사어입니다. [$stored]" +
+                (owner?.let { " 공식 용어 [$it] 에 붙어 있습니다." } ?: "") +
+                (if (existing != null && stored != input) " (입력: $input)" else ""),
+            "word"
+        )
     }
 
     /**

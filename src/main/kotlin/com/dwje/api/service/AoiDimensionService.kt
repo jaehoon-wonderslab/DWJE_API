@@ -1,6 +1,7 @@
 package com.dwje.api.service
 
 import com.dwje.api.common.exception.InvalidParameterException
+import com.dwje.api.common.util.BusinessDay
 import com.dwje.api.common.util.DataField
 import com.dwje.api.common.util.DateUtils
 import com.dwje.api.common.util.MaskingSupport
@@ -8,8 +9,6 @@ import com.dwje.api.common.util.MenuId
 import com.dwje.api.config.AoiProperties
 import com.dwje.api.config.AppProperties
 import com.dwje.api.repository.AoiDimensionRepository
-import org.slf4j.LoggerFactory
-import org.springframework.stereotype.Service
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.LocalDate
@@ -19,6 +18,8 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import org.slf4j.LoggerFactory
+import org.springframework.stereotype.Service
 
 /**
  * AOI 치수 집계 (QC-02 AI 브리핑의 숫자 담당) — MSSQL 원천 직접 조회 + 귀속 규칙 + 결과 보관.
@@ -282,8 +283,9 @@ class AoiDimensionService(
      */
     private fun compute(key: CacheKey): Summary {
         val started = System.currentTimeMillis()
-        val from = key.from.atStartOfDay()
-        val toEx = key.to.plusDays(1).atStartOfDay()
+        val window = BusinessDay.ofRange(key.from, key.to)
+        val from = window.from
+        val toEx = window.toExclusive
 
         val eqpts = repository.findEquipments(key.wcCd, key.eqptCd, from, toEx)
         val summaries = eqpts.map { e ->

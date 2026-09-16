@@ -72,7 +72,7 @@ MES 실적 데이터는 충분하다 — 라벨 실적 749만행 / 불량 899만
 
 ### 빈 상태 UI 가 필요한 도메인 — API 는 정상, 데이터가 없음
 
-`glossary` · `alert-conditions` · `alert-duties` · `alert-recipients` ·
+`glossary` · `alert-conditions` · `alert-recipients` ·
 `alert-recipient-groups` · ~~`ai/mask-rules` · `ai/finetune-builds`~~(2026-09-15 제거) ·
 `quality/report-forms` · `quality/reports` · `reports/scrap` · `reports/ship-plan` ·
 `system/users/pending` · `system/data-perms/audit`

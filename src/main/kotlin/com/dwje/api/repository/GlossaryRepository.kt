@@ -212,12 +212,18 @@ class GlossaryRepository(
     /**
      * 공식 용어를 등록한다. (No.172)
      *
+     * `btrim` 은 서비스의 `trim()` 과 겹치지만 일부러 둔다. 유니크 인덱스가
+     * `lower(btrim(term))` 이라 앞뒤 공백이 붙은 채 저장되면 검사 기준과 저장값이 어긋난다.
+     * 호출부가 하나 늘어도 그 불변식이 깨지지 않게 SQL 에서도 막는다. (`insertVariant` 도 같다)
+     *
+     * 중복이면 [org.springframework.dao.DuplicateKeyException] — 서비스가 409 로 바꾼다.
+     *
      * @return 생성된 용어 ID
      */
     fun insertTerm(term: String, definition: String, domainId: Int, actor: String): Int {
         val sql = """
             INSERT INTO ax.tb_gls_term (term, term_def, domain_id, use_flg, ins_user, upd_user)
-            VALUES (:term, :definition, :domainId, 'Y', :actor, :actor)
+            VALUES (btrim(:term), :definition, :domainId, 'Y', :actor, :actor)
             RETURNING term_id
         """.trimIndent()
 
@@ -236,7 +242,7 @@ class GlossaryRepository(
     fun updateTerm(termId: Int, term: String, definition: String, domainId: Int, actor: String): Int {
         val sql = """
             UPDATE ax.tb_gls_term
-               SET term      = :term,
+               SET term      = btrim(:term),
                    term_def  = :definition,
                    domain_id = :domainId,
                    upd_date  = now(),
@@ -310,23 +316,70 @@ class GlossaryRepository(
         ) ?: 0L
 
     /**
-     * 용어명으로 행을 찾는다. 사용 중지된 것도 포함한다.
+     * 용어명으로 행을 찾는다. 대소문자·앞뒤 공백을 무시하며, 사용 중지된 것도 포함한다.
      *
-     * `tb_gls_term` 은 `UNIQUE (term)` 이고 부분 인덱스가 아니다.
-     * 즉 사용 중지된 행도 이름을 계속 점유하므로, 같은 이름을 새로 INSERT 할 수 없다.
+     * 비교 식을 DB 유니크 인덱스와 글자 그대로 맞춰 둔다 (2026-09-16 신설) :
+     *      uq_gls_term_lower UNIQUE btree (lower(TRIM(BOTH FROM term)))
+     * 식이 어긋나면 "조회로는 안 걸렸는데 INSERT 는 막히는" 구간이 생겨 500 이 나간다.
+     * 인덱스와 같은 식이라 이 조회는 그 인덱스를 그대로 탄다.
+     *
+     * 사용 중지된 행도 이름을 계속 점유한다 — 인덱스가 부분 인덱스가 아니기 때문이다.
      * 그래서 등록 시 이 조회로 사용 중지된 동명 행을 찾아 되살린다.
+     *
+     * 저장된 표기(`term`)를 함께 돌려준다. 중복 안내에 입력값이 아니라 **이미 등록된 표기**를
+     * 보여 줘야 사용자가 'can' 을 왜 못 넣는지("CAN" 이 있다) 알 수 있다.
      *
      * @return null 이면 그 이름을 쓰는 행이 없다
      */
     fun findTermByName(term: String): Map<String, Any?>? {
         val sql = """
-            SELECT term_id, use_flg
+            SELECT term_id, term, use_flg
             FROM ax.tb_gls_term
-            WHERE term = :term
+            WHERE lower(btrim(term)) = lower(btrim(:term))
         """.trimIndent()
 
         return jdbcTemplate.query(sql, MapSqlParameterSource("term", term)) { rs, _ ->
-            mapOf("termId" to rs.getInt("term_id"), "active" to Rs.yn(rs, "use_flg"))
+            mapOf(
+                "termId" to rs.getInt("term_id"),
+                "term" to rs.getString("term"),
+                "active" to Rs.yn(rs, "use_flg")
+            )
+        }.firstOrNull()
+    }
+
+    /**
+     * 유사어를 단어로 찾는다. 대소문자·앞뒤 공백을 무시한다.
+     *
+     * `uq_gls_variant_word UNIQUE (lower(word))` 는 **표 전체에서** 한 번만 쓸 수 있게 한다 —
+     * 용어별이 아니다. 그래서 다른 용어에 붙은 유사어도 걸리며, 안내에 그 용어명을 함께 담는다.
+     *
+     * 인덱스는 `lower(word)` 지만 여기서는 `btrim` 까지 씌운다. 저장은 항상 trim 해서 넣으므로
+     * 결과는 같고, 앞뒤 공백만 다른 입력(`' CAN'`)이 사전에 걸러진다.
+     *
+     * @param excludeVariantId 수정 시 자기 자신은 제외한다
+     * @return null 이면 그 단어를 쓰는 유사어가 없다
+     */
+    fun findVariantByWord(word: String, excludeVariantId: Int? = null): Map<String, Any?>? {
+        val sql = """
+            SELECT v.variant_id, v.word, v.term_id, t.term, v.owner_user_id
+            FROM ax.tb_gls_variant v
+            INNER JOIN ax.tb_gls_term t ON t.term_id = v.term_id
+            WHERE lower(btrim(v.word)) = lower(btrim(:word))
+              AND (:excludeVariantId::int IS NULL OR v.variant_id <> :excludeVariantId::int)
+        """.trimIndent()
+
+        val params = MapSqlParameterSource()
+            .addValue("word", word)
+            .addValue("excludeVariantId", excludeVariantId)
+
+        return jdbcTemplate.query(sql, params) { rs, _ ->
+            mapOf(
+                "variantId" to rs.getInt("variant_id"),
+                "word" to rs.getString("word"),
+                "termId" to rs.getInt("term_id"),
+                "term" to rs.getString("term"),
+                "ownerUserId" to rs.getString("owner_user_id")
+            )
         }.firstOrNull()
     }
 
@@ -411,7 +464,7 @@ class GlossaryRepository(
     fun insertVariant(termId: Int, word: String, ownerUserId: String, ownerDeptNm: String?): Int {
         val sql = """
             INSERT INTO ax.tb_gls_variant (term_id, word, owner_user_id, owner_dept_nm, reg_at, upd_at)
-            VALUES (:termId, :word, :ownerUserId, :ownerDeptNm, now(), now())
+            VALUES (:termId, btrim(:word), :ownerUserId, :ownerDeptNm, now(), now())
             RETURNING variant_id
         """.trimIndent()
 
@@ -430,7 +483,7 @@ class GlossaryRepository(
     fun updateVariant(variantId: Int, word: String, ownerUserId: String, superAdmin: Boolean): Int {
         val sql = """
             UPDATE ax.tb_gls_variant
-               SET word   = :word,
+               SET word   = btrim(:word),
                    upd_at = now()
              WHERE variant_id = :variantId
                AND (:superAdmin = true OR owner_user_id = :ownerUserId)

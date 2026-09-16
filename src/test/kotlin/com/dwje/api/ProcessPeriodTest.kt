@@ -10,11 +10,16 @@ import org.junit.jupiter.api.Test
 import java.math.BigDecimal
 
 class ProcessPeriodTest {
+    /**
+     * 구간은 `시작일 08:00` 에 시작하므로 시작일 자신은 업무일로 들어오지 않는다.
+     * 2025-12-31 ~ 2026-01-06 이 덮는 업무일은 2026-01-01 ~ 01-06 이고,
+     * 그래서 월 버킷에 2025-12 가 없다. (2026-09-16 업무일 기준 적용)
+     */
     @Test fun `buckets use Mondays across year boundary and do not expand source range`() {
         val range = ProcessPeriod.parse("2025-12-31", "2026-01-06", "week")
         assertEquals(listOf("2025-12-29", "2026-01-05"), range.buckets())
         assertEquals("2025-12-31", range.from.toString())
-        assertEquals(listOf("2025-12-01", "2026-01-01"), ProcessPeriod.parse("2025-12-31", "2026-01-06", "month").buckets())
+        assertEquals(listOf("2026-01-01"), ProcessPeriod.parse("2025-12-31", "2026-01-06", "month").buckets())
     }
 
     @Test fun `strict dates units and maximum interval`() {
@@ -25,7 +30,8 @@ class ProcessPeriodTest {
             Triple("2026-01-01", "2026-04-04", "day"),
             Triple("2026-01-01", "2026-01-02", "hour")
         )) assertThrows(InvalidParameterException::class.java) { ProcessPeriod.parse(from, to, unit) }
-        assertEquals(93, ProcessPeriod.parse("2026-01-01", "2026-04-03", "day").buckets().size)
+        // 01-01 ~ 04-03 은 93일이지만 구간은 01-01 08:00 에 시작한다 — 업무일은 01-02 ~ 04-03 의 92일.
+        assertEquals(92, ProcessPeriod.parse("2026-01-01", "2026-04-03", "day").buckets().size)
     }
 
     @Test fun `ratios use original decimal totals and unknown is not zero`() {

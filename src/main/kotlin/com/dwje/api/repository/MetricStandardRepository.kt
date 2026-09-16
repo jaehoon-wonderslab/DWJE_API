@@ -1,12 +1,13 @@
 package com.dwje.api.repository
 
+import com.dwje.api.common.util.BusinessDay
 import com.dwje.api.common.util.Rs
-import org.springframework.jdbc.core.namedparam.MapSqlParameterSource
-import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
-import org.springframework.stereotype.Repository
 import java.math.BigDecimal
 import java.time.LocalDate
 import java.time.YearMonth
+import org.springframework.jdbc.core.namedparam.MapSqlParameterSource
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
+import org.springframework.stereotype.Repository
 
 /**
  * 지표 기준·측정값 Repository (DB-03 성과지표 · 대시보드 목표선 · AOI 예측 기준값)
@@ -241,10 +242,11 @@ class MetricStandardRepository(
             ORDER BY d.sort_seq, d.dept_nm
         """.trimIndent()
 
+        val window = BusinessDay.ofRange(from, to)
         val params = MapSqlParameterSource()
             .addValue("metricCd", metricCd)
-            .addValue("from", from.atStartOfDay())
-            .addValue("toExclusive", to.plusDays(1).atStartOfDay())
+            .addValue("from", window.from)
+            .addValue("toExclusive", window.toExclusive)
 
         return jdbcTemplate.query(sql, params) { rs, _ ->
             mapOf(

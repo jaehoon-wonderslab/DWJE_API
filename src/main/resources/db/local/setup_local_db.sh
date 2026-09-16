@@ -8,7 +8,7 @@
 #    1) pgvector 포함 PostgreSQL 컨테이너 기동 (기본 포트 5432)
 #    2) 기준 스키마 3종 적용 (mes → ax → vec)
 #    3) 확장 스키마 적용 (db/V*.sql 전체를 버전 순으로)
-#    4) 로컬 계정·권한 시드 적용
+#    4) 로컬 계정·권한 · 제품 마스터 · 알림 수신자 시드 적용
 #
 #  사용법:
 #    ./setup_local_db.sh              # 기동 + 전체 적용
@@ -99,6 +99,10 @@ apply "$SCRIPT_DIR/seed_local_accounts.sql" "로컬 계정·권한 시드"
 # 이 시드가 없으면 공정·제품 대시보드와 제품 랭킹 화면이 전부 빈 상태로 나온다.
 # 사용자가 등록한 제품 데이터가 있으면 스크립트 내부 가드가 알아서 중단한다.
 apply "$SCRIPT_DIR/seed_product_master.sql" "제품 마스터 부트스트랩 시드"
+
+# 알림 수신자 시드 — 이게 없으면 [시스템관리 > 알림 수신자 관리] 가 빈 화면이고,
+# 발송 조건(SY-04)에서 고를 수신 그룹도 없다.
+apply "$SCRIPT_DIR/seed_alert_recipient.sql" "알림 수신 그룹·수신자 시드"
 
 echo
 docker exec "$CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -c "
