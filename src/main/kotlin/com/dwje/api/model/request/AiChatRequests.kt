@@ -101,3 +101,19 @@ data class AiToolCallRequest(
     val label: String? = null,
     val compareLabel: String? = null
 )
+
+/**
+ * 후속 질의 만들기 — POST /api/ai/followups
+ *
+ * @param question 방금 한 질문
+ * @param answer   사내 LLM 이 쓴 답(스트리밍으로 받은 것)
+ */
+data class LlmFollowupRequest(
+    @field:NotBlank(message = "질문이 필요합니다.")
+    @field:Size(max = 2000, message = "질문은 2000자 이내입니다.")
+    val question: String? = null,
+
+    @field:NotBlank(message = "답이 필요합니다.")
+    @field:Size(max = 20_000, message = "답이 너무 깁니다.")
+    val answer: String? = null
+)

@@ -8,6 +8,7 @@ import com.dwje.api.model.request.LlmChatMessage
 import com.dwje.api.model.request.LlmChatRequest
 import com.dwje.api.repository.AiChatRepository
 import com.dwje.api.service.LlmChatProxyService
+import com.dwje.api.service.SllmClient
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -31,7 +32,8 @@ class LlmChatProxyTest {
         AppProperties(llm = llm),
         ObjectMapper(),
         // 연결하지 않는다 — 만들기만 한다
-        AiChatRepository(NamedParameterJdbcTemplate(DriverManagerDataSource()))
+        AiChatRepository(NamedParameterJdbcTemplate(DriverManagerDataSource())),
+        SllmClient(AppProperties(llm = llm), ObjectMapper())
     )
 
     private fun msg(role: String, content: String) = LlmChatMessage(role, content)

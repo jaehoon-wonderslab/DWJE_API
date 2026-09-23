@@ -44,7 +44,8 @@ import java.util.concurrent.ConcurrentHashMap
 class LlmChatProxyService(
     private val appProperties: AppProperties,
     private val objectMapper: ObjectMapper,
-    private val aiChatRepository: AiChatRepository
+    private val aiChatRepository: AiChatRepository,
+    private val sllmClient: SllmClient
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -65,6 +66,25 @@ class LlmChatProxyService(
         private const val HEALTH_TIMEOUT_SEC = 5L
         private const val WINDOW_MS = 60_000L
         private val ROLES = setOf("user", "assistant")
+
+        /** 후속 질의 지시문 — 이 시스템이 실제로 답할 수 있는 범위 안에서만 묻게 한다 */
+        private val FOLLOWUP_SYSTEM = """
+            사용자가 방금 받은 답을 보고, 이어서 물어볼 만한 질문을 2~3개 쓴다. 한국어로 쓴다.
+            - 이 시스템이 답할 수 있는 것: 기간별 생산량·불량·불량률·수율(공장 전체·공정별) 비교, 사내 FACA·품질 문서 검색.
+            - 각 질문은 40자 이내의 한 문장으로 쓴다.
+            - 답에 없는 수치나 코드를 질문에 넣지 않는다. 방금 한 질문을 되풀이하지 않는다.
+        """.trimIndent()
+
+        private val FOLLOWUP_SCHEMA: Map<String, Any?> = mapOf(
+            "type" to "object",
+            "properties" to mapOf(
+                "questions" to mapOf(
+                    "type" to "array", "minItems" to 1, "maxItems" to 3,
+                    "items" to mapOf("type" to "string")
+                )
+            ),
+            "required" to listOf("questions")
+        )
     }
 
     /**
@@ -207,6 +227,30 @@ class LlmChatProxyService(
         val found = ids.firstOrNull { it == cfg.model || it == "${cfg.model}:latest" }
         return mapOf("ok" to (found != null), "model" to found)
     }
+
+    /**
+     * 후속 질의 — 답을 본 사내 LLM 이 쓴다. 예전의 의도별 고정 문장(`buildFollowups`)을 대신한다.
+     *
+     * 모델이 없거나 바쁘면 빈 목록이다 — 고정 문장으로 채우지 않는다.
+     * 같은 질문·답이면 [SllmClient] 캐시로 다시 부르지 않는다.
+     */
+    fun followups(question: String, answer: String): Map<String, Any?> {
+        val user = "[방금 한 질문]\n${question.trim()}\n\n[받은 답]\n${answer.trim().take(3000)}"
+        val result = sllmClient.chatJson(FOLLOWUP_SYSTEM, user, FOLLOWUP_SCHEMA)
+        val questions = (result as? SllmResult.Ok)?.node?.path("questions")
+            ?.mapNotNull { it.asText(null)?.trim()?.takeIf { q -> q.isNotEmpty() && q != question.trim() } }
+            ?.distinct()?.take(3)
+            .orEmpty()
+        return mapOf(
+            "questions" to questions,
+            "reason" to when (result) {
+                is SllmResult.Ok -> null
+                SllmResult.Busy -> "MODEL_BUSY"
+                SllmResult.Failed -> "MODEL_NOT_READY"
+            }
+        )
+    }
+
     /**
      * 받은 답을 질의 이력에 저장한다. 실패해도 채팅은 이미 끝났으므로 로그만 남긴다.
      *

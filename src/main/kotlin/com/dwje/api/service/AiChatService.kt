@@ -18,7 +18,7 @@ import java.util.UUID
  * 1. 용어 사전 기반 정규화 (현장 유사어 → 공식 용어)
  * 2. 의도 분류 — unknown / trend / trace / downtime / metric
  * 3. 부서 열람 권한이 있는 문서만 대상으로 근거 검색 (RAG) — 통합관리자는 모든 문서
- * 4. 데이터 접근 권한 기반 마스킹 적용 후 응답 조립
+ * 4. 데이터 접근 권한 기반 마스킹 적용 후 응답 조립 — 답 문장은 만들지 않는다(사내 LLM 이 근거로 쓴다)
  * 5. 질의·검색 이력 기록 (감사 및 파인튜닝 학습데이터 후보)
  *
  * `unknown` 분기는 답을 추정하지 않고 자료 소재를 안내한다.
@@ -26,7 +26,6 @@ import java.util.UUID
  * ## 질의는 막지 않고 결과에서 값만 가린다 (V33, 2026-09-16 요청자 결정)
  * 권한 없는 항목이 섞인 질의도 정상으로 답한다. 데이터 권한을 이유로 한 `denied` 는 없다.
  * 화면은 표 블록을 `blindColumns` 로 가릴 수 있지만 문장은 가릴 수 없으므로 서버가 출력 단계에서 가린다.
- * - 문장(`answerHtml`) → [DataFieldService.maskText] — 항목 키워드 뒤의 숫자 값과 표에서 가린 값만 「비공개」로. 문장 구조는 그대로
  * - 근거 문서 → 검색에서 빼지 않는다(빼면 답이 틀려진다). 권한 없는 항목이 태그된 문서는 발췌를 가리고 제목·쪽만 남긴다([DataFieldService.maskHit])
  * - 표 블록 → 열 이름을 `tb_sys_data_field_attr` 에서 찾아 `blindColumns` 를 채우고, 권한 없는 열은 값을 null 로
  * 응답 `blindFields` 에 이 사용자에게 가려지는 항목 key 를 실어 화면이 「어떤 항목이 가려졌는지」 알린다.
@@ -112,8 +111,9 @@ class AiChatService(
         blindAppliedCnt += blocks.sumOf { applyBlindColumns(it, principal, blindValues) }
 
         // 8. 문장 — 권한 없는 항목의 값만 「비공개」로. 문장 구조는 그대로다.
-        val (answerHtml, textMasked) = dataFieldService.maskText(buildAnswerHtml(finalIntent, normalized.normalizedText, hits), principal, blindValues)
-        blindAppliedCnt += textMasked
+        // 답 문장은 여기서 만들지 않는다 — 사내 LLM(/api/ai/chat)이 이 근거로 쓰고, 받은 답을 이 이력에 저장한다.
+        // 예전에는 "「질문」에 대한 분석 결과입니다…" 같은 고정 문장을 답으로 저장·반환했다(LLM 없이). 그 자리는 비워 둔다.
+        val answerHtml: String? = null
 
         // 가린 것이 있으면 감사 로그(MASK) 한 건 — 공통 규약 6. 질의는 막지 않았으므로 결과 코드는 MASKED 다.
         if (blindAppliedCnt > 0) {
@@ -198,7 +198,8 @@ class AiChatService(
             "dataEvidence" to dataEvidence.map { mapOf("title" to it["title"], "text" to it["text"], "tool" to it["tool"], "args" to it["args"]) },
             "normalizedQuestion" to normalized.normalizedText,
             "termReplacements" to normalized.replacements,
-            "followups" to buildFollowups(finalIntent),
+            // 후속 질의는 답을 본 LLM 이 만든다(POST /api/ai/followups). 의도별 고정 문장은 두지 않는다.
+            "followups" to emptyList<Any>(),
             "elapsedMs" to elapsedMs
         )
     }
@@ -320,34 +321,6 @@ class AiChatService(
     }
 
     /**
-     * 응답 HTML 을 조립한다.
-     *
-     * unknown 분기는 답을 추정하지 않고 자료 소재를 안내한다.
-     */
-    private fun buildAnswerHtml(intent: String, question: String, hits: List<Map<String, Any?>>): String {
-        if (intent == "unknown") {
-            return buildString {
-                append("<p>질문에 정확히 답할 수 있는 근거 자료를 찾지 못했습니다.</p>")
-                append("<p>다음 자료를 확인해 보시거나, 기간·공정·제품을 지정해 다시 질문해 주세요.</p>")
-                append("<ul><li>생산 모니터링 · 실적 집계 화면</li><li>품질 보고서 · 아침회의 자료</li></ul>")
-            }
-        }
-
-        return buildString {
-            append("<p>「${escapeHtml(question)}」에 대한 분석 결과입니다.</p>")
-            if (hits.isNotEmpty()) {
-                append("<p>다음 ${hits.size}건의 근거 자료를 참고했습니다.</p><ol>")
-                hits.forEach { hit ->
-                    append("<li>${escapeHtml(hit["title"] as? String ?: "-")}")
-                    (hit["heading"] as? String)?.let { append(" — ${escapeHtml(it)}") }
-                    append("</li>")
-                }
-                append("</ol>")
-            }
-        }
-    }
-
-    /**
      * 화면 렌더링용 블록(표·차트 등) 구성을 생성한다.
      *
      * 표 블록은 `columns`(열 이름 = 응답 필드명) 와 `rows`(가변 Map) 를 가진다. blindColumns 는 [applyBlindColumns] 가 채운다.
@@ -386,29 +359,6 @@ class AiChatService(
         return dataFieldService.maskRows(rows, columns, blindColumns, principal, maskedValues)
     }
 
-    /**
-     * 의도별 후속 질의 후보를 제시한다.
-     */
-    private fun buildFollowups(intent: String): List<Map<String, String>> = when (intent) {
-        "trend" -> listOf(
-            mapOf("q" to "같은 기간 공정별 수율은 어떻게 되나요?"),
-            mapOf("q" to "주요 불량 유형 구성 변화도 알려주세요.")
-        )
-        "trace" -> listOf(
-            mapOf("q" to "해당 LOT 의 후속 공정 이력도 보여주세요."),
-            mapOf("q" to "같은 금형에서 생산된 다른 LOT 도 확인해 주세요.")
-        )
-        "downtime" -> listOf(
-            mapOf("q" to "비가동 사유별 누적 시간을 알려주세요."),
-            mapOf("q" to "미등록 비가동 건이 남아 있나요?")
-        )
-        "metric" -> listOf(
-            mapOf("q" to "목표 대비 달성률은 어떻게 되나요?"),
-            mapOf("q" to "전월 대비 변화량을 알려주세요.")
-        )
-        else -> emptyList()
-    }
-
     /** 세션 ID 문자열을 UUID 로 변환한다. (형식 오류 시 null) */
     private fun parseSessionId(value: String?): UUID? =
         value?.takeIf { it.isNotBlank() }?.let { runCatching { UUID.fromString(it.trim()) }.getOrNull() }
@@ -416,8 +366,4 @@ class AiChatService(
     /** HTML 태그를 제거해 평문으로 만든다. (파일 저장용) */
     private fun stripHtml(html: String?): String? =
         html?.replace(Regex("<[^>]*>"), " ")?.replace(Regex("\\s+"), " ")?.trim()
-
-    /** HTML 특수문자를 이스케이프한다. (XSS 방지) */
-    private fun escapeHtml(value: String): String =
-        value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
 }

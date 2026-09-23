@@ -3,6 +3,8 @@ package com.dwje.api.controller
 import com.dwje.api.config.AppProperties
 import com.dwje.api.model.request.AiToolCallRequest
 import com.dwje.api.model.request.LlmChatRequest
+import com.dwje.api.model.request.LlmFollowupRequest
+import com.dwje.api.common.response.ApiResponse
 import com.dwje.api.common.security.UserContext
 import com.dwje.api.service.AiDataToolService
 import com.dwje.api.service.LlmChatProxyService
@@ -117,7 +119,17 @@ class LlmChatProxyController(
         }
     }
 
-    /** 헬스체크 — LLM 서버 `/v1/models` 에 모델이 올라와 있는지. `{ ok, model }` */
+    /** 후속 질의 — 답을 본 사내 LLM 이 2~3개를 쓴다. `{ questions[], reason }` */
+    @Operation(summary = "후속 질의 만들기", description = "방금 받은 답을 보고 이어서 물을 만한 질문을 사내 LLM 이 만든다.")
+    @PostMapping("/followups")
+    fun followups(@Valid @RequestBody request: LlmFollowupRequest): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(llmChatProxyService.followups(request.question!!, request.answer!!))
+
+    /**
+     * 헬스체크 — LLM 서버 `/v1/models` 에 모델이 올라와 있는지. `{ ok, model }`
+     *
+     * 이것만 공통 응답 래퍼(ApiResponse) 없이 낸다 — LLM 연동 명세가 `{ ok, model }` 모양을 정했다.
+     */
     @Operation(summary = "사내 LLM 헬스체크", description = "LLM 서버에 설정한 모델이 올라와 있는지 확인한다.")
     @GetMapping("/health")
     fun health(): Map<String, Any?> = llmChatProxyService.health()
@@ -129,19 +141,19 @@ class LlmChatProxyController(
      */
     @Operation(summary = "AI 데이터 도구 목록", description = "채팅 근거로 쓰는 DB 집계 도구(MCP tools/list 모양)")
     @GetMapping("/tools")
-    fun tools(): Map<String, Any?> = mapOf("tools" to aiDataToolService.listTools())
+    fun tools(): ApiResponse<Map<String, Any?>> = ApiResponse.ok(mapOf("tools" to aiDataToolService.listTools()))
 
     /** AI 데이터 도구 실행 — MCP `tools/call` 모양. 조회자의 데이터 권한으로 값을 가린다 */
     @Operation(summary = "AI 데이터 도구 실행", description = "DB 집계 도구를 실행해 구조화된 결과를 낸다(MCP tools/call 모양)")
     @PostMapping("/tools/{name}")
-    fun callTool(@PathVariable name: String, @RequestBody(required = false) args: AiToolCallRequest?): Map<String, Any?> {
+    fun callTool(@PathVariable name: String, @RequestBody(required = false) args: AiToolCallRequest?): ApiResponse<Map<String, Any?>> {
         val a = args ?: AiToolCallRequest()
-        return aiDataToolService.call(
+        return ApiResponse.ok(aiDataToolService.call(
             name,
             mapOf("from" to a.from, "to" to a.to, "compareFrom" to a.compareFrom, "compareTo" to a.compareTo,
                 "label" to a.label, "compareLabel" to a.compareLabel),
             UserContext.current()
-        )
+        ))
     }
 
     /**

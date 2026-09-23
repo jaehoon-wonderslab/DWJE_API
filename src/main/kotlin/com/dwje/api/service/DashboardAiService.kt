@@ -784,12 +784,13 @@ class DashboardAiService(
      * "불량률이 3.5% 가 넘어가는 **모든 공정**에 대해서 결과를 정리해서 보여줘."
      * 가장 나쁜 한 건만 보면 아침회의에서 "오늘 볼 것" 을 정할 수 없다.
      *
-     * ## 원인은 모델을 쓰지 않는다
-     * 원인 문장은 "어느 공정이 몇 % 로 기준을 넘었고 그 안에서 어느 설비가 가장 높다"
-     * 수준이라 **지표로 충분하다.** 모델에 맡기면 호출마다 추론 토큰 1,500~1,900자를
-     * 더 쓰고 지어낼 여지만 생긴다. 서버가 만들면 값이 곧 근거라 대조가 늘 통과한다.
+     * ## 원인도 모델이 쓴다 (2026-09-23)
+     * 예전에는 서버가 고정 문장("…공정의 불량률이 기준을 넘었습니다")을 원인 칸에 넣었다. AI 결과로 보이는 자리에
+     * 코드에 박힌 문장을 두지 않는다. 대상마다 「원인 지표」(공정 수율 · 최다 불량 설비 불량률)를 kind·key 와 함께 주고
+     * 모델이 원인을 쓰면, 서버가 그 값을 다시 계산해 대조한다([AiEvidenceVerifier]). 틀린 값은 버린다.
+     * thinking 을 끈 dwje-ax(`reasoning_effort: none`)라 추론 토큰 부담은 없다.
      *
-     * ## 처방은 한 번에 모아서 부른다
+     * ## 원인·처방은 한 번에 모아서 부른다
      * 대상마다 부르면 호출 수만큼 추론 비용이 곱해진다. 한 응답에 모든 대상의 조치를
      * 받고 `processId` 로 묶는다. 대신 응답이 길어지므로 대상 수에 상한을 둔다
      * ([AiProperties.causeMaxTargets]) — 넘치면 잘린 응답이 통째로 버려진다.
@@ -835,22 +836,21 @@ class DashboardAiService(
         val docsByTarget = analyzed.associate { it.processId to searchDocs(input, it, eqptCd) }
         val model = callPrescriptions(input, analyzed, docsByTarget)
 
-        // 원인은 서버가 만든다. 모델이 없어도 대상과 원인은 보인다.
-        val contributions = analyzed.associate { it.processId to contributionsOf(it) }
-
+        // 원인·처방 모두 모델이 쓰고 서버가 근거를 대조한다. 대조를 통과하지 못한 문장은 버린다(droppedCnt).
+        // 모델이 없으면 대상 표(공정·설비·불량률 — 지표 그대로)만 보이고 원인·처방 칸은 비어 있다.
         val verified = if (model.lines == null) {
             null
         } else {
-            evidenceVerifier.verifyLines(
-                model.lines + contributions.values.flatten(),
-                window, mask, UserContext.current().userId
-            )
+            evidenceVerifier.verifyLines(model.lines, window, mask, UserContext.current().userId)
         }
 
         val keptText = verified?.lines?.associateBy { it["text"] as? String } ?: emptyMap()
-        val prescriptionsBy = (model.lines ?: emptyList())
+        fun keptBy(section: String) = (model.lines ?: emptyList())
+            .filter { it["section"] == section }
             .mapNotNull { keptText[it["text"] as? String]?.plus("processId" to it["processId"]) }
             .groupBy { it["processId"] as? String }
+        val contributionsBy = keptBy("contribution")
+        val prescriptionsBy = keptBy("prescription")
 
         val qtyAllowed = mask.check(DataField.QTY)
         val targets = analyzed.map { t ->
@@ -875,8 +875,7 @@ class DashboardAiService(
                 // 기준을 넘어도 분모가 작으면 사람이 순위를 달리 본다.
                 "numerator" to if (qtyAllowed) t.ngQty else null,
                 "denominator" to if (qtyAllowed) t.qty else null,
-                "contributions" to (contributions[t.processId] ?: emptyList())
-                    .mapNotNull { keptText[it["text"] as? String] },
+                "contributions" to (contributionsBy[t.processId] ?: emptyList()),
                 "prescriptions" to (prescriptionsBy[t.processId] ?: emptyList())
             )
         }
@@ -942,33 +941,6 @@ class DashboardAiService(
             .toList()
     }
 
-    /**
-     * 원인 문장을 **서버가** 만든다.
-     *
-     * 값이 곧 근거라 지어낼 여지가 없고 대조도 늘 통과한다.
-     * 문장은 사실만 말한다 — 왜 그런지는 모르므로 추측하지 않는다.
-     */
-    private fun contributionsOf(t: CauseTarget): List<Map<String, Any?>> = buildList {
-        add(
-            mapOf(
-                "text" to "${t.processNm ?: t.processId} 공정의 불량률이 기준을 넘었습니다.",
-                "evidence" to listOf(
-                    mapOf("kind" to "yield", "key" to t.processId, "value" to (100.0 - t.defectRate))
-                )
-            )
-        )
-        if (t.eqptCd != null && t.eqptDefectRate != null) {
-            add(
-                mapOf(
-                    "text" to "그 공정에서 ${t.eqptNm ?: t.eqptCd} 의 불량률이 가장 높습니다.",
-                    "evidence" to listOf(
-                        mapOf("kind" to "anomaly", "key" to t.eqptCd, "value" to t.eqptDefectRate)
-                    )
-                )
-            )
-        }
-    }
-
     /** 여러 대상의 조치를 **한 번의 호출로** 받는다. */
     private fun callPrescriptions(
         input: AiBriefingInput,
@@ -985,6 +957,12 @@ class DashboardAiService(
                 appendLine()
                 appendLine("[${t.processId}] ${t.processNm} · 불량률 ${t.defectRate}%" +
                     (t.eqptNm?.let { nm -> " · 최다 불량 설비 $nm" } ?: ""))
+                // 원인 문장이 인용할 지표 — 서버 대조기(AiEvidenceVerifier)가 다시 계산해 맞춰 보는 kind·key 다.
+                appendLine("  원인 지표 (contributions 의 근거로 쓴다)")
+                appendLine("  - 공정 수율 ${"%.2f".format(100.0 - t.defectRate)}%  (kind=yield, key=${t.processId})")
+                if (t.eqptCd != null && t.eqptDefectRate != null) {
+                    appendLine("  - 최다 불량 설비 ${t.eqptNm ?: t.eqptCd} 불량률 ${t.eqptDefectRate}%  (kind=anomaly, key=${t.eqptCd})")
+                }
 
                 val docs = docsByTarget[t.processId].orEmpty()
                 if (docs.isEmpty()) {
@@ -1000,7 +978,12 @@ class DashboardAiService(
         }
 
         return when (val r = sllmClient.chatJson(AiPrompt.CAUSE_SYSTEM, AiPrompt.userMessage(input, block), AiPrompt.CAUSE_SCHEMA)) {
-            is SllmResult.Ok -> ModelLines(readLines(r.node, "prescriptions"), null)
+            // 원인과 처방을 한 번에 받는다. 두 배열을 구분하려고 절(section)을 줄마다 붙인다.
+            is SllmResult.Ok -> ModelLines(
+                readLines(r.node, "contributions").map { it + ("section" to "contribution") } +
+                    readLines(r.node, "prescriptions").map { it + ("section" to "prescription") },
+                null
+            )
             SllmResult.Busy -> ModelLines(null, MODEL_BUSY)
             SllmResult.Failed -> ModelLines(null, MODEL_NOT_READY)
         }
