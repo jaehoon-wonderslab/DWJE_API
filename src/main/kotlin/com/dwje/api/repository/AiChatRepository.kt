@@ -108,6 +108,34 @@ class AiChatRepository(
     }
 
     /**
+     * 사내 LLM(`/api/ai/chat`)이 스트리밍으로 쓴 답을 질의 이력에 덮어쓴다.
+     *
+     * `/ai/chat/ask` 는 문서 검색·권한·이력 기록까지만 하고 답변 칸에는 검색 요약을 적는다.
+     * 화면이 그 검색 결과를 근거로 LLM 에 다시 묻고, 받은 답을 여기로 돌려준다 —
+     * 그래야 대화 복원·질의 이력 화면이 사용자가 실제로 본 답을 보여 준다.
+     * 남의 이력을 고치지 못하게 `user_id` 를 함께 건다.
+     *
+     * @return 고친 행 수 (0 이면 없는 ID 이거나 남의 이력)
+     */
+    fun updateLlmAnswer(chatId: Long, userId: String, answer: String, responseMs: Int): Int {
+        val sql = """
+            UPDATE ax.tb_ai_chat_log
+               SET answer      = :answer,
+                   response_ms = :responseMs
+             WHERE chat_id = :chatId
+               AND user_id = :userId
+        """.trimIndent()
+        return jdbcTemplate.update(
+            sql,
+            MapSqlParameterSource()
+                .addValue("chatId", chatId)
+                .addValue("userId", userId)
+                .addValue("answer", answer)
+                .addValue("responseMs", responseMs)
+        )
+    }
+
+    /**
      * 세션 단위 대화 이력을 조회한다. (No.15)
      *
      * @param sessionId 세션 ID
@@ -299,11 +327,22 @@ class AiChatRepository(
      * 벡터 임베딩은 배치가 채우므로, 본 API 에서는 전문 검색(tsv)과 유사도(trigram)로
      * 후보를 뽑아 근거 문서를 제시한다. 부서 열람 권한이 없는 문서는 후보에서 제외한다.
      *
+     * ## 낱말은 OR 로 묶는다
+     * `plainto_tsquery` 는 낱말을 **모두 AND** 로 묶는다. "프레스 금형 관리 기준 알려줘" 면 `알려줘` 까지
+     * 문서에 있어야 걸려 자연어 질문은 늘 0건이었다(2026-09-23 실측 — "금형" 한 낱말은 8건).
+     * 낱말을 OR 로 묶고 순위는 `ts_rank` 에 맡긴다 — 많이 겹치는 청크가 위로 온다.
+     *
      * @param queryText 정규화된 질의문
-     * @param deptId    조회자 부서 ID
-     * @param topK      반환 건수
+     * ## 통합관리자는 모든 문서를 본다
+     * 메뉴·데이터 항목과 같은 규칙이다([com.dwje.api.common.security.UserPrincipal.superAdmin]).
+     * 부서 열람 권한표(`vec.tb_doc_dept_perm`)에 행을 채워 주는 방식으로 하지 않는다 — 문서가 새로
+     * 적재될 때마다 빠뜨리게 된다(2026-09-23: 문서 1,476건이 경영진·전산팀에만 열려 통합관리자 질의가 늘 근거 없음).
+     *
+     * @param deptId     조회자 부서 ID
+     * @param topK       반환 건수
+     * @param superAdmin 통합관리자 — 부서 열람 권한을 보지 않는다
      */
-    fun searchDocumentChunks(queryText: String, deptId: Int, topK: Int): List<Map<String, Any?>> {
+    fun searchDocumentChunks(queryText: String, deptId: Int, topK: Int, superAdmin: Boolean = false): List<Map<String, Any?>> {
         // 문서에 붙은 데이터 항목 태그(vec.tb_doc_data_field)를 함께 낸다. 권한 없는 항목이 태그된 문서도
         // 근거에서 빼지 않는다(빼면 답이 틀려진다) — 서비스가 출력 단계에서 발췌를 가린다.
         val sql = """
@@ -318,15 +357,16 @@ class AiChatRepository(
                 d.title,
                 d.doc_type_cd,
                 d.doc_date,
-                ts_rank(ch.tsv, plainto_tsquery('simple', :queryText))     AS ts_score
+                ts_rank(ch.tsv, to_tsquery('simple', :tsQuery))           AS ts_score
             FROM vec.tb_doc_chunk ch
             INNER JOIN vec.tb_doc d ON d.doc_id = ch.doc_id
             WHERE ch.del_flg    = 'N'
               AND ch.is_current = true
               AND d.del_flg     = 'N'
-              AND ch.tsv @@ plainto_tsquery('simple', :queryText)
+              AND ch.tsv @@ to_tsquery('simple', :tsQuery)
               AND (
-                    d.scope_cd = 'ALL'
+                    :superAdmin
+                 OR d.scope_cd = 'ALL'
                  OR d.owner_dept_id = :deptId
                  OR EXISTS (
                         SELECT 1 FROM vec.tb_doc_dept_perm p
@@ -337,8 +377,10 @@ class AiChatRepository(
             LIMIT :topK
         """.trimIndent()
 
+        val tsQuery = toOrTsQuery(queryText) ?: return emptyList()
         val params = MapSqlParameterSource()
-            .addValue("queryText", queryText)
+            .addValue("tsQuery", tsQuery)
+            .addValue("superAdmin", superAdmin)
             .addValue("deptId", deptId)
             .addValue("topK", topK)
 
@@ -676,6 +718,27 @@ class AiChatRepository(
                 "answer" to rs.getString("answer"),
                 "rating" to rs.getString("rating_cd")
             )
+        }
+    }
+
+    companion object {
+        /**
+         * 질의문 → OR tsquery (`프레스 | 금형 | 관리`)
+         *
+         * `simple` 사전은 어간을 자르지 않아 `금형을` 과 `금형` 이 다른 낱말이다. 흔한 조사를 떼어 둘을 맞춘다.
+         * 글자·숫자만 남기므로 tsquery 문법 문자(`&|!():*`)가 들어올 수 없다.
+         *
+         * @return 쓸 낱말이 없으면 null
+         */
+        fun toOrTsQuery(text: String): String? {
+            val particles = listOf("으로", "에서", "에게", "까지", "부터", "하고", "을", "를", "이", "가", "은", "는", "의", "에", "로", "와", "과", "도", "만")
+            val words = text.lowercase()
+                .split(Regex("""[^\p{L}\p{N}]+"""))
+                .map { w -> particles.firstOrNull { w.length > it.length + 1 && w.endsWith(it) }?.let { w.dropLast(it.length) } ?: w }
+                .filter { it.length >= 2 }
+                .distinct()
+                .take(12)
+            return words.takeIf { it.isNotEmpty() }?.joinToString(" | ")
         }
     }
 }

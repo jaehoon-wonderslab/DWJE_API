@@ -15,7 +15,7 @@ import java.time.YearMonth
  * 불량률 기준을 label_hist 로 통일하면서 16곳의 SQL 을 수정했다.
  * 문자열로 조립되는 SQL 은 컴파일러가 검증해 주지 않으므로, 실제 DB 에 던져 본다.
  */
-@SpringBootTest
+@SpringBootTest(properties = ["app.ai.prewarm-enabled=false"]) // 테스트 중 LLM 서버를 부르지 않는다
 @ActiveProfiles("local")
 class DefectSqlSmokeTest {
 

@@ -70,11 +70,16 @@ class DashboardAiService(
         /** 모델에 넘기는 이상 후보 설비 상위 건수 */
         private const val ANOMALY_TOP_N = 10
 
-        /** 대상 공정 하나에 붙이는 참고 문서 수 */
-        private const val DOC_PER_TARGET = 4
+        /**
+         * 대상 공정 하나에 붙이는 참고 문서 수
+         *
+         * 2026-09-23 dwje-ax(컨텍스트 8,192 토큰)로 옮기며 4 → 2. 대상 4곳 × 4건 × 600자이면 입력만 7,979토큰이라
+         * 답에 213토큰밖에 남지 않아 매번 잘렸다(`finish_reason=length`). 2건 × 400자면 입력이 절반 아래로 준다.
+         */
+        private const val DOC_PER_TARGET = 2
 
         /** 문서 청크를 프롬프트에 넣을 때 자르는 길이 */
-        private const val DOC_TEXT_LIMIT = 600
+        private const val DOC_TEXT_LIMIT = 400
 
         /** 공정 품질 지수 6축 지표 코드 — 양품률·가동률·정시완료·검사정확도·이상대응·데이터정합 */
         private val QUALITY_INDEX_METRICS = listOf(
@@ -1023,8 +1028,13 @@ class DashboardAiService(
         val query = terms.distinct().joinToString(" ")
 
         val embedding = sllmClient.embed(query) ?: run {
-            log.warn("질의 임베딩에 실패해 문서 근거 없이 진행합니다 : query={}", query)
-            return emptyList()
+            // 임베딩 모델이 없는 환경(사내 LLM 서버에는 bge-m3 가 없다) — 키워드 검색으로 대신한다.
+            log.info("질의 임베딩에 실패해 키워드 검색으로 문서 근거를 찾습니다 : query={}", query)
+            return docEvidenceRepository.searchPrescriptionCandidatesByKeyword(
+                userId = UserContext.current().userId,
+                queryText = query,
+                limit = DOC_PER_TARGET
+            )
         }
 
         return docEvidenceRepository.searchPrescriptionCandidates(

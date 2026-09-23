@@ -32,6 +32,7 @@ import org.springframework.validation.annotation.Validated
  * @param upload                 업로드 문서 저장소 설정
  * @param nas                    NAS 이미지 경로 설정
  * @param aoi                    AOI 치수 원천(MSSQL) 직접 조회·한계 세트 설정
+ * @param llm                    사내 LLM 채팅 프록시 설정
  */
 @Validated
 @ConfigurationProperties(prefix = "app")
@@ -101,5 +102,9 @@ data class AppProperties(
 
     /** AOI 치수 원천(MSSQL) 직접 조회·한계 세트 — [AoiProperties] */
     @field:jakarta.validation.Valid
-    val aoi: AoiProperties = AoiProperties()
+    val aoi: AoiProperties = AoiProperties(),
+
+    /** 사내 LLM 채팅 프록시(`/api/ai/chat`) — [LlmProxyProperties] */
+    @field:jakarta.validation.Valid
+    val llm: LlmProxyProperties = LlmProxyProperties()
 )

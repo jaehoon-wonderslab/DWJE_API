@@ -19,7 +19,7 @@ import org.springframework.test.context.ActiveProfiles
  * "조회로는 안 걸렸는데 INSERT 는 막히는" 구간이 생기고, 그게 그대로 500 이 된다.
  * 식을 글자로 맞춰 두는 것만으로는 어긋남을 막을 수 없어 실제 DB 에 던져 본다.
  */
-@SpringBootTest
+@SpringBootTest(properties = ["app.ai.prewarm-enabled=false"]) // 테스트 중 LLM 서버를 부르지 않는다
 @ActiveProfiles("local")
 class GlossaryDuplicateSqlTest {
 

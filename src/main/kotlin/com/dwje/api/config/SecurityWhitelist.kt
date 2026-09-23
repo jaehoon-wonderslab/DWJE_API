@@ -28,6 +28,8 @@ object SecurityWhitelist {
         "/api/v1/auth/password/forgot",
         "/api/v1/auth/password/reset",
         "/api/v1/health",
+        // 사내 LLM 헬스체크 — 모델 태그만 알려 준다. 채팅(/api/ai/chat)은 로그인이 필요하다.
+        "/api/ai/health",
         "/actuator/health",
         "/swagger-ui/**",
         "/swagger-ui.html",

@@ -42,5 +42,14 @@ enum class ErrorCode(
     SOURCE_UNAVAILABLE("E-SOURCE-001", HttpStatus.SERVICE_UNAVAILABLE, "원천 데이터 조회에 실패했습니다. 잠시 뒤 다시 시도해 주세요."),
 
     /** 외부 원천 조회 시간 초과 — 기간을 줄이면 된다 */
-    SOURCE_TIMEOUT("E-SOURCE-002", HttpStatus.GATEWAY_TIMEOUT, "원천 데이터 조회가 제한 시간을 넘었습니다. 조회 기간을 줄여 다시 시도해 주세요.")
+    SOURCE_TIMEOUT("E-SOURCE-002", HttpStatus.GATEWAY_TIMEOUT, "원천 데이터 조회가 제한 시간을 넘었습니다. 조회 기간을 줄여 다시 시도해 주세요."),
+
+    /** 사내 LLM 서버에 닿지 못했거나 오류로 답했다 (`/api/ai/chat`) */
+    LLM_UNAVAILABLE("E-LLM-001", HttpStatus.BAD_GATEWAY, "AI 서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요."),
+
+    /** 사내 LLM 서버가 제한 시간 안에 답하지 않았다 */
+    LLM_TIMEOUT("E-LLM-002", HttpStatus.GATEWAY_TIMEOUT, "AI 서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요."),
+
+    /** 분당 요청 수 초과 — LLM 서버가 동시에 한 건만 처리한다 */
+    LLM_RATE_LIMITED("E-LLM-003", HttpStatus.TOO_MANY_REQUESTS, "요청이 많습니다. 잠시 후 다시 시도해 주세요.")
 }

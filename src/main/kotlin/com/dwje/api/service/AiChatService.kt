@@ -17,7 +17,7 @@ import java.util.UUID
  * 질의 처리 흐름
  * 1. 용어 사전 기반 정규화 (현장 유사어 → 공식 용어)
  * 2. 의도 분류 — unknown / trend / trace / downtime / metric
- * 3. 부서 열람 권한이 있는 문서만 대상으로 근거 검색 (RAG)
+ * 3. 부서 열람 권한이 있는 문서만 대상으로 근거 검색 (RAG) — 통합관리자는 모든 문서
  * 4. 데이터 접근 권한 기반 마스킹 적용 후 응답 조립
  * 5. 질의·검색 이력 기록 (감사 및 파인튜닝 학습데이터 후보)
  *
@@ -38,7 +38,8 @@ class AiChatService(
     private val auditLogService: AuditLogService,
     private val authorizationService: AuthorizationService,
     private val agentRunRecorder: AgentRunRecorder,
-    private val dataFieldService: DataFieldService
+    private val dataFieldService: DataFieldService,
+    private val aiDataToolService: AiDataToolService
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -90,13 +91,20 @@ class AiChatService(
         // 4. 의도 분류
         val intent = classifyIntent(normalized.normalizedText)
 
-        // 5. 근거 문서 검색 — 부서 열람 권한이 있는 문서만. 데이터 항목 권한으로는 빼지 않고 출력에서 발췌를 가린다.
-        val hits = aiChatRepository.searchDocumentChunks(normalized.normalizedText, principal.deptId, SEARCH_TOP_K)
+        // 5. 근거 문서 검색 — 부서 열람 권한이 있는 문서만(통합관리자는 전부). 데이터 항목 권한으로는 빼지 않고 출력에서 발췌를 가린다.
+        val hits = aiChatRepository.searchDocumentChunks(normalized.normalizedText, principal.deptId, SEARCH_TOP_K, principal.superAdmin)
             .map { it.toMutableMap() }
         var blindAppliedCnt = hits.sumOf { dataFieldService.maskHit(it, principal) }
 
+        // 5-1. 수치 질문이면 실적 DB 집계를 근거로 붙인다 — 문서에는 월별 불량률 같은 수치가 없다.
+        //      집계는 조회자의 데이터 권한으로 가린다. 실패해도 문서 근거로는 답한다.
+        //      원래 질문으로 판단한다 — 용어 정규화가 "불량" 을 다른 공식 용어(예: ISSUE)로 바꿔 수치 질문임을 놓친다.
+        val dataEvidence = runCatching { aiDataToolService.evidenceFor(question, principal) }
+            .onFailure { log.warn("질의 집계 근거 실패 : {}", it.toString()) }
+            .getOrDefault(emptyList())
+
         // 6. 근거가 없으면 답을 추정하지 않고 자료 소재를 안내한다. (unknown)
-        val finalIntent = if (hits.isEmpty() && intent != "metric") "unknown" else intent
+        val finalIntent = if (hits.isEmpty() && dataEvidence.isEmpty() && intent != "metric") "unknown" else intent
 
         // 7. 표 블록 — 열별 항목 key(blindColumns) 를 채우고 권한 없는 열은 값을 비운다. 가린 값은 문장 마스킹에도 쓴다.
         val blocks = buildBlocks(finalIntent, hits)
@@ -186,6 +194,8 @@ class AiChatService(
                     "blindTags" to (it["blindTags"] ?: emptyList<String>())
                 )
             },
+            // 실적 DB 집계 근거 — 화면이 문서 근거보다 앞 번호([1]…)로 붙여 LLM 에 넘긴다
+            "dataEvidence" to dataEvidence.map { mapOf("title" to it["title"], "text" to it["text"], "tool" to it["tool"], "args" to it["args"]) },
             "normalizedQuestion" to normalized.normalizedText,
             "termReplacements" to normalized.replacements,
             "followups" to buildFollowups(finalIntent),

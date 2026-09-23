@@ -59,9 +59,15 @@ app:
   ai:
     # 끄면 두 AI 엔드포인트가 MODEL_NOT_READY 를 낸다.
     enabled: true
-    base-url: http://localhost:11434
-    # 덕우전자용 튜닝본
-    model: gemma4:e4b-dwje
+    # 2026-09-23 사내 LLM 서버(dwje-ax, OpenAI 호환)로 옮겼다 — 채팅 프록시(app.llm)와 같은 서버·환경변수.
+    # openai 형식은 system 을 보내지 않고 지시문을 user 메시지 [지시] 에 넣는다. 예전 로컬 Ollama 는 provider: ollama.
+    provider: "${DWJE_LLM_PROVIDER:openai}"
+    base-url: "${DWJE_LLM_BASE_URL:http://wddg.ddns.net:11435}"
+    model: "${DWJE_LLM_MODEL:dwje-ax}"
+    api-key: "${DWJE_LLM_API_KEY:}"
+    # 문서 임베딩(bge-m3, 1024차원) — 2026-09-23 사내 LLM 서버에도 올라갔다(채팅 모델과 함께 상주).
+    # 실패하면 원인 분석은 키워드 검색으로 문서 근거를 찾는다.
+    embed-base-url: "${AX_EMBED_BASE_URL:${DWJE_LLM_BASE_URL:http://wddg.ddns.net:11435}}"
     # 저장된 청크 임베딩이 1024차원이라 같은 차원을 내는 모델이어야 한다
     embed-model: bge-m3:latest
     # 이 모델은 추론(thinking)에 토큰을 먼저 쓴다. 300 이면 본문이 빈 문자열로 온다.
@@ -79,6 +85,20 @@ app:
     cause-threshold: 3.5
     # 한 번에 분석할 최대 공정 수. 넘치면 불량률 높은 순으로 자르고 몇 곳이 잘렸는지 알린다.
     cause-max-targets: 5
+  # 사내 LLM 채팅 프록시(/api/ai/chat) — 덕우전자 전용 모델(dwje-ax)의 OpenAI 호환 API 를 스트리밍으로 흘려보낸다.
+  # 위 ai(로컬 Ollama 네이티브 API)와는 다른 서버다. 브라우저는 이 서버를 직접 부르지 않는다(CORS·mixed content·주소 노출).
+  llm:
+    base-url: "${DWJE_LLM_BASE_URL:http://wddg.ddns.net:11435}"
+    model: "${DWJE_LLM_MODEL:dwje-ax}"
+    # 서버에 토큰 인증을 붙이면 채운다 — Authorization: Bearer <값>
+    api-key: "${DWJE_LLM_API_KEY:}"
+    # 첫 호출은 모델 적재에 약 20초. 서버가 한 번에 한 건만 처리하므로 대기열 시간까지 넉넉히 준다.
+    timeout-ms: ${DWJE_LLM_TIMEOUT_MS:120000}
+    # 최근 10턴까지만, 근거 문서 포함 약 2만 자까지만 보낸다(모델 컨텍스트 8,192 토큰).
+    max-turns: 10
+    max-input-chars: 20000
+    # IP 한 곳의 분당 요청 수 — LLM 서버가 동시에 한 건만 처리한다.
+    rate-per-minute: 10
   # 이상 후보 설비의 최소 생산량 — 이 미만은 후보에서 뺀다.
   # 생산량이 적으면 불량 1건으로 불량률 100% 가 되어 최대 이슈로 올라온다.
   # 현업 확인 전 임시값이다.

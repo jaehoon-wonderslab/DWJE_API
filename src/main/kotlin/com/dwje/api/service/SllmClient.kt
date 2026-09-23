@@ -12,7 +12,10 @@ import java.net.http.HttpResponse
 import java.time.Duration
 
 /**
- * sLLM 호출 클라이언트 (Ollama 호환 `/api/chat`)
+ * sLLM 호출 클라이언트 — 사내 LLM(dwje-ax) OpenAI 호환 `/v1/chat/completions` 또는 로컬 Ollama `/api/chat`
+ *
+ * 형식은 `app.ai.provider` 로 고른다(기본 `openai`). openai 형식에서는 system 을 보내지 않는다 —
+ * 지시문은 user 메시지의 `[지시]` 블록으로 옮긴다([openAiUserMessage]).
  *
  * ## 의존성을 더하지 않는다
  * `java.net.http.HttpClient` 는 JDK 표준(Java 11+)이고 이 프로젝트는 JDK 21 이다.
@@ -51,6 +54,9 @@ class SllmClient(
 
     companion object {
         private const val CONNECT_TIMEOUT_SEC = 5L
+
+        /** 지시+근거 글자 수 상한(약 1.8자/토큰 · 출력 1,000~1,500토큰 여유) */
+        private const val PROMPT_CHAR_BUDGET = 11_000
     }
 
     /**
@@ -69,6 +75,34 @@ class SllmClient(
     private val gate = java.util.concurrent.Semaphore(1, true)
 
     /**
+     * 응답 캐시 — 키는 모델·지시문·입력·스키마 전체의 SHA-256.
+     *
+     * 입력에 권한 마스킹이 이미 반영돼 있으므로 가려지는 항목이 다른 사용자는 키가 달라 서로 섞이지 않는다.
+     * 캐시하는 것은 **모델 응답**이다. 근거 대조(AiEvidenceVerifier)는 호출한 쪽이 매번 사용자 권한으로 다시 한다.
+     */
+    private val cache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, JsonNode>>()
+
+    private fun cacheKey(vararg parts: Any?): String {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        parts.forEach { md.update(objectMapper.writeValueAsBytes(it)); md.update(0) }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun cached(key: String): JsonNode? {
+        val hit = cache[key] ?: return null
+        if (hit.first < System.currentTimeMillis()) { cache.remove(key); return null }
+        return hit.second
+    }
+
+    private fun remember(key: String, node: JsonNode) {
+        val ttl = appProperties.ai.cacheTtlSec
+        if (ttl <= 0) return
+        val now = System.currentTimeMillis()
+        if (cache.size > 500) cache.entries.removeIf { it.value.first < now }
+        cache[key] = (now + ttl * 1000) to node
+    }
+
+    /**
      * 질의 문장을 임베딩한다. (`/api/embed`)
      *
      * `vec.fn_search_chunk` 가 질의 벡터를 요구한다. 저장된 임베딩과 **같은 모델·차원**
@@ -81,7 +115,7 @@ class SllmClient(
         val cfg = appProperties.ai
 
         val request = HttpRequest.newBuilder()
-            .uri(URI.create("${cfg.baseUrl.trimEnd('/')}/api/embed"))
+            .uri(URI.create("${cfg.embedBaseUrl.ifBlank { cfg.baseUrl }.trimEnd('/')}/api/embed"))
             .timeout(Duration.ofSeconds(cfg.timeoutSec))
             .header("Content-Type", "application/json")
             .POST(
@@ -124,24 +158,49 @@ class SllmClient(
      */
     fun chatJson(system: String, user: String, schema: Map<String, Any?>): SllmResult {
         val cfg = appProperties.ai
+        val openai = cfg.provider == "openai"
 
-        val body = mapOf(
-            "model" to cfg.model,
-            "stream" to false,
-            "format" to schema,
-            "options" to mapOf("num_predict" to cfg.numPredict, "temperature" to 0),
-            "messages" to listOf(
-                mapOf("role" to "system", "content" to system),
-                mapOf("role" to "user", "content" to user)
+        val body = if (openai) {
+            // system 을 보내면 모델 내장 지시문(근거 기반 답변·[n] 표기·단가 금지)이 통째로 대체된다.
+            // 지시문은 user 메시지 맨 앞에 넣고, 모양은 response_format 으로 강제한다. 샘플링 값은 보내지 않는다.
+            mapOf(
+                "model" to cfg.model,
+                "stream" to false,
+                "reasoning_effort" to "none",
+                "max_tokens" to cfg.numPredict,
+                "response_format" to mapOf(
+                    "type" to "json_schema",
+                    "json_schema" to mapOf("name" to "answer", "schema" to schema)
+                ),
+                "messages" to listOf(mapOf("role" to "user", "content" to openAiUserMessage(system, user)))
             )
-        )
+        } else {
+            mapOf(
+                "model" to cfg.model,
+                "stream" to false,
+                "format" to schema,
+                "options" to mapOf("num_predict" to cfg.numPredict, "temperature" to 0),
+                "messages" to listOf(
+                    mapOf("role" to "system", "content" to system),
+                    mapOf("role" to "user", "content" to user)
+                )
+            )
+        }
 
         val request = HttpRequest.newBuilder()
-            .uri(URI.create("${cfg.baseUrl.trimEnd('/')}/api/chat"))
+            .uri(URI.create("${cfg.baseUrl.trimEnd('/')}${if (openai) "/v1/chat/completions" else "/api/chat"}"))
             .timeout(Duration.ofSeconds(cfg.timeoutSec))
             .header("Content-Type", "application/json")
+            .apply { if (cfg.apiKey.isNotBlank()) header("Authorization", "Bearer ${cfg.apiKey}") }
             .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
             .build()
+
+        // 컨텍스트 8,192 토큰 — 지시+근거가 약 11,000자를 넘으면 답에 쓸 자리가 모자라 잘린다(LLM 담당 권고).
+        if (openai && system.length + user.length > PROMPT_CHAR_BUDGET) {
+            log.warn("sLLM 입력이 깁니다 : {}자 > {}자 — 응답이 잘릴 수 있습니다", system.length + user.length, PROMPT_CHAR_BUDGET)
+        }
+        val key = cacheKey(cfg.provider, cfg.model, system, user, schema)
+        cached(key)?.let { return SllmResult.Ok(it) }
 
         // 앞선 호출이 끝날 때까지 기다린다. 너무 오래 기다려야 하면 시작하지 않는다.
         if (!gate.tryAcquire(cfg.queueWaitSec, java.util.concurrent.TimeUnit.SECONDS)) {
@@ -153,6 +212,9 @@ class SllmClient(
             // 방금 결과를 본 사용자에게 "모델 준비 중" 은 이상하게 읽힌다.
             return SllmResult.Busy
         }
+
+        // 기다리는 동안 같은 입력을 앞 요청(미리 계산 등)이 끝냈을 수 있다 — 다시 부르지 않는다.
+        cached(key)?.let { gate.release(); return SllmResult.Ok(it) }
 
         val started = System.currentTimeMillis()
         val response = try {
@@ -173,33 +235,58 @@ class SllmClient(
             .onFailure { log.warn("sLLM 응답을 JSON 으로 읽지 못했습니다 : {}", it.toString()) }
             .getOrNull() ?: return SllmResult.Failed
 
+        // OpenAI 형식은 choices[0] 안에 있다. 네이티브 형식과 같은 이름으로 맞춰 아래를 한 벌로 둔다.
+        val choice = root.path("choices").path(0)
+        val message = if (openai) choice.path("message") else root.path("message")
+
         // 잘린 응답은 버린다. 중간에 끊긴 문장이 통과하면 검증기도 못 잡는다.
-        val doneReason = root.path("done_reason").asText(null)
+        val doneReason = (if (openai) choice.path("finish_reason") else root.path("done_reason")).asText(null)
         if (doneReason != null && doneReason != "stop") {
+            // 입력·출력 토큰을 함께 남긴다 — 컨텍스트(8,192)를 입력이 다 먹은 것인지, 모델이 길게 쓴 것인지 가른다.
             log.warn(
-                "sLLM 응답이 잘렸습니다 : done_reason={} num_predict={} — 이 응답은 버립니다",
-                doneReason, cfg.numPredict
+                "sLLM 응답이 잘렸습니다 : done_reason={} num_predict={} usage={} 입력={}자 본문 끝={} — 이 응답은 버립니다",
+                doneReason, cfg.numPredict, root.path("usage"), system.length + user.length,
+                message.path("content").asText("").takeLast(160)
             )
             return SllmResult.Failed
         }
 
         // thinking 이 아니라 content 를 읽는다.
-        val content = root.path("message").path("content").asText("")
+        val content = message.path("content").asText("")
         if (content.isBlank()) {
             log.warn(
                 "sLLM 본문이 비어 있습니다 : num_predict={} thinking={}자 — 추론에 토큰을 다 쓴 것으로 보입니다",
-                cfg.numPredict, root.path("message").path("thinking").asText("").length
+                cfg.numPredict, message.path("thinking").asText("").length
             )
             return SllmResult.Failed
         }
 
-        log.info("sLLM 응답 : model={} {}ms 본문={}자", cfg.model, elapsed, content.length)
+        log.info("sLLM 응답 : model={} {}ms 입력={}자 본문={}자 usage={}", cfg.model, elapsed, system.length + user.length, content.length, root.path("usage"))
 
         return runCatching { objectMapper.readTree(content) }
             .onFailure { log.warn("sLLM 본문을 JSON 으로 읽지 못했습니다 : {}", content.take(300)) }
             .getOrNull()
-            ?.let { SllmResult.Ok(it) }
+            ?.let { remember(key, it); SllmResult.Ok(it) }
             ?: SllmResult.Failed
+    }
+
+    /**
+     * OpenAI 형식에서 쓸 user 메시지 — `[지시]` · `[근거]` · `[질문]`
+     *
+     * 모델 내장 지시문이 `[근거]`·`[질문]` 틀을 읽도록 튜닝돼 있어 그 틀을 그대로 쓴다.
+     * 지시문(원래 system)은 맨 앞 `[지시]` 에 둔다. 모양(JSON)은 response_format 이 강제한다.
+     */
+    internal fun openAiUserMessage(system: String, user: String): String = buildString {
+        appendLine("[지시]")
+        // 모델은 오늘 날짜를 모른다 — "전일" · "지난달" 을 엉뚱한 해로 채우지 않게 먼저 알린다.
+        appendLine("오늘은 ${java.time.LocalDate.now()}이다.")
+        appendLine(system.trim())
+        appendLine()
+        appendLine("[근거]")
+        appendLine(user.trim())
+        appendLine()
+        appendLine("[질문]")
+        append("위 [지시]에 따라 [근거]에 있는 값만 써서 JSON 으로 답하라.")
     }
 }
 

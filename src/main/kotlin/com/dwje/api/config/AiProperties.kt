@@ -22,11 +22,58 @@ data class AiProperties(
 
     val enabled: Boolean = false,
 
+    /**
+     * 서빙 API 형식.
+     *
+     * - `openai` — 덕우전자 전용 모델(dwje-ax)의 OpenAI 호환 `/v1/chat/completions`.
+     *   **system 을 보내지 않는다**(모델 내장 지시문이 대체된다). 지시문은 user 메시지 맨 앞 `[지시]` 에 넣고
+     *   모양은 `response_format: json_schema` 로 강제한다. 샘플링 값(temperature 등)은 보내지 않는다.
+     * - `ollama` — 로컬 Ollama 네이티브 `/api/chat`(system + `format` + `temperature: 0`). 예전 방식
+     */
+    @field:jakarta.validation.constraints.Pattern(
+        regexp = "openai|ollama", message = "서빙 API 형식(app.ai.provider)은 openai 또는 ollama 입니다."
+    )
+    val provider: String = "openai",
+
+    /**
+     * LLM 서버 인증 토큰(선택). 있으면 `Authorization: Bearer <값>` 을 붙인다.
+     * 채팅 프록시(`app.llm`)와 같은 서버를 쓰므로 같은 환경변수(`DWJE_LLM_API_KEY`)를 받는다.
+     */
+    val apiKey: String = "",
+
+    /**
+     * 임베딩 서버 주소. 비우면 [baseUrl] 을 쓴다.
+     *
+     * 채팅 모델은 사내 LLM 서버(dwje-ax)로 옮겼지만 문서 임베딩(bge-m3)은 그 서버에 없다.
+     * 임베딩이 실패하면 원인 분석은 키워드 검색으로 문서 근거를 찾는다.
+     */
+    val embedBaseUrl: String = "",
+
+    /**
+     * 모델 응답 캐시 유지 시간(초). 0 이면 캐시하지 않는다.
+     *
+     * 브리핑·원인 분석은 한 번에 30초가량 걸린다(dwje-ax 실측). 같은 입력이면 같은 답이므로
+     * **입력 문장 전체를 키로** 결과를 둔다. 입력에는 권한 마스킹이 이미 반영돼 있어,
+     * 가려지는 항목이 같은 사용자끼리만 결과를 나눠 쓴다(권한을 넘어 새지 않는다).
+     */
+    @field:Min(value = 0, message = "응답 캐시 시간(app.ai.cache-ttl-sec)은 0 이상이어야 합니다.")
+    val cacheTtlSec: Long = 3600,
+
+    /**
+     * 대시보드 AI 미리 계산 — 기본 조회 기간(마지막 실적일 기준 7일)의 브리핑·원인 분석을
+     * 서버가 주기적으로 만들어 캐시에 둔다. 화면을 열면 바로 보이게 하려는 것이다.
+     */
+    val prewarmEnabled: Boolean = true,
+
+    /** 미리 계산 주기(ms). 실적이 들어오는 주기보다 촘촘할 이유는 없다 */
+    @field:Min(value = 60000, message = "미리 계산 주기(app.ai.prewarm-interval-ms)는 60000 이상이어야 합니다.")
+    val prewarmIntervalMs: Long = 1_800_000,
+
     @field:NotBlank(message = "sLLM 서빙 주소(app.ai.base-url)는 비워 둘 수 없습니다.")
-    val baseUrl: String = "http://localhost:11434",
+    val baseUrl: String = "http://wddg.ddns.net:11435",
 
     @field:NotBlank(message = "sLLM 모델 태그(app.ai.model)는 비워 둘 수 없습니다.")
-    val model: String = "gemma4:e4b-dwje",
+    val model: String = "dwje-ax",
 
     /**
      * 임베딩 모델 태그.

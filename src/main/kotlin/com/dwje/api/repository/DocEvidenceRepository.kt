@@ -87,6 +87,49 @@ class DocEvidenceRepository(
     }
 
     /**
+     * 처방 근거 후보 — **임베딩 없이** 키워드로 찾는다.
+     *
+     * 채팅 모델을 사내 LLM 서버(dwje-ax)로 옮긴 뒤 임베딩 모델(bge-m3)이 없는 환경이 생겼다.
+     * 그때 원인 분석이 문서 근거를 통째로 잃지 않도록 전문 검색(tsv, 낱말 OR)으로 대신한다.
+     * 권한은 벡터 검색과 같은 `vec.fn_allowed_doc(strict)` 로 거른다(통합관리자는 전부).
+     */
+    fun searchPrescriptionCandidatesByKeyword(userId: String, queryText: String, limit: Int): List<Map<String, Any?>> {
+        val tsQuery = AiChatRepository.toOrTsQuery(queryText) ?: return emptyList()
+        val sql = """
+            SELECT c.chunk_id, c.chunk_text, d.title, d.doc_type_cd, d.doc_date
+            FROM vec.tb_doc_chunk c
+            INNER JOIN vec.tb_doc d ON d.doc_id = c.doc_id
+            INNER JOIN vec.fn_allowed_doc(:userId, true) a ON a.doc_id = c.doc_id
+            WHERE c.is_current
+              AND c.del_flg = 'N'
+              AND d.doc_type_cd IN (:docTypes)
+              AND (d.retention_until IS NULL OR d.retention_until >= :today)
+              AND char_length(c.chunk_text) >= :minLen
+              AND c.tsv @@ to_tsquery('simple', :tsQuery)
+            ORDER BY ts_rank(c.tsv, to_tsquery('simple', :tsQuery)) DESC, d.doc_date DESC NULLS LAST
+            LIMIT :limit
+        """.trimIndent()
+
+        val params = MapSqlParameterSource()
+            .addValue("userId", userId)
+            .addValue("tsQuery", tsQuery)
+            .addValue("docTypes", PRESCRIPTION_DOC_TYPES.toList())
+            .addValue("today", LocalDate.now())
+            .addValue("minLen", MIN_CHUNK_LEN)
+            .addValue("limit", limit)
+
+        return jdbcTemplate.query(sql, params) { rs, _ ->
+            mapOf(
+                "chunkId" to rs.getLong("chunk_id"),
+                "text" to rs.getString("chunk_text"),
+                "title" to rs.getString("title"),
+                "docTypeCd" to rs.getString("doc_type_cd"),
+                "docDate" to rs.getDate("doc_date")?.toLocalDate()?.toString()
+            )
+        }
+    }
+
+    /**
      * 근거 대조용 — 청크 한 건을 권한·현행·보존기한까지 확인해 돌려준다.
      *
      * 돌려주지 못하는 이유가 셋이므로 호출부가 사유를 구분할 수 있게 상태를 함께 낸다.

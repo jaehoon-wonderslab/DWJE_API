@@ -67,6 +67,7 @@ DB 비밀번호는 `PROD_DB_PASSWORD`에 설정한다. DB가 별도 서버라면
 | prod | `PROD_DB_PASSWORD` · `PROD_JWT_SECRET` · `PROD_MAIL_HOST` · `PROD_MAIL_USERNAME` · `PROD_MAIL_PASSWORD` | **기동 실패** (5개 전부 필수) |
 | 공통(선택) | `AX_UPLOAD_DIR` (기본 `./data/ax-uploads`) | 기본값으로 기동 — 업로드 리포트 원본 저장소 |
 | 공통(선택) | `AX_MSSQL_URL` (기본 EDGE 192.168.7.203) · `AX_MSSQL_USER` · `AX_MSSQL_PASSWORD` | 기본값으로 기동 — 계정이 비면 AOI 치수 API 가 `SOURCE_NOT_CONFIGURED` 를 낸다(원천 MSSQL 직접 조회, `docs/AOI_DIMENSION_API_20260913.md`) |
+| 공통(선택) | `DWJE_LLM_BASE_URL` (기본 `http://wddg.ddns.net:11435`, 사내 LAN `http://192.168.219.52:11435`) · `DWJE_LLM_MODEL` (기본 `dwje-ax`) · `DWJE_LLM_TIMEOUT_MS` (기본 `120000`) · `DWJE_LLM_API_KEY` (LLM 서버 토큰 인증, 비우면 헤더 없음) · `DWJE_LLM_PROVIDER` (`openai` 기본, 예전 로컬 Ollama 는 `ollama`) · `AX_EMBED_BASE_URL` (문서 임베딩 bge-m3, 기본 `DWJE_LLM_BASE_URL` 과 같은 서버) | 기본값으로 기동 — 사내 LLM 채팅 프록시(`POST /api/ai/chat` 스트리밍 · `GET /api/ai/health`) · 대시보드 AI 브리핑·원인 분석 · AI 데이터 도구(`GET /api/ai/tools`). 브라우저는 LLM 서버를 직접 부르지 않는다 |
 
 > 메일 3종은 이 표에 없었다. 그래서 안내대로 DB·JWT 두 개만 채우면
 > `Could not resolve placeholder 'DEV_MAIL_HOST'` 로 기동조차 못 했다.
