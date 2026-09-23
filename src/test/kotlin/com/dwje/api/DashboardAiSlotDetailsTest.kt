@@ -16,6 +16,7 @@ import com.dwje.api.repository.MetricStandardRepository
 import com.dwje.api.service.AiEvidenceVerifier
 import com.dwje.api.service.AuthorizationService
 import com.dwje.api.service.DashboardAiService
+import com.dwje.api.service.DataFieldService
 import com.dwje.api.service.SllmClient
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -52,6 +53,7 @@ class DashboardAiSlotDetailsTest {
         mock(DocEvidenceRepository::class.java),
         ObjectMapper(),
         authorization,
+        mock(DataFieldService::class.java),
         AppProperties()
     )
 

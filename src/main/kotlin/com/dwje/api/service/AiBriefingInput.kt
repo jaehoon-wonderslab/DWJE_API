@@ -30,10 +30,10 @@ data class AiBriefingInput(
     /** 총 생산 수량 — [DataField.QTY] */
     val totalQty: Long?,
 
-    /** 양품 수량 — [DataField.QTY] */
+    /** 양품 수량 — [DataField.QTY] + [DataField.YIELD] (총 수량과 나누면 수율이 된다) */
     val okQty: Long?,
 
-    /** 불량 수량 — [DataField.QTY] */
+    /** 불량 수량 — [DataField.QTY] + [DataField.YIELD] (총 수량과 나누면 불량률이 된다) */
     val ngQty: Long?,
 
     /** 불량률(%) — [DataField.YIELD] */
@@ -57,7 +57,7 @@ data class AiBriefingInput(
     /** 불량 유형 구성 (상위 N) — [DataField.YIELD] */
     val defectComposition: List<DefectShare>,
 
-    /** 이상 후보 설비 — [DataField.QTY] · 최소 생산량 미만은 후보에서 빠진다 */
+    /** 이상 후보 설비 — [DataField.YIELD](설비 불량률을 싣는다) · 최소 생산량 미만은 후보에서 빠진다 */
     val anomalyCandidates: List<AnomalyCandidate>,
 
     /**
@@ -111,8 +111,9 @@ data class AiBriefingInput(
             return AiBriefingInput(
                 date = date,
                 totalQty = qty,
-                okQty = mask.on(DataField.QTY) { okQty },
-                ngQty = mask.on(DataField.QTY) { ngQty },
+                // 양품·불량 수량은 총 수량과 나누면 수율·불량률이 된다. 수율 권한까지 있어야 넣는다.
+                okQty = mask.on(DataField.QTY) { mask.on(DataField.YIELD) { okQty } },
+                ngQty = mask.on(DataField.QTY) { mask.on(DataField.YIELD) { ngQty } },
                 defectRate = mask.on(DataField.YIELD) { defectRate },
                 yieldRate = mask.on(DataField.YIELD) { yieldRate },
                 planQty = plan,
@@ -123,7 +124,12 @@ data class AiBriefingInput(
                     null
                 },
                 defectComposition = mask.on(DataField.YIELD) { defectComposition } ?: emptyList(),
-                anomalyCandidates = mask.on(DataField.QTY) { anomalyCandidates } ?: emptyList(),
+                // 후보는 설비 불량률을 싣는다(프롬프트 「설비별 불량률」) — 수율 항목이다.
+                // 설비별 수량은 수량 권한이 없으면 뺀다.
+                anomalyCandidates = mask.on(DataField.YIELD) {
+                    if (mask.allowed(DataField.QTY)) anomalyCandidates
+                    else anomalyCandidates.map { it.copy(qty = null, ngQty = null) }
+                } ?: emptyList(),
                 maskedFields = mask.maskedKeys().toList()
             )
         }

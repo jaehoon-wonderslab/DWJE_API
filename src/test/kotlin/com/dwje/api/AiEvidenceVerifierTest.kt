@@ -589,4 +589,46 @@ class AiEvidenceVerifierTest {
         assertNull(ev["archivePath"])
         assertNull(ev["innerPath"])
     }
+
+    @Test
+    @DisplayName("30. 설비 불량률(anomaly)은 수율 항목이다 — 수량 권한만으로는 통과하지 않는다 (2026-09-23)")
+    fun anomalyNeedsYield() {
+        // 예전에는 QTY 로 판정해 수율 권한이 없는 제조팀에게도 불량률 근거가 내려갔다.
+        val result = verifier.verifyLines(
+            listOf(line("BG-011호기 불량률이 높습니다", mapOf("kind" to "anomaly", "key" to "BG-011", "value" to "1.64"))),
+            date, mask(DataField.QTY), "10003"
+        )
+
+        assertEquals(1, result.droppedCnt)
+        assertEquals("MASKED", result.dropped.first().reason)
+    }
+
+    @Test
+    @DisplayName("31. 수율 권한만 있으면 불량률은 내되 분자·분모(수량)는 내지 않는다")
+    fun anomalyWithoutQtyHasNoCounts() {
+        val result = verifier.verifyLines(
+            listOf(line("BG-011호기 불량률이 높습니다", mapOf("kind" to "anomaly", "key" to "BG-011", "value" to "1.64"))),
+            date, mask(DataField.YIELD), "10001"
+        )
+
+        assertEquals(1, result.lines.size, "${result.dropped}")
+        @Suppress("UNCHECKED_CAST")
+        val ev = (result.lines.first()["evidence"] as List<Map<String, Any?>>).first()
+        assertEquals(1.64, ev["value"])
+        assertNull(ev["numerator"])
+        assertNull(ev["denominator"])
+    }
+
+    @Test
+    @DisplayName("32. 조회자가 못 보는 이름(운영 중 추가한 항목)은 근거 이름표에 코드로 대신한다")
+    fun blindNameFallsBackToCode() {
+        val result = verifier.verifyLines(
+            listOf(line("BG-011호기 불량률이 높습니다", mapOf("kind" to "anomaly", "key" to "BG-011", "value" to "1.64"))),
+            date, mask(DataField.QTY, DataField.YIELD), "10002", blindAttrs = setOf("eqptNm")
+        )
+
+        @Suppress("UNCHECKED_CAST")
+        val ev = (result.lines.first()["evidence"] as List<Map<String, Any?>>).first()
+        assertEquals("BG-011 불량률", ev["label"], "설비명 대신 설비 코드")
+    }
 }

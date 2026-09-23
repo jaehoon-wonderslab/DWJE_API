@@ -20,7 +20,9 @@ import org.springframework.transaction.annotation.Transactional
  * 규칙
  * - 편집 권한은 데이터 접근 권한 화면(`sys-data`)과 같다(전산팀 · 통합관리자).
  * - 등록은 apply_flg='N'. 부서 권한을 채운 뒤 [setApply] 로 켠다. 켠 항목만 `/auth/me` 의 dataFields 에 나가고
- *   AI 답변 표 블록의 blindColumns 판정에 쓰인다. 반영은 재로그인(화면) — 서버 카탈로그는 [CACHE_TTL_MS] 안에 따라온다.
+ *   AI 답변 표 블록의 blindColumns 판정에 쓰이며, **모든 API 응답의 같은 이름 키**도 가려진다
+ *   ([com.dwje.api.common.response.DataFieldMaskingAdvice], 2026-09-23). 화면 반영은 재로그인,
+ *   서버 판정은 다음 요청부터(카탈로그는 쓰기 즉시 · DB 직접 수정은 [CACHE_TTL_MS] 안에) 따라온다.
  * - 응답 필드명(attr_name)은 전역 UNIQUE. 중복은 409 `E-RULE-001` "이미 <항목명>에 등록된 필드명입니다".
  * - 기본 7개 항목([DataField.ALL])은 서버 판정 코드가 key 를 직접 쓰므로 삭제할 수 없다(409). 끄려면 apply 를 내린다.
  * - 알림 조건 · 지표 기준 · 보고서 양식 필드 · 문서 태그가 참조하는 항목은 삭제할 수 없다(409, 건수 안내).
@@ -198,6 +200,15 @@ class DataFieldService(
         attrCache = now to fresh
         return fresh
     }
+
+    /**
+     * 조회자가 열람할 수 없는 적용 중 항목의 **응답 필드명** — 통합관리자는 빈 집합.
+     * 응답 키는 공통 advice 가 가리지만, sLLM 입력·근거 이름표처럼 **값을 문장에 옮기는 자리**는
+     * 키로 가릴 수 없어 이 목록으로 값을 뺀다(2026-09-23, 운영 중 추가한 설비명이 브리핑 문장에 나온 건).
+     */
+    fun blindAttrNames(principal: UserPrincipal): Set<String> =
+        if (principal.superAdmin) emptySet()
+        else attrFieldMap().filterValues { !principal.canReadField(it) }.keys
 
     /** 응답 필드명이 속한 항목 key — 등록되지 않았거나 항목이 미적용이면 null */
     fun fieldOf(attrName: String): String? = attrFieldMap()[attrName]

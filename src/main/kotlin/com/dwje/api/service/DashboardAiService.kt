@@ -40,6 +40,7 @@ class DashboardAiService(
     private val docEvidenceRepository: DocEvidenceRepository,
     private val objectMapper: ObjectMapper,
     private val authorizationService: AuthorizationService,
+    private val dataFieldService: DataFieldService,
     private val appProperties: AppProperties
 ) {
 
@@ -767,7 +768,7 @@ class DashboardAiService(
             mapOf(
                 // 대조를 통과한 문장이 하나도 없으면 상태도 내지 않는다.
                 "status" to if (verified.lines.isEmpty()) null else "OK",
-                "lines" to verified.lines,
+                "lines" to verified.lines.map { maskLineText(it) },
                 "droppedCnt" to verified.droppedCnt,
                 "periodFrom" to window.from.format(DateUtils.DATETIME),
                 "periodTo" to window.toExclusive.format(DateUtils.DATETIME),
@@ -809,10 +810,16 @@ class DashboardAiService(
         val (_, mask) = authorizationService.guard(MenuId.DASH_AI)
         val window = windowOf(date, from, to)
         val cfg = appProperties.ai
-        val limit = threshold ?: cfg.causeThreshold
+        // 대상은 불량률로 고른다. 수율 권한이 없으면 기준값을 바꿔 가며 불러 대상이 나타나는 경계로
+        // 불량률을 알아낼 수 있으므로, 요청 기준값을 무시하고 설정값만 쓴다(2026-09-23).
+        val yieldAllowed = mask.check(DataField.YIELD)
+        val qtyAllowed = mask.check(DataField.QTY)
+        val limit = (if (yieldAllowed) threshold else null) ?: cfg.causeThreshold
 
         val candidates = findTargets(window, processId, limit)
+        // 순서도 불량률 순위를 드러낸다 — 수율 권한이 없으면 공정 코드 순으로 낸다.
         val analyzed = candidates.take(cfg.causeMaxTargets)
+            .let { if (yieldAllowed) it else it.sortedBy { t -> t.processId } }
         val omitted = candidates.size - analyzed.size
 
         // 기준을 넘는 공정이 없으면 모델을 부르지 않는다. 부를 이유가 없다.
@@ -834,25 +841,37 @@ class DashboardAiService(
         // 대상마다 따로 검색한다. 여러 대상의 이름을 한 질의에 섞으면 뜻이 희석돼
         // 어느 대상과도 무관한 문서가 올라온다. 검색은 임베딩 한 번 + 조회라 싸다.
         val docsByTarget = analyzed.associate { it.processId to searchDocs(input, it, eqptCd) }
-        val model = callPrescriptions(input, analyzed, docsByTarget)
+        val model = callPrescriptions(input, analyzed, docsByTarget, yieldAllowed)
 
         // 원인·처방 모두 모델이 쓰고 서버가 근거를 대조한다. 대조를 통과하지 못한 문장은 버린다(droppedCnt).
         // 모델이 없으면 대상 표(공정·설비·불량률 — 지표 그대로)만 보이고 원인·처방 칸은 비어 있다.
         val verified = if (model.lines == null) {
             null
         } else {
-            evidenceVerifier.verifyLines(model.lines, window, mask, UserContext.current().userId)
+            evidenceVerifier.verifyLines(model.lines, window, mask, UserContext.current().userId, blindAttrNames())
         }
 
         val keptText = verified?.lines?.associateBy { it["text"] as? String } ?: emptyMap()
+        // 문장 마스킹은 대조로 짝을 맞춘 **뒤에** 한다 — 먼저 하면 원문으로 찾지 못한다.
+        // 가려진 이름은 모델 입력에서 뺐지만 문서 인용을 거쳐 들어올 수 있어, 그 값 자체도 문장에서 가린다.
+        val blind = blindAttrNames()
+        val blindNames = analyzed.flatMap { t ->
+            listOfNotNull(
+                t.processNm?.takeIf { "processNm" in blind },
+                t.eqptNm?.takeIf { "eqptNm" in blind },
+                t.productNm?.takeIf { "productNm" in blind }
+            )
+        }
         fun keptBy(section: String) = (model.lines ?: emptyList())
             .filter { it["section"] == section }
             .mapNotNull { keptText[it["text"] as? String]?.plus("processId" to it["processId"]) }
+            .map { maskLineText(it, blindNames) }
             .groupBy { it["processId"] as? String }
-        val contributionsBy = keptBy("contribution")
+        // 수율 권한이 없으면 원인 지표를 주지 않았다. 그래도 모델이 총 생산 수량 같은 무관한 근거를 붙여 원인을 쓰는 것을
+        // 실측으로 확인해(2026-09-23, 10003·10004) 서버가 원인 칸을 비운다 — 근거 없이 그럴듯한 원인은 내리지 않는다.
+        val contributionsBy = if (yieldAllowed) keptBy("contribution") else emptyMap()
         val prescriptionsBy = keptBy("prescription")
 
-        val qtyAllowed = mask.check(DataField.QTY)
         val targets = analyzed.map { t ->
             mapOf(
                 "processId" to t.processId,
@@ -871,10 +890,11 @@ class DashboardAiService(
                 "product" to t.product,
                 "productNm" to t.productNm,
                 "productEtcCnt" to t.productEtcCnt,
-                "defectRate" to t.defectRate,
+                "defectRate" to if (yieldAllowed) t.defectRate else null,
                 // 기준을 넘어도 분모가 작으면 사람이 순위를 달리 본다.
-                "numerator" to if (qtyAllowed) t.ngQty else null,
-                "denominator" to if (qtyAllowed) t.qty else null,
+                // 불량 수 ÷ 총량이 곧 불량률이라 수량 권한만으로는 내지 않는다 — 수율 권한도 있어야 한다.
+                "numerator" to if (yieldAllowed && qtyAllowed) t.ngQty else null,
+                "denominator" to if (yieldAllowed && qtyAllowed) t.qty else null,
                 "contributions" to (contributionsBy[t.processId] ?: emptyList()),
                 "prescriptions" to (prescriptionsBy[t.processId] ?: emptyList())
             )
@@ -893,6 +913,32 @@ class DashboardAiService(
             "modelVer" to cfg.model,
             "reason" to model.reason
         )
+    }
+
+    /** 조회자가 못 보는 적용 중 항목의 응답 필드명([DataFieldService.blindAttrNames]) — 로그인 전(미리 계산 등)이면 빈 집합 */
+    private fun blindAttrNames(): Set<String> =
+        UserContext.currentOrNull()?.let { dataFieldService.blindAttrNames(it) } ?: emptySet()
+
+    /**
+     * 모델 문장과 문서 인용문에 문장 마스킹([DataFieldService.maskText])을 태운다.
+     *
+     * 모델 입력에서 가린 값은 빼 두었지만, 처방 근거 문서의 인용문은 원문이라 수치가 섞일 수 있다
+     * ("불량률 3.2% 이하 관리"). 근거 문서 출력과 같은 규칙으로 가린다. 대조를 **통과한 뒤** 부른다 —
+     * 대조는 원문으로 해야 한다.
+     */
+    private fun maskLineText(line: Map<String, Any?>, extraValues: Collection<String> = emptyList()): Map<String, Any?> {
+        val principal = UserContext.currentOrNull() ?: return line
+        if (principal.superAdmin) return line
+        @Suppress("UNCHECKED_CAST")
+        val evidence = (line["evidence"] as? List<Map<String, Any?>>)?.map { ev ->
+            if (ev["kind"] != "doc") return@map ev
+            ev + mapOf(
+                "quote" to dataFieldService.maskText(ev["quote"] as? String, principal, extraValues).first,
+                "label" to dataFieldService.maskText(ev["label"] as? String, principal, extraValues).first
+            )
+        }
+        return line + mapOf("text" to dataFieldService.maskText(line["text"] as? String, principal, extraValues).first) +
+            (evidence?.let { mapOf("evidence" to it) } ?: emptyMap())
     }
 
     /**
@@ -941,27 +987,42 @@ class DashboardAiService(
             .toList()
     }
 
-    /** 여러 대상의 조치를 **한 번의 호출로** 받는다. */
+    /**
+     * 여러 대상의 조치를 **한 번의 호출로** 받는다.
+     *
+     * @param yieldAllowed 수율 권한 — 없으면 대상의 불량률과 「원인 지표」를 모델에 주지 않는다.
+     *   모델이 못 본 값은 문장에 쓸 수 없다. 원인(contributions)은 근거 지표가 없어 쓰지 않게 하고, 처방은 문서로만 쓴다.
+     */
     private fun callPrescriptions(
         input: AiBriefingInput,
         targets: List<CauseTarget>,
-        docsByTarget: Map<String, List<Map<String, Any?>>>
+        docsByTarget: Map<String, List<Map<String, Any?>>>,
+        yieldAllowed: Boolean
     ): ModelLines {
         if (!sllmClient.isEnabled()) return ModelLines(null, MODEL_NOT_READY)
 
         // 대상과 그 대상의 참고 문서를 붙여서 준다. 문서 목록을 한데 모아 주면
         // 모델이 어느 대상의 조치인지 헷갈려 아무 문서나 붙인다.
+        // 조회자가 못 보는 이름(운영 중 추가한 항목 포함)은 넣지 않는다 — 모델이 못 본 값은 문장에 쓸 수 없다.
+        val blind = blindAttrNames()
+        fun processNmOf(t: CauseTarget) = if ("processNm" in blind) null else t.processNm
+        fun eqptNmOf(t: CauseTarget) = if ("eqptNm" in blind) null else t.eqptNm
         val block = buildString {
             appendLine("분석 대상 공정마다 조치를 쓴다. processId 에는 아래 코드를 그대로 넣는다.")
             targets.forEach { t ->
                 appendLine()
-                appendLine("[${t.processId}] ${t.processNm} · 불량률 ${t.defectRate}%" +
-                    (t.eqptNm?.let { nm -> " · 최다 불량 설비 $nm" } ?: ""))
-                // 원인 문장이 인용할 지표 — 서버 대조기(AiEvidenceVerifier)가 다시 계산해 맞춰 보는 kind·key 다.
-                appendLine("  원인 지표 (contributions 의 근거로 쓴다)")
-                appendLine("  - 공정 수율 ${"%.2f".format(100.0 - t.defectRate)}%  (kind=yield, key=${t.processId})")
-                if (t.eqptCd != null && t.eqptDefectRate != null) {
-                    appendLine("  - 최다 불량 설비 ${t.eqptNm ?: t.eqptCd} 불량률 ${t.eqptDefectRate}%  (kind=anomaly, key=${t.eqptCd})")
+                appendLine("[${t.processId}] ${processNmOf(t) ?: ""}" +
+                    (if (yieldAllowed) " · 불량률 ${t.defectRate}%" else "") +
+                    ((eqptNmOf(t) ?: t.eqptCd)?.let { nm -> " · 최다 불량 설비 $nm" } ?: ""))
+                if (yieldAllowed) {
+                    // 원인 문장이 인용할 지표 — 서버 대조기(AiEvidenceVerifier)가 다시 계산해 맞춰 보는 kind·key 다.
+                    appendLine("  원인 지표 (contributions 의 근거로 쓴다)")
+                    appendLine("  - 공정 수율 ${"%.2f".format(100.0 - t.defectRate)}%  (kind=yield, key=${t.processId})")
+                    if (t.eqptCd != null && t.eqptDefectRate != null) {
+                        appendLine("  - 최다 불량 설비 ${eqptNmOf(t) ?: t.eqptCd} 불량률 ${t.eqptDefectRate}%  (kind=anomaly, key=${t.eqptCd})")
+                    }
+                } else {
+                    appendLine("  원인 지표 없음 — 열람 권한이 없어 제공되지 않았다. 이 공정의 contributions 는 쓰지 않는다.")
                 }
 
                 val docs = docsByTarget[t.processId].orEmpty()
@@ -1000,9 +1061,10 @@ class DashboardAiService(
         target: CauseTarget,
         eqptCd: String?
     ): List<Map<String, Any?>> {
+        val blind = blindAttrNames()
         val terms = buildList {
-            target.processNm?.let { add(it) }
-            target.eqptNm?.let { add(it) }
+            target.processNm?.takeIf { "processNm" !in blind }?.let { add(it) }
+            target.eqptNm?.takeIf { "eqptNm" !in blind }?.let { add(it) }
             eqptCd?.trim()?.takeIf { it.isNotBlank() }?.let { add(it) }
             input.defectComposition.take(3).mapNotNull { it.label }.forEach { add(it) }
             add("원인")
@@ -1176,7 +1238,7 @@ class DashboardAiService(
         if (modelLines == null) return emptyShape + mapOf("reason" to (reason ?: MODEL_NOT_READY))
 
         val verified = evidenceVerifier.verifyLines(
-            modelLines, window, mask, UserContext.current().userId
+            modelLines, window, mask, UserContext.current().userId, blindAttrNames()
         )
         return build(verified)
     }
@@ -1233,7 +1295,7 @@ class DashboardAiService(
                     qty = (it["value"] as? Number)?.toLong()
                 )
             },
-            anomalyCandidates = anomalyCandidates(lines)
+            anomalyCandidates = anomalyCandidates(lines, blindAttrNames())
         )
     }
 
@@ -1247,7 +1309,7 @@ class DashboardAiService(
      * 하한값([AppProperties.anomalyMinQty])은 **현업 확인 전 임시값**이다.
      * 얼마가 맞는지는 현장 감각이 필요해 설정으로 빼 두었다.
      */
-    private fun anomalyCandidates(lines: List<Map<String, Any?>>): List<AiBriefingInput.AnomalyCandidate> {
+    private fun anomalyCandidates(lines: List<Map<String, Any?>>, blind: Set<String>): List<AiBriefingInput.AnomalyCandidate> {
         val floor = appProperties.anomalyMinQty
 
         return lines.asSequence()
@@ -1257,7 +1319,8 @@ class DashboardAiService(
 
                 AiBriefingInput.AnomalyCandidate(
                     eqptCd = r["eqptCd"] as? String,
-                    eqptNm = r["eqptNm"] as? String,
+                    // 운영 중 추가한 항목이 설비명을 가리면 코드만 넣는다(프롬프트는 이름이 없으면 코드를 쓴다).
+                    eqptNm = if ("eqptNm" in blind) null else r["eqptNm"] as? String,
                     qty = qty,
                     ngQty = (r["ngQty"] as? Number)?.toLong(),
                     defectRate = (r["defectRate"] as? Number)?.toDouble()

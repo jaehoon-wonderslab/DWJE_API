@@ -109,13 +109,16 @@ class AiEvidenceVerifier(
      * @param mask   부서별 데이터 항목 권한
      * @param userId 문서 권한 판정 대상. 스레드 로컬에서 꺼내지 않고 받는다 —
      *               숨은 의존성이면 이 관문을 테스트할 수 없다
+     * @param blindAttrs 조회자가 못 보는 응답 필드명([DataFieldService.blindAttrNames]) — 근거 이름표(label)에
+     *               공정·설비 이름을 넣을 때 여기 걸리면 이름 대신 코드를 쓴다
      * @return 통과한 문장(`verified = true`)과 버린 건수
      */
     fun verifyLines(
         lines: List<Map<String, Any?>>,
         window: TimeWindow,
         mask: MaskingSupport,
-        userId: String
+        userId: String,
+        blindAttrs: Set<String> = emptySet()
     ): VerifyResult {
         val kept = mutableListOf<Map<String, Any?>>()
         val dropped = mutableListOf<Dropped>()
@@ -150,7 +153,7 @@ class AiEvidenceVerifier(
                 // 두세 번 온다("제품 측면 부위 검사에 취약점이 있음." vs "제품측면부위검사에취약점이있음.").
                 // 문자열이 달라 단순 비교로는 안 걸리므로, 비교할 때만 공백·문장부호를 지운다.
                 // 화면에 내려보내는 값은 원문 그대로 둔다.
-                val canonical = evidence.map { canonicalize(it, window, userId) }
+                val canonical = evidence.map { canonicalize(it, window, mask, userId, blindAttrs) }
                     .distinctBy {
                         listOf(
                             it["kind"], it["label"], it["value"],
@@ -299,7 +302,13 @@ class AiEvidenceVerifier(
      * 대조에 쓴 조회를 한 번 더 하지만, 검증과 표기를 같은 값에서 뽑기 위해 그대로 둔다 —
      * 두 값이 갈리면 "검증한 값" 과 "보여 준 값" 이 달라진다.
      */
-    private fun canonicalize(item: Map<String, Any?>, window: TimeWindow, userId: String): Map<String, Any?> {
+    private fun canonicalize(
+        item: Map<String, Any?>,
+        window: TimeWindow,
+        mask: MaskingSupport,
+        userId: String,
+        blindAttrs: Set<String>
+    ): Map<String, Any?> {
         val kind = (item["kind"] as? String)?.trim()?.lowercase() ?: return item
         val key = (item["key"] as? String)?.trim()
 
@@ -331,7 +340,9 @@ class AiEvidenceVerifier(
             )
         }
 
-        val resolved = resolve(kind, key, window) ?: return item
+        val resolved = resolve(kind, key, window, blindAttrs) ?: return item
+        // 분자·분모는 수량이다. 비율(수율 권한)은 볼 수 있어도 수량 권한이 없으면 내지 않는다.
+        val qtyAllowed = mask.allowed(DataField.QTY)
 
         return item + mapOf(
             // 모델이 쓴 이름을 버리고 마스터의 이름을 쓴다.
@@ -340,8 +351,8 @@ class AiEvidenceVerifier(
             "value" to resolved.value,
             "unit" to resolved.unit,
             // 비율이면 분자·분모를 함께 낸다 — 크기를 모르면 100% 를 판단할 수 없다.
-            "numerator" to resolved.numerator,
-            "denominator" to resolved.denominator
+            "numerator" to resolved.numerator?.takeIf { qtyAllowed },
+            "denominator" to resolved.denominator?.takeIf { qtyAllowed }
         )
     }
 
@@ -352,8 +363,10 @@ class AiEvidenceVerifier(
      * 대상을 찾지 못한 경우는 [Resolved.value] 가 `null` 이다 — 종류는 알지만
      * 그 키가 없는 것이므로 사유가 다르다.
      */
-    private fun resolve(kind: String, key: String?, window: TimeWindow): Resolved? {
+    private fun resolve(kind: String, key: String?, window: TimeWindow, blindAttrs: Set<String> = emptySet()): Resolved? {
         val plantCd = appProperties.defaultPlantCd
+        // 이름이 가려진 항목이면 코드로 대신한다 — 이름표는 화면에 그대로 그려진다.
+        fun nameOf(attr: String, name: Any?, code: Any?): Any? = if (attr in blindAttrs) code else (name ?: code)
 
         return when (kind) {
             "qty", "production" -> Resolved(
@@ -376,7 +389,7 @@ class AiEvidenceVerifier(
                     Resolved(
                         fieldKey = DataField.YIELD,
                         value = row?.let { numberOf(it["yield"]) },
-                        label = row?.get("process")?.let { "$it 수율" },
+                        label = row?.let { nameOf("processNm", it["process"], it["processId"]) }?.let { "$it 수율" },
                         unit = "%"
                     )
                 }
@@ -396,14 +409,17 @@ class AiEvidenceVerifier(
                 .firstOrNull { key != null && it["eqptCd"] == key }
                 .let { row ->
                     Resolved(
-                        fieldKey = DataField.QTY,
+                        // 설비 불량률은 비율이라 수율 항목이다. 예전에 QTY 로 적혀 있어 수율 권한이 없는
+                        // 부서에도 불량률 근거가 통과했다(2026-09-23 WEB 확인, cause-prescription).
+                        fieldKey = DataField.YIELD,
                         value = row?.let { numberOf(it["defectRate"]) },
-                        label = row?.get("eqptNm")?.let { "$it 불량률" },
+                        label = row?.let { nameOf("eqptNm", it["eqptNm"], it["eqptCd"]) }?.let { "$it 불량률" },
                         unit = "%",
                         // 불량률만 내려보내면 100% 가 1/1 인지 3,570/3,570 인지 알 수 없다.
                         // 분자·분모를 함께 실어 화면이 "100.0% (3,570/3,570)" 로 그릴 수 있게 한다.
                         // 모수가 작은 값은 app.anomaly-min-qty 로 후보에서 이미 걸러지지만,
                         // 통과한 값도 사람이 크기를 보고 판단할 수 있어야 한다.
+                        // 분자·분모는 수량 권한까지 있어야 내려간다([canonicalize]).
                         numerator = row?.let { numberOf(it["ngQty"]) },
                         denominator = row?.let { numberOf(it["qty"]) }
                     )

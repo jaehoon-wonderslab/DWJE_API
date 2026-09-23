@@ -107,6 +107,29 @@ class AiBriefingMaskingTest {
     }
 
     @Test
+    @DisplayName("3-1. 수량 권한만 있으면 양품·불량 수량과 설비 불량률이 빠진다 — 총량과 나누면 수율·불량률이 된다")
+    fun qtyWithoutYieldHidesRecomputableCounts() {
+        // 제조팀(10003) = qty 는 있고 yield 는 없다.
+        val input = buildInput(MaskingSupport(principal(DataField.QTY, DataField.MOLD, DataField.WORKER)))
+
+        assertEquals(21_963_275L, input.totalQty, "총 수량만으로는 비율을 알 수 없다 — 그대로 둔다")
+        assertNull(input.okQty, "양품 ÷ 총량 = 수율")
+        assertNull(input.ngQty, "불량 ÷ 총량 = 불량률")
+        assertTrue(input.anomalyCandidates.isEmpty(), "이상 후보는 설비 불량률을 싣는다 — 수율 항목이다")
+    }
+
+    @Test
+    @DisplayName("3-2. 수율 권한만 있으면 이상 후보는 들어가되 설비별 수량은 빠진다")
+    fun yieldWithoutQtyKeepsRateOnly() {
+        val input = buildInput(MaskingSupport(principal(DataField.YIELD)))
+
+        assertEquals(1, input.anomalyCandidates.size)
+        assertEquals(1.0, input.anomalyCandidates.first().defectRate)
+        assertNull(input.anomalyCandidates.first().qty)
+        assertNull(input.anomalyCandidates.first().ngQty)
+    }
+
+    @Test
     @DisplayName("4. 권한이 전부 있으면 값이 그대로 들어가고 달성률이 계산된다")
     fun allAllowed() {
         val input = buildInput(
