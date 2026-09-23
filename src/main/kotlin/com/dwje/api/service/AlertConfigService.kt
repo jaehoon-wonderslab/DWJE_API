@@ -448,7 +448,11 @@ class AlertConfigService(
 
     /**
      * 기본 메시지 템플릿 — 단가·수율 등 민감정보는 본문에 포함하지 않는다.
+     *
+     * 조건에 틀을 주지 않았을 때의 기본 틀. 치환은 Alert_Engine(MessageRenderer)이 `{{변수}}` 꼴만 한다 —
+     * 예전 기본값(`{심각도}` 꼴)은 치환되지 않고 글자 그대로 나갔다(2026-09-23 수정).
+     * 쓸 수 있는 변수: severity · condNm · scope · eqptNm · target · metricNm · metricDesc · value · unit · op · threshold · evidence · occurredAt · link
      */
     private fun defaultMessageTemplate(): String =
-        "[{심각도}] {조건명} 발생 — 대상 {대상} / 지표 {지표} / 임계 {임계값}. 시스템에서 상세를 확인하세요."
+        "[{{severity}}] {{condNm}} — {{scope}} {{metricNm}} {{value}}{{unit}} ({{op}} {{threshold}}{{unit}}) {{link}}"
 }
