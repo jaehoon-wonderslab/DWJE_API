@@ -87,18 +87,6 @@ class CommonMasterController(
     }
 
     /**
-     * 불량 유형 목록 조회 (No.12)
-     *
-     * @param processId 공정 코드
-     */
-    @Operation(summary = "불량 유형 목록 조회", description = "공정별 불량 유형과 AI 불량 태그 분류를 조회한다.")
-    @GetMapping("/masters/defect-types")
-    fun defectTypes(
-        @Parameter(description = "공정(작업장) 코드") @RequestParam(required = false) processId: String?
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(mapOf("defectTypes" to commonMasterService.getDefectTypes(processId)))
-
-    /**
      * 금형 목록 조회 (No.13)
      *
      * @param eqptCd 설비 코드

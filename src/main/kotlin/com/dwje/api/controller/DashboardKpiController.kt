@@ -22,7 +22,8 @@ import org.springframework.web.bind.annotation.RestController
 /**
  * 성과지표 대시보드 컨트롤러 (DB-03)
  *
- * 접근 부서 : 품질보증팀 · 생산관리팀 · 전산팀 · 경영진 · 통합관리자 (제조팀 제외)
+ * 접근 : 화면 권한 `dash-ai`(ax.tb_sys_dept_menu_perm · 계정 추가 허용 포함) · 값 마스킹 : 데이터 권한(ax.tb_sys_dept_data_perm).
+ *        부서 규칙을 코드에 두지 않는다 — 명세의 "제조팀 제외"는 제조팀에 yield 데이터 권한이 없어 값이 가려지는 것으로 처리된다.
  */
 @RestController
 @RequestMapping("/api/v1/dashboard/kpi")
@@ -159,7 +160,7 @@ class DashboardKpiController(
         downloadLogService.record(
             reportId = null,
             reportNm = "KPI 산출 증빙",
-            menuId = MenuId.DASH_KPI,
+            menuId = MenuId.DASH_AI,
             format = format,
             scope = "yearMonth=${yearMonth ?: "전월"}",
             rowCnt = rows.size,

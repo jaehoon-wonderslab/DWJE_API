@@ -14,7 +14,7 @@ import org.springframework.transaction.annotation.Transactional
 /**
  * 자연어 질의 이력 서비스 (SY-08)
  *
- * 접근 부서 : 전 부서 (chat-history 메뉴 권한)
+ * 접근 : 화면 권한 `chat-history`(ax.tb_sys_dept_menu_perm) · 값 마스킹 : 없음
  *
  * AI 모델 설정(SY-10) · AI 모델 버전 관리(SY-11) · Agent 실행 현황(SY-12)은 2026-09-15 에 화면과 함께 제거됐다.
  * AI 통합 대시보드의 Agent 작동 현황은 `DashboardAiService` 가 따로 제공한다.

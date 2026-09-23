@@ -55,25 +55,26 @@ MES 실적 데이터는 충분하다 — 라벨 실적 749만행 / 불량 899만
 | 도메인 | 실데이터 GET | 비고 |
 |---|---:|---|
 | `auth` | 4 | 이미 live |
-| `common` | 7 | 코드·공정·설비·제품·불량유형·금형 + 신규 `data-range` |
+| `common` | 7 | 코드·공정·설비·제품·불량유형·금형 + 신규 `data-range`. **2026-09-23**: 불량유형(`masters/defect-types`) 제거 |
 | `dashboard/kpi` | 7 | |
 | `dashboard/ai` | 8 | |
 | `dashboard/process` | 8 | 이번에 제품 마스터 시드로 해소 |
 | `production` | 8 | 실적·모니터링·일일보고 |
-| `quality` | 10 | 불량 현황 + AOI 예측 |
+| `quality` | 10 | 불량 현황 + AOI 예측. **2026-09-23**: AOI 불량 목록·상세(`aoi/defects`, `aoi/defects/{id}`)와 이미지 프록시(`files/aoi-images`) 제거 — `aoi/defects/equipments` 는 유지 |
 | `system` | 10 | 계정·부서·메뉴권한·데이터권한 |
-| `reports` | 5 | |
+| `reports` | 5 | **2026-09-23**: 작성 상태(`reports/status` GET·PUT) 제거 |
 | `sync` | 5 | |
-| `metrics` | 3 | **2026-09-15 제거**(지표 측정 데이터 관리 화면) |
+| `metrics` | 10 | 2026-09-15 제거 → **2026-09-22 복원**(지표 측정 데이터 관리 화면) + 수집 정의·산출 근거·측정값 |
 | `products` | 2 | 제품군·랭킹 — **2026-09-15 제거**(제품군 순위 관리 화면) |
-| `ai/*` | 8 | chat 만 남음 — agents·model-config·model-releases·vector-builds 는 **2026-09-15 제거**(`dashboard/ai/agents` 는 별개로 유지) |
+| `ai/*` | 31 | chat + **2026-09-22 복원**(agents · model-config · defect-tags · model-releases · assets · corpus-snapshots · serving-routes). **2026-09-23**: defect-tags · model-releases · assets · corpus-snapshots · serving-routes 제거(웹 미호출, V42 표 삭제) — agents · model-config 만 남음. vector-builds·finetune-builds 는 vec 스키마 소관이라 아직 없다. `dashboard/ai/agents` 는 별개로 유지 |
 | `alerts`, `alert-escalation-rules` | 2 | |
 | `menus`, `audit-logs`, `download-logs`, `health` | 4 | |
 
 ### 빈 상태 UI 가 필요한 도메인 — API 는 정상, 데이터가 없음
 
 `glossary` · `alert-conditions` · `alert-recipients` ·
-`alert-recipient-groups` · ~~`ai/mask-rules` · `ai/finetune-builds`~~(2026-09-15 제거) ·
+`alert-recipient-groups` · `ai/model-config` · ~~`ai/defect-tags` · `ai/model-releases` · `ai/assets` ·
+`ai/corpus-snapshots` · `ai/serving-routes`~~(2026-09-23 제거) · ~~`ai/mask-rules`~~(V32 로 표가 사라져 [데이터 접근 권한]이 이어받음) ·
 `quality/report-forms` · `quality/reports` · `reports/scrap` · `reports/ship-plan` ·
 `system/users/pending` · `system/data-perms/audit`
 
@@ -81,7 +82,7 @@ MES 실적 데이터는 충분하다 — 라벨 실적 749만행 / 불량 899만
 빈 배열을 오류로 처리하지 말고 "등록된 항목이 없습니다 + 등록 버튼" 형태로 그리면 된다.
 등록 API(POST) 104개는 별도로 살아 있고, 쓰기→조회 왕복을 아래 3개 도메인에서 실증했다.
 
-- ~~`POST /metrics/standards` → `GET /metrics/standards` 반영 확인~~ (2026-09-15 API 제거)
+- `POST /metrics/standards` → `GET /metrics/standards` 반영 확인 (2026-09-22 복원 후 재실증)
 - `POST /production/downtimes` → `GET /production/downtimes` 반영 확인
 - `POST /alert-recipients` → `GET /alert-recipients` 반영 확인
 

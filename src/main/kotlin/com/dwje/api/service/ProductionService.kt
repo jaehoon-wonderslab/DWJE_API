@@ -26,9 +26,10 @@ import java.time.temporal.ChronoUnit
 /**
  * 생산 모니터링 · 실적 집계 서비스 (PR-01, PR-02)
  *
- * 접근 부서
- * - 생산 모니터링 : 품질보증팀 · 생산관리팀 · 제조팀 · 통합관리자
- * - 실적 집계     : 품질보증팀 · 생산관리팀 · 경영진 · 통합관리자
+ * 접근
+ * - 생산 모니터링 : 화면 권한 `prod-monitor`(ax.tb_sys_dept_menu_perm)
+ * - 실적 집계     : 화면 권한 `prod-result`(ax.tb_sys_dept_menu_perm)
+ * - 값 마스킹     : 데이터 권한(ax.tb_sys_dept_data_perm)
  */
 @Service
 class ProductionService(

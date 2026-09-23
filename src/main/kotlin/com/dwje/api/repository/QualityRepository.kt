@@ -870,28 +870,9 @@ class QualityRepository(
         return jdbcTemplate.update(sql, params)
     }
 
-    /**
-     * Agent 실행 이력을 등록한다. (No.83 — 예측 재산출 작업 기록)
-     *
-     * @return 생성된 실행 ID
-     */
-    fun insertAgentRun(agentNo: String, stateCd: String, message: String?, throughput: String?): Long {
-        val sql = """
-            INSERT INTO ax.tb_ai_agent_run (agent_id, run_at, state_cd, throughput_txt, message, err_flg)
-            SELECT a.agent_id, now(), :stateCd, :throughput, :message, 'N'
-            FROM ax.tb_ai_agent a
-            WHERE a.agent_no = :agentNo
-            RETURNING run_id
-        """.trimIndent()
-
-        val params = MapSqlParameterSource()
-            .addValue("agentNo", agentNo)
-            .addValue("stateCd", stateCd)
-            .addValue("throughput", throughput?.take(50))
-            .addValue("message", message?.take(500))
-
-        return jdbcTemplate.query(sql, params) { rs, _ -> rs.getLong("run_id") }.firstOrNull() ?: 0L
-    }
+    // Agent 실행 이력 등록은 [com.dwje.api.repository.AgentRunRepository.insert] 로 옮겼다.
+    // 기록 지점이 늘면서(①~⑦) 한 군데로 모으는 편이 낫고, 그쪽은 elapsed_ms · err_flg 까지 남긴다.
+    // 부르는 쪽은 [com.dwje.api.service.AgentRunRecorder] 를 쓴다 — 기록 실패가 본 기능을 깨뜨리지 않는다.
 
     /** 조회 기간 공통 파라미터 */
     /**

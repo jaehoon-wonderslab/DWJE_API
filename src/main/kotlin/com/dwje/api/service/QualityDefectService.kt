@@ -12,7 +12,7 @@ import org.springframework.transaction.annotation.Transactional
 /**
  * 불량 현황 조회 서비스 (QC-01)
  *
- * 접근 부서 : 품질보증팀 · 생산관리팀 · 제조팀 · 경영진 · 통합관리자
+ * 접근 : 화면 권한 `qc-defect`(ax.tb_sys_dept_menu_perm) · 값 마스킹 : 데이터 권한(ax.tb_sys_dept_data_perm)
  */
 @Service
 class QualityDefectService(

@@ -24,22 +24,3 @@ data class UploadProperties(
     @field:Max(value = 52_428_800, message = "업로드 상한(app.upload.max-bytes)은 50MB 를 넘을 수 없습니다.")
     val maxBytes: Long = 20L * 1024 * 1024
 )
-
-/**
- * NAS 이미지 경로 설정 (`app.nas.*`)
- *
- * AOI 불량 사진은 NAS 에 있고 브라우저가 직접 읽지 못하므로 API 가 프록시한다.
- * **루트 아래 경로만** 내려준다 — 매핑 테이블의 경로가 루트를 벗어나면(`..` 포함) 거절한다.
- *
- * @param aoiRoot        AOI 이미지 NAS 마운트 루트. 규칙 문서가 오기 전 임시값.
- * @param imageUrlTtlSec 상세 API 가 발급하는 이미지 URL 서명의 유효시간(초)
- */
-data class NasProperties(
-
-    @field:NotBlank(message = "AOI 이미지 NAS 루트(app.nas.aoi-root)는 비워 둘 수 없습니다.")
-    val aoiRoot: String = "./data/nas-aoi",
-
-    @field:Min(value = 60, message = "이미지 URL 유효시간(app.nas.image-url-ttl-sec)은 60초 이상이어야 합니다.")
-    @field:Max(value = 86_400, message = "이미지 URL 유효시간(app.nas.image-url-ttl-sec)은 하루를 넘을 수 없습니다.")
-    val imageUrlTtlSec: Long = 900
-)

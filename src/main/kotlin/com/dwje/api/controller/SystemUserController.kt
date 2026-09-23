@@ -30,7 +30,7 @@ import org.springframework.web.bind.annotation.RestController
 /**
  * 계정 · 부서 · 권한 관리 컨트롤러 (SY-01, SY-02, SY-03)
  *
- * 접근 부서 : 전산팀 · 통합관리자
+ * 접근 : 화면 권한 `sys-account` · `sys-menu` · `sys-data`(엔드포인트별, ax.tb_sys_dept_menu_perm) · 값 마스킹 : 없음
  * 모든 변경은 권한 변경 이력과 감사 로그에 자동 기록된다.
  */
 @RestController

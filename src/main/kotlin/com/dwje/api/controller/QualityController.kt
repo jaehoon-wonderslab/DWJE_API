@@ -44,7 +44,7 @@ import org.springframework.web.bind.annotation.RestController
  * 어디에도 들어가지 않아 사용자 결정으로 걷어냈다.
  * 마스킹 해제 요청도 함께 내렸다 — 그 요청을 띄우는 화면이 없어졌다.
  * 되살리려면 `restore/20260904_문서관리제거/` 를 보라.
- * (`ax.tb_rpt_unmask_req` 테이블과 `UNMASK_STATE` 코드는 남아 있다)
+ * (`ax.tb_rpt_unmask_req` 테이블과 `UNMASK_STATE` 코드 그룹은 V42 가 지웠다)
  *
  * 불량 현황 조회 · AOI 판정 분석/예측 · 품질 보고서 · 보고서 양식 관리를 담당한다.
  */
@@ -357,47 +357,14 @@ class QualityController(
         ApiResponse.ok(aoiPredictionService.recalculate(target, horizon, trainPeriod), "예측을 재산출했습니다.")
 
     // =================================================================================
-    // AOI 판정 분석 — 불량 상세·이미지 (2026-09-10 요구 9)
+    // AOI 판정 분석 — 설비 필터 (2026-09-10 요구 9)
     // =================================================================================
 
-    /** AOI 불량 목록 */
-    @Operation(
-        summary = "AOI 불량 목록",
-        description = "AOI 설비가 불량으로 찍은 라벨 이력을 id·판정 일시로 분류한다. 기간 미지정 시 to=오늘, from=7일 전. " +
-            "defectId = plant-wc-lot-serial. defectTypeCd/Nm 은 불량 이력이 붙은 행에만 있다(AOI 는 대부분 null). imageCnt 는 매핑된 NAS 이미지 수."
-    )
-    @GetMapping("/aoi/defects")
-    fun aoiDefects(
-        @RequestParam(required = false) from: String?,
-        @RequestParam(required = false) to: String?,
-        @Parameter(description = "AOI 설비 코드 — /aoi/defects/equipments 참고") @RequestParam(required = false) eqptCd: String?,
-        @RequestParam(required = false) defectTypeCd: String?,
-        @RequestParam(required = false) lotNo: String?,
-        @Parameter(description = "작업장(공정) 코드") @RequestParam(required = false) processId: String?,
-        @RequestParam(required = false) page: Int?,
-        @RequestParam(required = false) size: Int?
-    ): ApiResponse<Map<String, Any?>> {
-        val (data, meta, mask) = aoiDefectService.getDefects(from, to, eqptCd, defectTypeCd, lotNo, processId, page, size)
-        return ApiResponse.page(data, meta, mask.maskedKeys())
-    }
-
-    /** AOI 설비 목록 (필터용) — {defectId} 매핑보다 먼저 선언한다. */
+    /** AOI 설비 목록 (필터용). 목록·상세(`/aoi/defects`, `/aoi/defects/{defectId}`)는 2026-09-23 에 뺐다. */
     @Operation(summary = "AOI 설비 목록", description = "설비 마스터에서 모델명·설비명에 AOI 가 들어간 설비.")
     @GetMapping("/aoi/defects/equipments")
     fun aoiEquipments(): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(aoiDefectService.getEquipments())
-
-    /** AOI 불량 상세 + 이미지 */
-    @Operation(
-        summary = "AOI 불량 상세·이미지",
-        description = "불량 한 건의 상세, 불량 유형 내역(defects[]), NAS 이미지 목록(images[]). " +
-            "images[].url 은 서명 토큰이 붙은 프록시 주소(유효 15분), thumbUrl 은 160px 썸네일. available 은 NAS 에 파일이 실제로 있는지."
-    )
-    @GetMapping("/aoi/defects/{defectId}")
-    fun aoiDefect(@PathVariable defectId: String): ApiResponse<Map<String, Any?>> {
-        val (data, mask) = aoiDefectService.getDefect(defectId)
-        return ApiResponse.ok(data, mask.maskedKeys())
-    }
 
     /** 추정 근거·모델 조회 (No.84) */
     @Operation(summary = "추정 근거·모델 조회", description = "사용 중인 추정 방식·학습 구간·특징·검증 결과·한계를 반환한다.")

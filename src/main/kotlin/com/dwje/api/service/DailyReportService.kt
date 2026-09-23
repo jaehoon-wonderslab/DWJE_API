@@ -33,7 +33,7 @@ import java.time.LocalDate
  * 다만 아침회의에서 정한 제품별 일목표·판정·담당·기한은 산출물이 아니라 사람이
  * 남기는 결정이라 따로 저장한다. 키는 문서가 아니라 (대상일, 제품) 이다.
  *
- * 접근 부서 : 생산관리팀 · 통합관리자
+ * 접근 : 화면 권한 `prod-daily`(ax.tb_sys_dept_menu_perm) · 값 마스킹 : 데이터 권한(ax.tb_sys_dept_data_perm)
  */
 @Service
 class DailyReportService(

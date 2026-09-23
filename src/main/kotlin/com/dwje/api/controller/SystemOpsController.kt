@@ -90,7 +90,7 @@ class DownloadLogController(
 /**
  * 데이터 연동 이력 컨트롤러 (SY-15)
  *
- * 접근 부서 : 전산팀 · 통합관리자
+ * 접근 : 화면 권한 `sys-sync`(ax.tb_sys_dept_menu_perm) · 값 마스킹 : 없음
  */
 @RestController
 @RequestMapping("/api/v1/sync")

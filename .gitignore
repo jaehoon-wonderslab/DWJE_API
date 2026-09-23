@@ -36,5 +36,7 @@ data/
 run/
 *.pid
 config/*.env
+config/*.env.*
 !config/*.env.example
+!config/*.env.*.example
 

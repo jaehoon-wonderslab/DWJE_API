@@ -37,8 +37,6 @@ class JwtTokenProvider(private val props: JwtProperties) {
 
         const val TYPE_ACCESS = "access"
         const val TYPE_REFRESH = "refresh"
-        /** 파일 프록시용 짧은 토큰 — 이미지 한 장(sub=imageId)만 열 수 있다. */
-        const val TYPE_FILE = "file"
     }
 
     /**
@@ -120,42 +118,6 @@ class JwtTokenProvider(private val props: JwtProperties) {
             throw UnauthenticatedException("갱신 토큰이 아닙니다.")
         }
         return claims.subject
-    }
-
-    /**
-     * 파일 프록시 토큰 발급 — `<img src>` 가 Authorization 헤더를 못 보내므로 URL 에 싣는다.
-     *
-     * Access Token 을 URL 에 넣으면 접속 로그·브라우저 이력에 세션 전체가 남는다. 그래서
-     * **이미지 한 장만 여는** 별도 토큰을 짧게 발급한다.
-     *
-     * @param resourceId 열 수 있는 자원 ID (이미지 ID)
-     * @param actor      발급 요청 사번 (감사용)
-     * @param ttlSec     유효시간(초)
-     */
-    fun createFileToken(resourceId: String, actor: String, ttlSec: Long): String {
-        val now = Date()
-        return Jwts.builder()
-            .subject(resourceId)
-            .issuer(props.issuer)
-            .issuedAt(now)
-            .expiration(Date(now.time + ttlSec * 1000))
-            .claim(CLAIM_TOKEN_TYPE, TYPE_FILE)
-            .claim("act", actor)
-            .signWith(key)
-            .compact()
-    }
-
-    /**
-     * 파일 프록시 토큰을 검증하고, 요청한 자원과 일치하는지 확인한다.
-     *
-     * @throws UnauthenticatedException 서명·만료 오류, 종류 불일치, 다른 자원의 토큰
-     */
-    fun verifyFileToken(token: String, resourceId: String): String {
-        val claims = parse(token)
-        if (claims[CLAIM_TOKEN_TYPE] != TYPE_FILE || claims.subject != resourceId) {
-            throw UnauthenticatedException("이 파일에 대한 접근 토큰이 아닙니다.")
-        }
-        return claims["act"]?.toString() ?: "-"
     }
 
     /** Access Token 유효시간(초) */

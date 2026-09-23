@@ -109,15 +109,6 @@ class CommonMasterService(
     }
 
     /**
-     * 불량 유형 목록 조회 (No.12)
-     *
-     * @param processId 공정 코드
-     */
-    @Transactional(readOnly = true)
-    fun getDefectTypes(processId: String?): List<Map<String, Any?>> =
-        commonMasterRepository.findDefectTypes(appProperties.defaultPlantCd, processId)
-
-    /**
      * 금형 목록 조회 (No.13)
      *
      * 금형·설비 상세(mold) 데이터 접근 권한이 없으면 빈 목록을 반환한다.

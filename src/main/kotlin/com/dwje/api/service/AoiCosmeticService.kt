@@ -44,6 +44,7 @@ import org.springframework.stereotype.Service
 class AoiCosmeticService(
     private val repository: AoiCosmeticRepository,
     private val authorizationService: AuthorizationService,
+    private val agentRunRecorder: AgentRunRecorder,
     private val appProperties: AppProperties
 ) {
 
@@ -165,7 +166,16 @@ class AoiCosmeticService(
         val started = System.currentTimeMillis()
         val key = CacheKey(fromDate, toDate, wc, eqpt)
         val hit = cache[key]?.takeIf { it.expiresAt.isAfter(LocalDateTime.now()) } != null
-        val current = cached(key)
+        // ① 비전 수집 Agent — **원천을 실제로 읽을 때만** 감싼다.
+        // 캐시로 끝난 호출까지 기록하면 화면을 열 때마다 이력이 쌓여, 정작 언제 수집했는지가 묻힌다.
+        // 원천이 응답하지 않으면 measure 가 ERROR 로 남기고 예외를 그대로 올려보낸다 —
+        // 그래야 Agent 화면·Master 상태가 장애를 장애로 보여 준다.
+        val current = if (hit) cached(key) else agentRunRecorder.measure(
+            agentNo = AgentRunRecorder.VISION,
+            message = "AOI 외관 원천(COSMETIC) 수집 $fromDate~$toDate" +
+                (wc?.let { " · 공정 $it" } ?: "") + (eqpt?.let { " · 설비 $it" } ?: ""),
+            throughput = { snap -> "제품 %,d건 · 질의 %d회".format(snap.total.prodCnt, snap.queryCnt) }
+        ) { cached(key) }
 
         val days = ChronoUnit.DAYS.between(fromDate, toDate) + 1
         val prevTo = fromDate.minusDays(1)
@@ -191,6 +201,7 @@ class AoiCosmeticService(
             "elapsedMs" to (System.currentTimeMillis() - started),
             "sourceQueryCnt" to (if (hit) 0 else current.queryCnt) + (if (prevHit || previous == null) 0 else previous.queryCnt)
         )
+
         return data to mask
     }
 

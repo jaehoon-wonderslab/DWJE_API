@@ -5,7 +5,6 @@ import com.dwje.api.common.util.MenuId
 import com.dwje.api.model.request.ApprovalLineRequest
 import com.dwje.api.model.request.ExportFormatRequest
 import com.dwje.api.model.request.ReportUsageRequest
-import com.dwje.api.model.request.ReportWriteStateRequest
 import com.dwje.api.model.request.ScrapDraftRequest
 import com.dwje.api.model.request.ScrapManualRowRequest
 import com.dwje.api.model.request.ScrapUnitPriceRequest
@@ -13,7 +12,6 @@ import com.dwje.api.service.DownloadLogService
 import com.dwje.api.service.ExportService
 import com.dwje.api.service.ReportService
 import com.dwje.api.service.ReportUsageService
-import com.dwje.api.service.ReportWriteStateService
 import com.dwje.api.service.ScrapReportService
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.Parameter
@@ -25,7 +23,6 @@ import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
-import org.springframework.web.bind.annotation.PutMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RequestParam
@@ -41,7 +38,6 @@ import org.springframework.web.bind.annotation.RestController
 @Tag(name = "07. 보고서")
 class ReportController(
     private val reportService: ReportService,
-    private val reportWriteStateService: ReportWriteStateService,
     private val reportUsageService: ReportUsageService,
     private val scrapReportService: ScrapReportService,
     private val exportService: ExportService,
@@ -135,40 +131,6 @@ class ReportController(
         val (data, mask) = reportService.getLrrByCustomer(baseYear, customerCd, unit)
         return ApiResponse.ok(data, mask.maskedKeys())
     }
-
-    // =================================================================================
-    // 보고서 센터 — 작성 상태 (일일 생산현황 보고 · 아침회의 자료 · 폐기 보고서)
-    // =================================================================================
-
-    /**
-     * 보고서 작성 상태 조회 — 허브 상단 "오늘 작성할 보고서" 띠
-     *
-     * 문서 관리가 없어 상태는 `max(파생, 기록)` 이다. 파생은 아침회의 결과 행 유무로 DRAFT 까지만,
-     * 제출·승인은 화면 단추가 남긴 기록(`ax.tb_rpt_write_state`)에서 온다.
-     */
-    @Operation(
-        summary = "보고서 작성 상태 조회",
-        description = "대상일의 화면별 작성 상태(NONE|DRAFT|SUBMITTED|APPROVED)를 반환한다. " +
-            "대상은 prod-daily · rpt-press-morning · rpt-plating-morning · rpt-scrap 중 호출자에게 메뉴 권한이 있는 화면이다. " +
-            "source 는 DERIVED(저장 행 유무로 판단) 또는 RECORDED(제출·승인 단추로 기록)."
-    )
-    @GetMapping("/status")
-    fun writeStatus(
-        @Parameter(description = "보고서 대상일 yyyy-MM-dd. 미지정 시 오늘") @RequestParam(required = false) baseDate: String?
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(reportWriteStateService.getStatus(baseDate))
-
-    /** 보고서 작성 상태 기록 — 화면 머리말의 「제출」「승인」「작성 중으로 되돌리기」 */
-    @Operation(
-        summary = "보고서 작성 상태 기록",
-        description = "화면·대상일의 작성 상태를 DRAFT|SUBMITTED|APPROVED 로 기록한다. 있으면 덮어쓴다(낮추는 방향 포함). " +
-            "대상 화면이 아니면 400, 해당 화면 메뉴 권한이 없으면 E-AUTH-002."
-    )
-    @PutMapping("/status")
-    fun setWriteStatus(
-        @Valid @RequestBody request: ReportWriteStateRequest
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(reportWriteStateService.setStatus(request), "작성 상태를 기록했습니다.")
 
     // =================================================================================
     // 보고서 화면 — 자주 쓰는 보고서 (계정별 사용 횟수)

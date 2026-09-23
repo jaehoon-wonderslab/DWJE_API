@@ -11,7 +11,7 @@ import java.util.UUID
  * 자연어 질의(AI 채팅) 데이터 접근 Repository (AI-01, SY-08)
  *
  * 참조 테이블
- * - 질의/응답 이력 : ax.tb_ai_chat_log, ax.tb_ai_chat_agent, ax.tb_ai_chat_term
+ * - 질의/응답 이력 : ax.tb_ai_chat_log, ax.tb_ai_chat_agent
  * - 검색 이력      : vec.tb_query_log, vec.tb_query_hit, vec.tb_doc_chunk, vec.tb_doc
  * - 용어/마스킹    : ax.tb_gls_term, ax.tb_gls_variant, ax.tb_ai_mask_rule
  */

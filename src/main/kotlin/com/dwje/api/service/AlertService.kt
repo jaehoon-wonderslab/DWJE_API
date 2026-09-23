@@ -18,7 +18,7 @@ import java.time.LocalDate
 /**
  * 이상 알림 서비스 (AL-01)
  *
- * 접근 부서 : 전 부서
+ * 접근 : 화면 권한 `alert-list`. 발송 로그만 `alert-cond` 또는 `sys-recip` ([getSendLogs])
  */
 @Service
 class AlertService(
@@ -136,6 +136,10 @@ class AlertService(
 
     /**
      * 알림 발송 로그 조회 (No.106)
+     *
+     * 알림 조건(`alert-cond`) 또는 수신자 관리(`sys-recip`) 화면 권한이 있어야 한다. 알림 목록(`alert-list`)은
+     * 전 부서가 가져서 넣으면 사실상 전원 허용이 된다 — 발송 로그는 수신자·채널을 드러내는 운영 정보라
+     * 알림 설정 화면을 가진 사람에게만 보인다. 웹도 이 카드를 같은 화면 권한으로 숨긴다(2026-09-23, 부서 이름 비교 대신).
      */
     @Transactional(readOnly = true)
     fun getSendLogs(
@@ -146,7 +150,7 @@ class AlertService(
         page: Int?,
         size: Int?
     ): Pair<List<Map<String, Any?>>, PageMeta> {
-        authorizationService.requireAnyMenu(MenuId.ALERT_LIST, MenuId.ALERT_COND, MenuId.SYS_RECIP)
+        authorizationService.requireAnyMenu(MenuId.ALERT_COND, MenuId.SYS_RECIP)
 
         val (fromDate, toDate) = DateUtils.periodOf(from, to)
         val paging = PageRequestParam.of(page, size)

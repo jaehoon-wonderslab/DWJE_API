@@ -22,7 +22,7 @@ import org.springframework.web.bind.annotation.RestController
 /**
  * 용어 사전 관리 컨트롤러 (SY-06)
  *
- * 접근 부서 : 전 부서 (유사어는 본인 등록 건만 수정·삭제 가능)
+ * 접근 : 화면 권한 `sys-gloss`(ax.tb_sys_dept_menu_perm) · 값 마스킹 : 없음 (유사어는 본인 등록 건만 수정·삭제 가능)
  */
 @RestController
 @RequestMapping("/api/v1/glossary")

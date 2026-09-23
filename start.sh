@@ -31,9 +31,30 @@ PID_DIR="$APP_HOME/run"
 PID_FILE="${PID_FILE:-$PID_DIR/dwje-api.pid}"
 LOG_DIR="${LOG_DIR:-$APP_HOME/logs}"
 CONSOLE_LOG="$LOG_DIR/console.out"
-CONFIG_FILE="${CONFIG_FILE:-$APP_HOME/config/api.env}"
+CONFIG_DIR="$APP_HOME/config"
 
-# ── 1. 환경변수 파일 로드 (.env / config/api.env) ────────────────────────────────────
+# ── 0. 프로파일 선(先)판별 ───────────────────────────────────────────────────────────
+#  환경 파일을 프로파일별로 고르기 위해, 본 인자 파싱보다 먼저 --profile 만 훑는다.
+#  운영값과 로컬값을 한 파일에 섞으면 노트북에서 ./start.sh 를 그냥 실행했을 때
+#  "운영 비밀번호로 로컬 DB 접속" 이 되어 전 API 가 500 이 된다. 그래서 파일을 나눈다.
+CLI_PROFILE=""
+for arg in "$@"; do
+    case "$arg" in
+        --profile=*) CLI_PROFILE="${arg#*=}" ;;
+    esac
+done
+
+#  CONFIG_FILE 을 직접 준 경우엔 그대로 따르고,
+#  아니면 config/api.env.<프로파일> 을 먼저 찾고 없으면 config/api.env 로 떨어진다.
+if [[ -z "${CONFIG_FILE:-}" ]]; then
+    if [[ -n "$CLI_PROFILE" && -f "$CONFIG_DIR/api.env.$CLI_PROFILE" ]]; then
+        CONFIG_FILE="$CONFIG_DIR/api.env.$CLI_PROFILE"
+    else
+        CONFIG_FILE="$CONFIG_DIR/api.env"
+    fi
+fi
+
+# ── 1. 환경변수 파일 로드 (config/api.env[.프로파일] / .env) ─────────────────────────
 if [[ -f "$CONFIG_FILE" ]]; then
     set -a
     # shellcheck disable=SC1090
@@ -108,6 +129,13 @@ if [[ -z "$JAR_PATH" || ! -f "$JAR_PATH" ]]; then
 fi
 
 # ── 5. 필수 환경변수 사전 검증 ───────────────────────────────────────────────────────
+#  개발자 PC 오기동 방지 : api.env.local 이 있는데 운영 프로파일로 뜨려 하면 경고한다.
+#  (이 조합은 운영 비밀번호로 로컬 DB 에 붙어 전 API 가 500 이 되는 대표적인 사고다)
+if [[ "$PROFILE" == "prod" && -f "$CONFIG_DIR/api.env.local" ]]; then
+    warn "로컬 설정(config/api.env.local)이 있는데 [prod] 프로파일로 기동합니다."
+    warn "개발자 PC 라면 ./start.sh --profile=local 로 실행하십시오."
+fi
+
 MISSING_VARS=()
 if [[ "$PROFILE" == "prod" ]]; then
     [[ -z "${PROD_DB_PASSWORD:-}" ]] && MISSING_VARS+=("PROD_DB_PASSWORD")
@@ -159,6 +187,7 @@ mkdir -p "$PID_DIR" "$LOG_DIR"
 
 log "JAR 파일 : $JAR_PATH"
 log "프로파일 : $PROFILE"
+log "환경파일 : ${CONFIG_FILE/#$APP_HOME\//}"
 log "서비스포트: $PORT"
 log "Java 버전: $JAVA_VER_STRING"
 

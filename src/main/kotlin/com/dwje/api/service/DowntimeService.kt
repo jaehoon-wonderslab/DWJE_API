@@ -24,7 +24,7 @@ import java.time.format.DateTimeParseException
  * IoT 가 감지한 설비 정지 구간에 담당자가 사유를 등록하고,
  * Agent 는 과거 이력을 근거로 사유 후보를 제안한다.
  *
- * 접근 부서 : 생산관리팀 · 제조팀 · 통합관리자
+ * 접근 : 화면 권한 `prod-down`(ax.tb_sys_dept_menu_perm) · 값 마스킹 : 없음 (웹 메뉴 없음 — 통합관리자 전용)
  */
 @Service
 class DowntimeService(

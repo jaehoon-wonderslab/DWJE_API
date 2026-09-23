@@ -15,8 +15,6 @@ import org.springframework.transaction.annotation.Transactional
  *
  * 계정별로 보고서를 만든 횟수 순으로 상위 N 개를 낸다. 브라우저(localStorage)가 아니라
  * DB 에 두는 것은 사용자 결정이다(2026-09-09) — 기기를 바꿔도 같은 버튼이 보여야 한다.
- *
- * 즐겨찾기(`UserFavoriteService`)와 다른 점은 **순서를 사람이 정하지 않고 횟수가 정한다**는 것이다.
  */
 @Service
 class ReportUsageService(

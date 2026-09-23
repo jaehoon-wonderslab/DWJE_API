@@ -7,6 +7,7 @@ import com.dwje.api.repository.AoiDimensionRepository
 import com.dwje.api.repository.AoiDimensionRepository.DaySerial
 import com.dwje.api.repository.AoiDimensionRepository.SerialKey
 import com.dwje.api.repository.AoiDimensionRepository.SerialStat
+import com.dwje.api.service.AgentRunRecorder
 import com.dwje.api.service.AoiDimensionService
 import com.dwje.api.service.AoiSerialService
 import com.dwje.api.service.AuthorizationService
@@ -33,7 +34,7 @@ class AoiSerialTest {
         AoiProperties.LimitSet(wcCd = "S120", eqptCd = "*", resolution = 0.001, faiCount = 58, usl = mapOf(1 to 0.040))
     )))
     private val dimension = AoiDimensionService(AoiDimensionRepository(null), mock(AuthorizationService::class.java), props)
-    private val service = AoiSerialService(AoiDimensionRepository(null), dimension, mock(AuthorizationService::class.java), props)
+    private val service = AoiSerialService(AoiDimensionRepository(null), dimension, mock(AuthorizationService::class.java), mock(AgentRunRecorder::class.java), props)
 
     private fun day(wc: String, eq: String, lot: String, sn: String, seqMin: Int, last: String) =
         DaySerial(SerialKey(wc, eq, lot, sn), 3800, seqMin, 3800, LocalDateTime.parse("2026-09-11T00:00:00"), LocalDateTime.parse(last))

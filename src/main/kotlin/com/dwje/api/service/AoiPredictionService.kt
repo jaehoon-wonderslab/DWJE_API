@@ -27,13 +27,14 @@ import kotlin.math.sqrt
  * - 밴드    : 잔차 표준편차 × 1.96 (95% 구간)
  * - 신뢰도  : 관측 표본 수와 잔차 크기로 산출 (0~1)
  *
- * 접근 부서 : 품질보증팀 · 생산관리팀 · 제조팀 · 통합관리자
+ * 접근 : 화면 권한 `qc-aoi`(ax.tb_sys_dept_menu_perm) · 값 마스킹 : 데이터 권한(ax.tb_sys_dept_data_perm)
  */
 @Service
 class AoiPredictionService(
     private val qualityRepository: QualityRepository,
     private val metricStandardRepository: MetricStandardRepository,
     private val authorizationService: AuthorizationService,
+    private val agentRunRecorder: AgentRunRecorder,
     private val appProperties: AppProperties
 ) {
 
@@ -355,11 +356,10 @@ class AoiPredictionService(
         val horizonHours = parseHours(horizon, DEFAULT_HORIZON_HOURS)
 
         // 원인 분석 Agent(④) 실행 이력으로 기록한다.
-        val runId = qualityRepository.insertAgentRun(
-            agentNo = "④",
-            stateCd = "OK",
-            message = "AOI 불량률 예측 재산출 (target=${target ?: "전체"}, train=${trainHours}h, horizon=${horizonHours}h)",
-            throughput = "${trainHours}h 관측"
+        val runId = agentRunRecorder.record(
+            agentNo = AgentRunRecorder.CAUSE,
+            throughput = "${trainHours}h 관측",
+            message = "AOI 불량률 예측 재산출 (target=${target ?: "전체"}, train=${trainHours}h, horizon=${horizonHours}h)"
         )
 
         log.info("AOI 예측 재산출 : runId={} target={} train={}h horizon={}h", runId, target, trainHours, horizonHours)

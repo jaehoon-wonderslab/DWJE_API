@@ -20,7 +20,7 @@ import org.springframework.transaction.annotation.Transactional
  *
  * 공식 용어는 전산팀·통합관리자가 관리하고, 현장 유사어는 전 부서 사용자가 본인 등록 건에 한해 관리한다.
  *
- * 접근 부서 : 전 부서
+ * 접근 : 화면 권한 `sys-gloss`(ax.tb_sys_dept_menu_perm) · 값 마스킹 : 없음
  */
 @Service
 class GlossaryService(

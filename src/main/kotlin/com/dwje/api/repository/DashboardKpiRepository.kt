@@ -15,7 +15,7 @@ import java.time.YearMonth
  * AI 서빙 성능 검증 결과를 조회한다.
  *
  * 데이터 소스 : ax.tb_met_metric_std · ax.tb_met_metric_value · ax.tb_met_metric_source
- *              · ax.tb_ai_serving_profile · ax.tb_ai_model_asset · mes.tb_pop_defect_hist
+ *              · ax.tb_ai_serving_profile · mes.tb_pop_defect_hist
  */
 @Repository
 class DashboardKpiRepository(

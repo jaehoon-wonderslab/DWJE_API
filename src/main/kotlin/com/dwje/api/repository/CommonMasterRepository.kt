@@ -15,7 +15,7 @@ import java.sql.ResultSet
  * - 공정       : mes.tb_md_workcenter, ax.tb_sys_plant
  * - 설비       : mes.tb_md_eqpt, mes.tb_md_eqpt_by_workcenter
  * - 제품       : ax.tb_prod_product, ax.tb_prod_family, ax.tb_prod_customer, ax.tb_prod_project
- * - 불량유형   : mes.tb_md_defect, mes.tb_md_defect_by_item, ax.tb_ai_defect_tag
+ * - 불량유형   : 목록 조회(No.12)는 2026-09-23 에 뺐다 — AI 불량 태그 표를 V42 가 지운다
  * - 금형       : mes.tb_md_mold, mes.tb_md_mold_by_eqpt
  */
 @Repository
@@ -348,60 +348,6 @@ class CommonMasterRepository(
                 "code" to rs.getString("customer_cd"),
                 "name" to rs.getString("customer_nm"),
                 "disclosureNote" to rs.getString("disclosure_note")
-            )
-        }
-    }
-
-    /**
-     * 불량 유형 목록을 조회한다. (No.12)
-     *
-     * AI 불량 태그(ax.tb_ai_defect_tag)와 매핑된 분류를 함께 반환한다.
-     *
-     * @param plantCd   사업장 코드
-     * @param processId 공정(작업장) 코드 — 지정 시 해당 공정에서 사용되는 불량만 조회
-     */
-    fun findDefectTypes(plantCd: String, processId: String?): List<Map<String, Any?>> {
-        val sql = StringBuilder(
-            """
-            SELECT DISTINCT
-                d.defect_cd,
-                d.defect_nm,
-                t.tag_nm AS category
-            FROM mes.tb_md_defect d
-            LEFT JOIN ax.tb_ai_defect_tag_map m
-                   ON m.plant_cd = d.plant_cd AND m.defect_cd = d.defect_cd
-            LEFT JOIN ax.tb_ai_defect_tag t
-                   ON t.tag_id = m.tag_id AND t.use_flg = 'Y'
-            WHERE d.plant_cd = :plantCd
-              AND d.use_flg  = 'Y'
-            """.trimIndent()
-        )
-
-        val params = MapSqlParameterSource("plantCd", plantCd)
-
-        if (!processId.isNullOrBlank()) {
-            sql.append(
-                """
-
-                AND EXISTS (
-                    SELECT 1
-                      FROM mes.tb_md_defect_by_item di
-                     WHERE di.plant_cd  = d.plant_cd
-                       AND di.defect_cd = d.defect_cd
-                       AND di.wc_cd     = :processId
-                )
-                """.trimIndent()
-            )
-            params.addValue("processId", processId.trim())
-        }
-
-        sql.append("\nORDER BY d.defect_cd")
-
-        return jdbcTemplate.query(sql.toString(), params) { rs, _ ->
-            mapOf(
-                "code" to rs.getString("defect_cd"),
-                "name" to rs.getString("defect_nm"),
-                "category" to rs.getString("category")
             )
         }
     }

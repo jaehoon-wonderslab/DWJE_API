@@ -37,6 +37,7 @@ class AiChatService(
     private val glossaryNormalizer: GlossaryNormalizer,
     private val auditLogService: AuditLogService,
     private val authorizationService: AuthorizationService,
+    private val agentRunRecorder: AgentRunRecorder,
     private val dataFieldService: DataFieldService
 ) {
 
@@ -150,6 +151,17 @@ class AiChatService(
             totalMs = elapsedMs
         )
         aiChatRepository.insertQueryHits(queryId, hits)
+
+        // ⑦ 보안 필터링 Agent — 답변·발췌·표에 마스킹을 적용하고 나온 자리다.
+        // 가린 것이 0건이어도 남긴다. "필터가 돌고 있다" 는 사실 자체가 이 화면이 보려는 것이다.
+        // 의도별 참여 Agent(②④⑤⑥⑧⑨)는 여기서 남기지 않는다 — 각자 제 작업 지점에서 남기고,
+        // ⑨ 는 Alert_Engine 담당이라 API 가 건드리면 중복이 된다.
+        agentRunRecorder.record(
+            agentNo = AgentRunRecorder.SECURITY,
+            throughput = "마스킹 ${blindAppliedCnt}건",
+            elapsedMs = elapsedMs.toLong(),
+            message = "AI 답변 보안 필터링 (의도=$finalIntent · 가린 항목=${blindKeys.size}종)"
+        )
 
         return mapOf(
             "messageId" to chatId,

@@ -7,6 +7,7 @@ import com.dwje.api.repository.AoiCosmeticRepository
 import com.dwje.api.repository.AoiCosmeticRepository.ItemStat
 import com.dwje.api.repository.AoiCosmeticRepository.LineCount
 import com.dwje.api.repository.AoiCosmeticRepository.SerialKey
+import com.dwje.api.service.AgentRunRecorder
 import com.dwje.api.service.AoiCosmeticService
 import com.dwje.api.service.AuthorizationService
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -41,7 +42,7 @@ class AoiCosmeticTest {
             )
         )
     )
-    private val service = AoiCosmeticService(AoiCosmeticRepository(null), mock(AuthorizationService::class.java), props)
+    private val service = AoiCosmeticService(AoiCosmeticRepository(null), mock(AuthorizationService::class.java), mock(AgentRunRecorder::class.java), props)
 
     /** 09-12 MN-069 실측을 본뜬 값 */
     private fun count(prod: Long, ng: Long, single: Long, multi: Long, unexplained: Long = 0, overridden: Long = 0, rows: Long = prod * 6) =

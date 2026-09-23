@@ -49,7 +49,9 @@ class ScrapReportService(
         page: Int?,
         size: Int?
     ): Triple<List<Map<String, Any?>>, PageMeta, MaskingSupport> {
-        val (_, mask) = authorizationService.guard(MenuId.RPT_SCRAP_NEW)
+        // 보고서 허브·아침회의·LRR·폐기 보고서가 함께 부른다 — 보고서 화면 중 하나라도 권한이 있으면 통과.
+        // (예전 가드 `rpt-scrap-new` 는 꺼진 메뉴라 통합관리자 외에는 403 이었다. 2026-09-23 변경)
+        val mask = MaskingSupport(authorizationService.requireAnyMenu(*MenuId.ALL_REPORT_SCREENS))
 
         val (fromDate, toDate) = DateUtils.periodOf(from, to, 60)
         val plantCd = appProperties.defaultPlantCd

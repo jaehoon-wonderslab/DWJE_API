@@ -40,7 +40,6 @@ object MenuId {
     const val AI_CHAT = "ai-chat"
     const val DASH_AI = "dash-ai"
     const val DASH_PROC = "dash-proc"
-    const val DASH_KPI = "dash-kpi"
     const val PROD_MONITOR = "prod-monitor"
     const val PROD_RESULT = "prod-result"
     const val PROD_DAILY = "prod-daily"
@@ -48,8 +47,6 @@ object MenuId {
     const val PROD_DOWN = "prod-down"
     const val QC_DEFECT = "qc-defect"
     const val QC_AOI = "qc-aoi"
-    const val QC_REPORT = "qc-report"
-    const val REPORT_FORMS = "report-forms"
     const val ALERT_LIST = "alert-list"
     const val SYS_ACCOUNT = "sys-account"
     const val SYS_MENU = "sys-menu"
@@ -62,8 +59,22 @@ object MenuId {
     const val SYS_DL = "sys-dl"
     const val SYS_SYNC = "sys-sync"
 
-    // 2026-09-15 제거된 화면 — sys-rank(제품군 순위) · base-model(AI 모델 설정) · sys-model-ver(AI 모델 버전) ·
-    // ai-agent(Agent 실행 현황) · sys-metric(지표 측정 데이터). 상수와 API 를 함께 지웠다.
+    // 2026-09-15 에 5개 화면(sys-rank · base-model · sys-model-ver · ai-agent · sys-metric)의 API 를
+    // 상수와 함께 지웠다가, 2026-09-22 요청으로 **sys-rank 를 뺀 4개**를 다시 붙였다.
+    // (제품군 순위 관리는 이번 요청 대상이 아니라 그대로 둔다)
+    // 2026-09-23 에 sys-model-ver 를 다시 뺐다(웹 미호출, V42 가 근거 표를 지움) — 남은 것은 3개다.
+    //
+    // 세 화면 모두 `tb_sys_menu.use_flg = 'N'` 이다. 권한 뷰(vw_sys_user_menu_perm)가 켜진 메뉴만
+    // 내주므로, **메뉴를 켜기 전까지는 통합관리자만** 이 API 에 닿는다. 웹 화면이 붙은 뒤 켜면 된다.
+
+    /** 시스템관리 › AI 모델 설정 (SY-10) — 임계치·분류 기준 */
+    const val BASE_MODEL = "base-model"
+
+    /** 시스템관리 › Agent 실행 현황 (SY-12) */
+    const val AI_AGENT = "ai-agent"
+
+    /** 시스템관리 › 지표 측정 데이터 관리 (SY-13) */
+    const val SYS_METRIC = "sys-metric"
 
     // 2026-09-10 요구사항 9건 — V25 로 tb_sys_menu 에 등록된다.
     /** AI 통합 대시보드 › 업로드 리포트 **업로드**(동작 권한). 보기는 DASH_AI 를 따른다. */
@@ -78,11 +89,10 @@ object MenuId {
     const val RPT_YIELD_MODEL = "rpt-yield-model"
     const val RPT_LRR_CUSTOMER = "rpt-lrr-customer"
     const val RPT_SCRAP = "rpt-scrap"
-    const val RPT_SCRAP_NEW = "rpt-scrap-new"
 
     /** 보고서 화면 전체 — 출력·인쇄처럼 "보고서별 열람 권한"이면 되는 API 에 사용한다. */
     val ALL_REPORT_SCREENS = arrayOf(
         RPT_PRESS_MORNING, RPT_PLATING_MORNING, RPT_SHIP_PLAN,
-        RPT_YIELD_MODEL, RPT_LRR_CUSTOMER, RPT_SCRAP, RPT_SCRAP_NEW
+        RPT_YIELD_MODEL, RPT_LRR_CUSTOMER, RPT_SCRAP
     )
 }

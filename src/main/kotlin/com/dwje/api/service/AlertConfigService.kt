@@ -21,7 +21,7 @@ import org.springframework.transaction.annotation.Transactional
 /**
  * 이상 알림 발송 조건 · 수신자 관리 서비스 (SY-04, SY-05)
  *
- * 접근 부서 : 전산팀 · 통합관리자
+ * 접근 : 화면 권한 `alert-cond` · `sys-recip`(메서드별, ax.tb_sys_dept_menu_perm) · 값 마스킹 : 없음
  * 조건 변경은 감사 로그에 기록된다. (공통 규약 6 — 알림 조건)
  */
 @Service

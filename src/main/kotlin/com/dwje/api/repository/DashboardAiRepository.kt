@@ -1336,6 +1336,10 @@ class DashboardAiRepository(
      * Master AI 상태를 판정한다. (No.32 — master{state,mode})
      *
      * 최근 10분 내 오류 실행이 있으면 ERROR, 실행 중이면 RUNNING, 그 외 정상으로 본다.
+     *
+     * **그 창에 행이 하나도 없으면 IDLE 이다.** 예전에는 OK 를 돌려줬는데,
+     * 아무것도 안 돌고 있는 상태와 정상을 같은 값으로 보이게 해 장애를 정상으로 읽히게 했다.
+     * (SY-12 요약도 같은 규칙이다 — [AgentRunRepository.findSummary])
      */
     fun findMasterState(): Map<String, Any?> {
         val sql = """
@@ -1355,13 +1359,14 @@ class DashboardAiRepository(
                 "state" to when {
                     errCnt > 0 -> "ERROR"
                     runningCnt > 0 -> "RUNNING"
-                    else -> "OK"
+                    rs.getLong("total_cnt") > 0 -> "OK"
+                    else -> "IDLE"
                 },
                 "mode" to "AUTO",
                 "recentRunCnt" to rs.getLong("total_cnt"),
                 "avgElapsedMs" to Rs.intOrNull(rs, "avg_elapsed_ms")
             )
-        } ?: mapOf("state" to "OK", "mode" to "AUTO")
+        } ?: mapOf("state" to "IDLE", "mode" to "AUTO")
     }
 
     /**

@@ -22,7 +22,11 @@ import java.time.YearMonth
  * | ②  | 작업공수 지수  | 0.3   | 품질관리·보고 업무 |
  * | ③  | 설비 가동률    | 0.3   | IoT 부착 10대      |
  *
- * 접근 부서 : 품질보증팀 · 생산관리팀 · 전산팀 · 경영진 · 통합관리자 (제조팀 제외)
+ * 접근 : 화면 권한 `dash-ai`(ax.tb_sys_dept_menu_perm · 계정 추가 허용 포함) · 값 마스킹 : 데이터 권한(ax.tb_sys_dept_data_perm).
+ *        부서 규칙을 코드에 두지 않는다 — 명세의 "제조팀 제외"는 제조팀에 yield 데이터 권한이 없어 값이 가려지는 것으로 처리된다.
+ *
+ * 권한은 `dash-ai`(AI 통합 대시보드)를 따른다. 웹이 이 KPI 를 AI 통합 대시보드 화면에서 부르기 때문이다.
+ * 성과지표 대시보드 메뉴(`dash-kpi`)는 꺼져 있어(use_flg=N) 그 메뉴로 가드하면 통합관리자 외에는 403 이었다(2026-09-23 변경).
  */
 @Service
 class DashboardKpiService(
@@ -82,7 +86,7 @@ class DashboardKpiService(
      */
     @Transactional(readOnly = true)
     fun getSummary(yearMonth: String?): Pair<Map<String, Any?>, MaskingSupport> {
-        val (_, mask) = authorizationService.guard(MenuId.DASH_KPI)
+        val (_, mask) = authorizationService.guard(MenuId.DASH_AI)
         val ym = DateUtils.parseYearMonth(yearMonth)
 
         // 수량·수율 권한이 없으면 KPI 값을 반환하지 않는다.
@@ -131,7 +135,7 @@ class DashboardKpiService(
      */
     @Transactional(readOnly = true)
     fun getTrend(from: String?, to: String?): Pair<Map<String, Any?>, MaskingSupport> {
-        val (_, mask) = authorizationService.guard(MenuId.DASH_KPI)
+        val (_, mask) = authorizationService.guard(MenuId.DASH_AI)
 
         if (!mask.check(DataField.YIELD)) {
             return mapOf("labels" to emptyList<String>(), "series" to emptyList<Any>(), "baseline" to BASELINE_INDEX) to mask
@@ -155,7 +159,7 @@ class DashboardKpiService(
      */
     @Transactional(readOnly = true)
     fun getDefectDistribution(yearMonth: String?): Pair<Map<String, Any?>, MaskingSupport> {
-        val (_, mask) = authorizationService.guard(MenuId.DASH_KPI)
+        val (_, mask) = authorizationService.guard(MenuId.DASH_AI)
 
         if (!mask.check(DataField.YIELD)) {
             return mapOf("segments" to emptyList<Any>()) to mask
@@ -182,7 +186,7 @@ class DashboardKpiService(
      */
     @Transactional(readOnly = true)
     fun getDefectTypeTrend(from: String?, to: String?, topN: Int): Pair<Map<String, Any?>, MaskingSupport> {
-        val (_, mask) = authorizationService.guard(MenuId.DASH_KPI)
+        val (_, mask) = authorizationService.guard(MenuId.DASH_AI)
 
         if (!mask.check(DataField.YIELD)) {
             return mapOf("labels" to emptyList<String>(), "series" to emptyList<Any>()) to mask
@@ -207,7 +211,7 @@ class DashboardKpiService(
      */
     @Transactional(readOnly = true)
     fun getAiPerformance(yearMonth: String?): Map<String, Any?> {
-        authorizationService.requireMenu(MenuId.DASH_KPI)
+        authorizationService.requireMenu(MenuId.DASH_AI)
 
         val profile = dashboardKpiRepository.findServingEvaluation()
         val eval = parseEvalJson(profile?.get("evalJson") as? String)
@@ -233,7 +237,7 @@ class DashboardKpiService(
      */
     @Transactional(readOnly = true)
     fun getManhourSaving(from: String?, to: String?): Map<String, Any?> {
-        authorizationService.requireMenu(MenuId.DASH_KPI)
+        authorizationService.requireMenu(MenuId.DASH_AI)
         val (fromDate, toDate) = DateUtils.periodOf(from, to, 180)
 
         return mapOf(
@@ -247,7 +251,7 @@ class DashboardKpiService(
      */
     @Transactional(readOnly = true)
     fun getAchievementTrend(from: String?, to: String?): Pair<Map<String, Any?>, MaskingSupport> {
-        val (_, mask) = authorizationService.guard(MenuId.DASH_KPI)
+        val (_, mask) = authorizationService.guard(MenuId.DASH_AI)
 
         if (!mask.check(DataField.YIELD)) {
             return mapOf("labels" to emptyList<String>(), "series" to emptyList<Any>()) to mask
@@ -283,7 +287,7 @@ class DashboardKpiService(
      */
     @Transactional(readOnly = true)
     fun getAiTargetStatus(yearMonth: String?): Map<String, Any?> {
-        authorizationService.requireMenu(MenuId.DASH_KPI)
+        authorizationService.requireMenu(MenuId.DASH_AI)
 
         val profile = dashboardKpiRepository.findServingEvaluation()
         val eval = parseEvalJson(profile?.get("evalJson") as? String)
@@ -319,7 +323,7 @@ class DashboardKpiService(
      */
     @Transactional(readOnly = true)
     fun getMonthlyMatrix(year: Int?): Pair<Map<String, Any?>, MaskingSupport> {
-        val (_, mask) = authorizationService.guard(MenuId.DASH_KPI)
+        val (_, mask) = authorizationService.guard(MenuId.DASH_AI)
 
         val qtyAllowed = mask.check(DataField.QTY)
         val yieldAllowed = mask.check(DataField.YIELD)
@@ -356,7 +360,7 @@ class DashboardKpiService(
      */
     @Transactional(readOnly = true)
     fun getBasis(): Map<String, Any?> {
-        authorizationService.requireMenu(MenuId.DASH_KPI)
+        authorizationService.requireMenu(MenuId.DASH_AI)
 
         val basis = metricStandardRepository.findKpiBasis(KPI_DEFINITIONS.map { it.metricCd })
         val withWeight = basis.mapIndexed { idx, row ->
@@ -372,7 +376,7 @@ class DashboardKpiService(
      */
     @Transactional(readOnly = true)
     fun getEvidenceRows(yearMonth: String?): Pair<List<Map<String, Any?>>, MaskingSupport> {
-        val (_, mask) = authorizationService.guard(MenuId.DASH_KPI)
+        val (_, mask) = authorizationService.guard(MenuId.DASH_AI)
         val ym = DateUtils.parseYearMonth(yearMonth)
 
         // 권한이 없는 항목은 파일에도 담지 않는다. (blind 항목 제외 후 저장)

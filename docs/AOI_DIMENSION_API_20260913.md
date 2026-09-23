@@ -197,7 +197,7 @@ DROP TABLE #a;
 
 ## 8. (6차) 시리얼 목록·상세 — `GET /serials` · `GET /serials/{serialKey}`
 
-**요청** — MES 목록(`/quality/aoi/defects`)에 불량 회차 수(`failSeqCnt`)와 앞쪽 회차 번호(`failSeqs`)를 붙여 달라.
+**요청** — MES 목록(`/quality/aoi/defects` — 2026-09-23 제거)에 불량 회차 수(`failSeqCnt`)와 앞쪽 회차 번호(`failSeqs`)를 붙여 달라.
 **확인한 것** — 그 목록은 MES 라벨 이력이고 AOI 설비(PACKING-AOI-*)가 DIMENSION 설비(GP-*·MQ-*)와 **다른 집합**이다(9/11 하루치 0건). 라벨에는 회차(SEQ)가 없어 붙일 자리가 없다.
 화면이 이미 읽는 DIMENSION 모양(`seqCnt·failSeqCnt·items[{seq,passed}]`, 실측 문서 C-1·C-2)은 mock 이었다. 그래서 그 계약을 서버에 만들었다. MES 목록은 그대로다.
 

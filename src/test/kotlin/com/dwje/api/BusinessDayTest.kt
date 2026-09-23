@@ -105,7 +105,6 @@ class BusinessDayTest {
         val targets = listOf(
             "repository/ProductionRepository.kt",
             "repository/QualityRepository.kt",
-            "repository/AoiDefectRepository.kt",
             "repository/DashboardProcessRepository.kt",
             "repository/MetricStandardRepository.kt",
             "service/AoiCosmeticService.kt",

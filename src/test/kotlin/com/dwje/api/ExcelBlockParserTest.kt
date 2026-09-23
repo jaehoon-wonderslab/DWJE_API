@@ -1,10 +1,8 @@
 package com.dwje.api
 
-import com.dwje.api.service.AoiDefectService
 import com.dwje.api.service.ExcelBlockParser
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.DisplayName
@@ -116,18 +114,5 @@ class ExcelBlockParserTest {
         assertThrows(IllegalArgumentException::class.java) {
             parser.parse("not an excel".toByteArray().inputStream())
         }
-    }
-
-    @Test
-    @DisplayName("불량 ID 는 plant-wc-lot-serial 이고 작업장 코드의 '-' 도 견딘다")
-    fun defectIdSplit() {
-        val k = AoiDefectService.splitDefectId("PL01-V140-20260803-00316")!!
-        assertEquals(listOf("PL01", "V140", "20260803", "00316"), listOf(k.plantCd, k.wcCd, k.lotNo, k.serialNo))
-
-        val dashed = AoiDefectService.splitDefectId("PL01-W-110-20260803-00316")!!
-        assertEquals("W-110", dashed.wcCd)
-
-        assertNull(AoiDefectService.splitDefectId("PL01-V140-20260803"))
-        assertNull(AoiDefectService.splitDefectId("PL01--20260803-00316"))
     }
 }

@@ -43,6 +43,7 @@ class AoiSerialService(
     private val repository: AoiDimensionRepository,
     private val dimensionService: AoiDimensionService,
     private val authorizationService: AuthorizationService,
+    private val agentRunRecorder: AgentRunRecorder,
     private val appProperties: AppProperties
 ) {
 
@@ -122,6 +123,18 @@ class AoiSerialService(
             "elapsedMs" to (System.currentTimeMillis() - started)
         )
         val meta = if (paging.isAll) PageMeta.all(rows.size.toLong()) else PageMeta.of(paging.page, paging.size, rows.size.toLong())
+
+        // ⑤ 이력 추적 Agent — LOT·시리얼 이력을 원천에서 실제로 읽었을 때만 남긴다(캐시 히트는 제외).
+        if (!hit) {
+            agentRunRecorder.record(
+                agentNo = AgentRunRecorder.TRACE,
+                throughput = "시리얼 %,d건".format(rows.size),
+                elapsedMs = System.currentTimeMillis() - started,
+                message = "LOT·시리얼 이력 추적 $fromDate~$toDate" +
+                    (wc?.let { " · 공정 $it" } ?: "") + (eqpt?.let { " · 설비 $it" } ?: "")
+            )
+        }
+
         return Triple(data, meta, mask)
     }
 

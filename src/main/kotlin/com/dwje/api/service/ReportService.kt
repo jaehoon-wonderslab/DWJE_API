@@ -27,6 +27,7 @@ class ReportService(
     private val dailyDecisionRepository: DailyDecisionRepository,
     private val metricStandardRepository: MetricStandardRepository,
     private val authorizationService: AuthorizationService,
+    private val agentRunRecorder: AgentRunRecorder,
     private val appProperties: AppProperties
 ) {
 
@@ -78,6 +79,7 @@ class ReportService(
     ): Pair<Map<String, Any?>, MaskingSupport> {
         // PRESS(RP-01) 와 Plating·Coating(RP-02) 이 같은 집계를 쓰되 화면 권한은 각각 판정한다.
         val (_, mask) = authorizationService.guard(menuId)
+        val startedAt = System.currentTimeMillis()
 
         // 기준일 미지정 시 전일 실적을 본다.
         val target = DateUtils.parseDate(baseDate, "baseDate", LocalDate.now().minusDays(1))
@@ -160,7 +162,7 @@ class ReportService(
             null
         }
 
-        return mapOf(
+        val data = mapOf(
             "baseDate" to target.format(DateUtils.DATE),
             // 서버가 실제로 어느 작업장을 집계했는지 화면이 확인할 수 있게 함께 내린다.
             "processCds" to scope,
@@ -188,7 +190,17 @@ class ReportService(
                 "weekActual" to if (qtyAllowed) totalWeekActual else null,
                 "weekRate" to if (yieldAllowed) weekRate else null
             )
-        ) to mask
+        )
+
+        // ⑥ 보고서 생성 Agent — 아침회의 자료 한 벌을 엮어 낸 지점이다.
+        agentRunRecorder.record(
+            agentNo = AgentRunRecorder.REPORT,
+            throughput = "공정 ${rows.size}건",
+            elapsedMs = System.currentTimeMillis() - startedAt,
+            message = "아침회의 자료 생성 ($menuId · 기준일 ${target.format(DateUtils.DATE)})"
+        )
+
+        return data to mask
     }
 
     /**

@@ -20,7 +20,7 @@
 | 엔드포인트 | 보낸 것 | 결과 |
 |---|---|---|
 | `PATCH /system/users/{empNo}/state` | 본문 없음 | 200 — 실제로는 ACTIVE 로 바뀜 |
-| `PUT /metrics/standards/{stdId}` | `{field,value}` | 200 — 아무 값도 안 바뀜 (API 는 2026-09-15 제거) |
+| `PUT /metrics/standards/{stdId}` | `{field,value}` | 지금은 400 — 받는 항목 목록을 알려 준다 (2026-09-22 복원분) |
 | `POST /alert-conditions` | 표시명·다른 키 이름 | 400 이지만 어느 값인지 알 수 없음 |
 
 ## A. `Map` 본문 0개
@@ -210,20 +210,6 @@
 
 - `POST /api/v1/production/daily-reports/rows`
 
-
-### `FavoriteScreensRequest`
-
-허용 키 — `screenIds`
-(배열 순서가 곧 `sortOrder`. 공백·중복은 정리하고, 20개 초과·메뉴에 없는 ID 는 400)
-
-- `PUT /api/v1/users/me/favorites`
-
-### `ReportWriteStateRequest`
-
-허용 키 — `screenId`, `baseDate`, `state`
-(`screenId` 는 prod-daily · rpt-press-morning · rpt-plating-morning · rpt-scrap 만, `state` 는 DRAFT · SUBMITTED · APPROVED 만)
-
-- `PUT /api/v1/reports/status`
 
 ### `ReportUsageRequest`
 

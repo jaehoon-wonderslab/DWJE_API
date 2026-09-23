@@ -65,7 +65,7 @@ DB 비밀번호는 `PROD_DB_PASSWORD`에 설정한다. DB가 별도 서버라면
 | local | `LOCAL_DB_PASSWORD` (기본 `dwje_local`) | 기본값으로 기동 |
 | dev | `DEV_DB_PASSWORD` · `DEV_JWT_SECRET` · `DEV_MAIL_HOST` · `DEV_MAIL_USERNAME` · `DEV_MAIL_PASSWORD` | **기동 실패** (5개 전부 필수) |
 | prod | `PROD_DB_PASSWORD` · `PROD_JWT_SECRET` · `PROD_MAIL_HOST` · `PROD_MAIL_USERNAME` · `PROD_MAIL_PASSWORD` | **기동 실패** (5개 전부 필수) |
-| 공통(선택) | `AX_UPLOAD_DIR` (기본 `./data/ax-uploads`) · `AX_NAS_AOI_ROOT` (기본 `./data/nas-aoi`) | 기본값으로 기동 — 업로드 리포트 원본 저장소 · AOI 이미지 NAS 마운트 루트 |
+| 공통(선택) | `AX_UPLOAD_DIR` (기본 `./data/ax-uploads`) | 기본값으로 기동 — 업로드 리포트 원본 저장소 |
 | 공통(선택) | `AX_MSSQL_URL` (기본 EDGE 192.168.7.203) · `AX_MSSQL_USER` · `AX_MSSQL_PASSWORD` | 기본값으로 기동 — 계정이 비면 AOI 치수 API 가 `SOURCE_NOT_CONFIGURED` 를 낸다(원천 MSSQL 직접 조회, `docs/AOI_DIMENSION_API_20260913.md`) |
 
 > 메일 3종은 이 표에 없었다. 그래서 안내대로 DB·JWT 두 개만 채우면
@@ -455,8 +455,11 @@ MES 실적은 품목 코드(`item_cd`) 기준이고 화면은 제품 코드(`mod
 
 감사 기록 실패가 본 업무를 되돌리지 않도록 `REQUIRES_NEW` 트랜잭션에서 처리하고 예외를 삼킨다.
 
-> AI 모델(`/ai/model-releases`, `/ai/model-config`) · 기준 수치(`/metrics/standards`) · 순위(`/products/families/order`) 항목은
-> 2026-09-15 에 해당 화면 5개(제품군 순위 관리 · AI 모델 설정 · AI 모델 버전 관리 · Agent 실행 현황 · 지표 측정 데이터 관리)와 함께 API 를 제거해 더 이상 기록하지 않는다.
+> 2026-09-15 에 시스템관리 하위 5개 화면의 API 를 제거했다가, 2026-09-22 요청으로 **순위(`/products/*`)를 뺀 4개**를 되살렸다.
+> AI 모델 설정(`/ai/model-config`) · Agent 실행 현황(`/ai/agents*`) · 지표 측정 데이터 관리(`/metrics/standards*`)가
+> 다시 감사 대상이다. 계약은 `docs/ai-model-admin-api.md`.
+> 2026-09-23 에 웹 메뉴 고정에 맞춰 불량 태그(`/ai/defect-tags`)와 AI 서비스 버전 관리(`/ai/model-releases`, `/ai/assets`,
+> `/ai/corpus-snapshots`, `/ai/serving-routes`)를 다시 뺐다 — 웹이 부르지 않았고 근거 표를 V42 가 지운다.
 
 ---
 
@@ -471,7 +474,7 @@ MES 실적은 품목 코드(`item_cd`) 기준이고 화면은 제품 코드(`mod
 | 품질관리 (QC-01~04) | 29 | `QualityController` |
 | 이상 알림 (AL-01) | 5 | `AlertController` |
 | 보고서 (RP-01~07) | 20 | `ReportController` |
-| 시스템관리 (SY-01~15) | 107 | `SystemUserController` · `AuditLogController` · `AlertConditionController` · `AlertRecipientController` · `GlossaryController` · `AiAdminController`(질의 이력만) · `DownloadLogController` · `SyncController` — SY-07·10·11·12·13 은 2026-09-15 제거 |
+| 시스템관리 (SY-01~15) | 107 | `SystemUserController` · `AuditLogController` · `AlertConditionController` · `AlertRecipientController` · `GlossaryController` · `AiAdminController`(질의 이력) · `AiModelConfigController` · `AiAgentController` · `AiServingController` · `MetricStandardController` · `DownloadLogController` · `SyncController` — SY-07(제품군 순위)만 2026-09-15 제거 상태로 남아 있다 |
 
 위 건수는 **API 목록 명세 기준의 초기 설계 값**이다. 이후 화면 요구로 엔드포인트가 늘었으므로
 **현재 개수를 이 표에서 읽지 말 것.** 지금 등록된 오퍼레이션은 여기서 본다.

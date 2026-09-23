@@ -99,10 +99,6 @@ data class AppProperties(
     @field:jakarta.validation.Valid
     val upload: UploadProperties = UploadProperties(),
 
-    /** NAS 이미지 경로 — [NasProperties] */
-    @field:jakarta.validation.Valid
-    val nas: NasProperties = NasProperties(),
-
     /** AOI 치수 원천(MSSQL) 직접 조회·한계 세트 — [AoiProperties] */
     @field:jakarta.validation.Valid
     val aoi: AoiProperties = AoiProperties()

@@ -27,13 +27,14 @@ import java.time.format.DateTimeFormatter
  * ax.tb_sync_schema_drift 에 직접 기록한다. 여기서는 조회와 수동 해소만 담당하며
  * 판정 로직에는 관여하지 않는다.
  *
- * 접근 부서 : 전산팀 · 통합관리자
+ * 접근 : 화면 권한 `sys-sync`(ax.tb_sys_dept_menu_perm) · 값 마스킹 : 없음
  */
 @Service
 class SyncService(
     private val syncRepository: SyncRepository,
     private val authorizationService: AuthorizationService,
     private val auditLogService: AuditLogService,
+    private val agentRunRecorder: AgentRunRecorder,
     private val codeValidator: CodeValidator
 ) {
 
@@ -197,6 +198,15 @@ class SyncService(
                 "이관 정의에 없거나 사용 중지된 테이블입니다. 연동 매핑을 확인해 주세요.", "srcTables"
             )
         }
+
+        // ② 데이터 분류 Agent — **API 가 끝낸 일은 예약까지**다. 실제 이관은 MES_migration_engine 이 한다.
+        // 그래서 "완료" 가 아니라 "예약 N건" 으로 남긴다. 이관이 끝난 시점의 기록은
+        // 엔진 쪽에서 남기는 편이 맞다(⑨ 를 Alert_Engine 이 맡는 것과 같은 경계다).
+        agentRunRecorder.record(
+            agentNo = AgentRunRecorder.CLASSIFY,
+            throughput = "예약 ${jobIds.size}건",
+            message = "MES 수동 이관 예약 (${request.srcTables.joinToString(", ").take(300)} · 구분=$kind)"
+        )
 
         return mapOf("jobIds" to jobIds, "scheduledCnt" to jobIds.size, "state" to "PENDING")
     }

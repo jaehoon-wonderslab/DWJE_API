@@ -88,12 +88,6 @@ app:
     dir: "${AX_UPLOAD_DIR:./data/ax-uploads}"
     # 원본 1건 상한(바이트). 20MB. spring.servlet.multipart 상한(50MB)보다 작아야 한다.
     max-bytes: 20971520
-  # AOI 불량 이미지가 있는 NAS 마운트 루트. 이 아래 경로만 프록시로 내려준다.
-  # NAS 경로 규칙 문서(발주자 제공 예정)가 오기 전 임시값이다.
-  nas:
-    aoi-root: "${AX_NAS_AOI_ROOT:./data/nas-aoi}"
-    # 이미지 프록시 URL 서명의 유효시간(초). 상세 응답을 받은 뒤 이 시간 안에 그려야 한다.
-    image-url-ttl-sec: 900
   # AOI 치수 원천(MSSQL EDGE.dbo.TB_SAMSUN_DIMENSION) 직접 조회 — 적재 배치·집계 테이블은 만들지 않는다(현업 결정 13).
   # 계정은 환경변수로만 준다(AX_MSSQL_URL · AX_MSSQL_USER · AX_MSSQL_PASSWORD). 계정이 비면 SOURCE_NOT_CONFIGURED 를 낸다.
   aoi:

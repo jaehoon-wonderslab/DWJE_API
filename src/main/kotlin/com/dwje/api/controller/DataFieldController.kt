@@ -21,7 +21,8 @@ import org.springframework.web.bind.annotation.RestController
  * 데이터 접근 항목 운영 컨트롤러 (SY-03, V33)
  *
  * 항목 목록 `GET /system/data-fields` 는 [SystemUserController] 에 그대로 있고(attrs · applyFlg · category 로 확장),
- * 여기는 등록·수정·삭제 · 응답 필드명 · 적용 스위치다. 접근 부서 : 전산팀 · 통합관리자(`sys-data`).
+ * 여기는 등록·수정·삭제 · 응답 필드명 · 적용 스위치다.
+ * 접근 : 화면 권한 `sys-data`(ax.tb_sys_dept_menu_perm) · 값 마스킹 : 없음
  */
 @RestController
 @RequestMapping("/api/v1/system/data-fields")

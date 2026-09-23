@@ -25,7 +25,7 @@ import org.springframework.web.bind.annotation.RestController
 /**
  * 이상 알림 발송 조건 관리 컨트롤러 (SY-04)
  *
- * 접근 부서 : 전산팀 · 통합관리자
+ * 접근 : 화면 권한 `alert-cond`(ax.tb_sys_dept_menu_perm) · 값 마스킹 : 없음
  */
 @RestController
 @RequestMapping("/api/v1/alert-conditions")

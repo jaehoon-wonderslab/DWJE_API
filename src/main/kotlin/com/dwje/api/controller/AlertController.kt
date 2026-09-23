@@ -58,9 +58,9 @@ class AlertController(
         ApiResponse.ok(alertService.getEscalationTargets())
 
     /**
-     * 알림 발송 로그 조회 (No.106)
+     * 알림 발송 로그 조회 (No.106) — 화면 권한 alert-cond 또는 sys-recip 필요 (알림 목록 권한만으로는 403)
      */
-    @Operation(summary = "알림 발송 로그 조회", description = "채널·조건별 발송 결과와 지연 시간을 조회한다.")
+    @Operation(summary = "알림 발송 로그 조회", description = "채널·조건별 발송 결과와 지연 시간을 조회한다. 알림 조건(alert-cond) 또는 수신자 관리(sys-recip) 화면 권한이 필요하다.")
     @GetMapping("/send-logs")
     fun sendLogs(
         @RequestParam(required = false) from: String?,
