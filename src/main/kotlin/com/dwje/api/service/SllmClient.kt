@@ -132,7 +132,7 @@ class SllmClient(
             .getOrNull() ?: return null
 
         if (response.statusCode() != 200) {
-            log.warn("임베딩 응답 코드 {} : {}", response.statusCode(), response.body().take(200))
+            log.warn("임베딩 응답 코드 {}", response.statusCode())
             return null
         }
 
@@ -191,7 +191,6 @@ class SllmClient(
             .uri(URI.create("${cfg.baseUrl.trimEnd('/')}${if (openai) "/v1/chat/completions" else "/api/chat"}"))
             .timeout(Duration.ofSeconds(cfg.timeoutSec))
             .header("Content-Type", "application/json")
-            .apply { if (cfg.apiKey.isNotBlank()) header("Authorization", "Bearer ${cfg.apiKey}") }
             .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
             .build()
 
@@ -227,7 +226,7 @@ class SllmClient(
         val elapsed = System.currentTimeMillis() - started
 
         if (response.statusCode() != 200) {
-            log.warn("sLLM 응답 코드 {} : {}", response.statusCode(), response.body().take(300))
+            log.warn("sLLM 응답 코드 {}", response.statusCode())
             return SllmResult.Failed
         }
 

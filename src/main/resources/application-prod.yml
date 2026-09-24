@@ -37,6 +37,12 @@ server:
       max: 400
 
 app:
+  # 운영 DB 환경(case3) — 기존 api.env 의 DWJE_LLM_BASE_URL 이 있으면 그 값을 우선한다.
+  ai:
+    base-url: "${DWJE_LLM_BASE_URL:http://192.168.2.8:11436}"
+    embed-base-url: "${AX_EMBED_BASE_URL:${DWJE_LLM_BASE_URL:http://192.168.2.8:11436}}"
+  llm:
+    base-url: "${DWJE_LLM_BASE_URL:http://192.168.2.8:11436}"
   jwt:
     secret: "${PROD_JWT_SECRET}"
   security:

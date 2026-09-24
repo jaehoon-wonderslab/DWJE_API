@@ -28,25 +28,33 @@
 ## 2. 실행
 
 ```bash
-# 로컬 개발 실행
-./gradlew bootRun --args='--spring.profiles.active=local'
+# 프로파일 공통 실행 파일 빌드 (프로파일은 빌드가 아니라 실행 시 선택)
+./gradlew clean bootJar
 
-# 개발/테스트 빌드
-./gradlew clean bootJar -Dspring.profiles.active=dev
-
-# 운영 배포 빌드 및 실행
-./gradlew clean bootJar -Dspring.profiles.active=prod
-java -jar -Dspring.profiles.active=prod build/libs/dwje-api-0.0.1.jar
+# 환경 파일을 준비한 뒤 실행 — start.sh 가 프로파일별 env 파일을 읽습니다
+./start.sh --profile=local
+./start.sh --profile=dev
+./start.sh --profile=prod
 
 # 단위 테스트
 ./gradlew test
 ```
 
-### 환경변수
+### 환경변수와 LLM 대상
 
-배포 시 `config/api.env.example`을 `config/api.env`로 복사하고 실제 접속 정보를 입력한 뒤
-`./start.sh --profile=prod`로 실행한다. `start.sh`가 이 파일의 변수를 export하여 Java에 전달한다.
-기존 `config/api.env`가 있다면 복사로 덮어쓰지 않고 필요한 항목만 수정한다.
+| 사용 환경 | API 프로파일·DB | LLM 대상 |
+|---|---|---|
+| case1: Mac 개발 기본 | `local` · Mac의 PostgreSQL | `wddg.ddns.net:11435` |
+| case2: Mac 개발, 내부 LLM 사용 | `local` · Mac의 PostgreSQL | `192.168.2.8:11436` — 로컬 `config/api.env.local`의 `DWJE_LLM_BASE_URL`만 변경 |
+| case3: 서버 DB | `dev` 또는 `prod` · 서버 DB | `192.168.2.8:11436` |
+
+Mac 로컬은 `config/api.env.local.example`을 `config/api.env.local`로 복사하고
+`./start.sh --profile=local`로 실행한다. 서버 개발 프로파일은 `config/api.env.dev.example`을
+`config/api.env.dev`로 복사해 비밀값을 채운 뒤 `./start.sh --profile=dev`로 실행한다.
+운영은 `config/api.env.example`을 최초 1회 `config/api.env`로 복사해 설정한 뒤 `./start.sh --profile=prod`로 실행한다.
+기존 환경 파일은 덮어쓰지 않는다. 기존 서버에서 LLM 대상을 바꿀 때는 보존된 env 파일의
+`DWJE_LLM_BASE_URL`, `DWJE_LLM_MODEL`, `DWJE_LLM_PROVIDER`를 해당 행의 값으로 수정하고 API를 재기동해야 한다.
+`bootJar`는 `*.example`만 패키징하며 `api.env`와 `api.env.local`은 포함하지 않는다.
 
 ```bash
 SPRING_DATASOURCE_USERNAME="dwje_local"
@@ -67,7 +75,7 @@ DB 비밀번호는 `PROD_DB_PASSWORD`에 설정한다. DB가 별도 서버라면
 | prod | `PROD_DB_PASSWORD` · `PROD_JWT_SECRET` · `PROD_MAIL_HOST` · `PROD_MAIL_USERNAME` · `PROD_MAIL_PASSWORD` | **기동 실패** (5개 전부 필수) |
 | 공통(선택) | `AX_UPLOAD_DIR` (기본 `./data/ax-uploads`) | 기본값으로 기동 — 업로드 리포트 원본 저장소 |
 | 공통(선택) | `AX_MSSQL_URL` (기본 EDGE 192.168.7.203) · `AX_MSSQL_USER` · `AX_MSSQL_PASSWORD` | 기본값으로 기동 — 계정이 비면 AOI 치수 API 가 `SOURCE_NOT_CONFIGURED` 를 낸다(원천 MSSQL 직접 조회, `docs/AOI_DIMENSION_API_20260913.md`) |
-| 공통(선택) | `DWJE_LLM_BASE_URL` (기본 `http://wddg.ddns.net:11435`, 사내 LAN `http://192.168.219.52:11435`) · `DWJE_LLM_MODEL` (기본 `dwje-ax`) · `DWJE_LLM_TIMEOUT_MS` (기본 `120000`) · `DWJE_LLM_API_KEY` (LLM 서버 토큰 인증, 비우면 헤더 없음) · `DWJE_LLM_PROVIDER` (`openai` 기본, 예전 로컬 Ollama 는 `ollama`) · `AX_EMBED_BASE_URL` (문서 임베딩 bge-m3, 기본 `DWJE_LLM_BASE_URL` 과 같은 서버) | 기본값으로 기동 — 사내 LLM 채팅 프록시(`POST /api/ai/chat` 스트리밍 · `GET /api/ai/health`) · 대시보드 AI 브리핑·원인 분석 · AI 데이터 도구(`GET /api/ai/tools`). 브라우저는 LLM 서버를 직접 부르지 않는다 |
+| 공통(선택) | `DWJE_LLM_BASE_URL` (local 기본 `http://wddg.ddns.net:11435`, dev/prod 기본 `http://192.168.2.8:11436`) · `DWJE_LLM_MODEL` (기본 `dwje-ax`) · `DWJE_LLM_TIMEOUT_MS` (기본 `120000`) · `DWJE_LLM_PROVIDER` (`openai` 기본, 예전 로컬 Ollama 는 `ollama`) · `AX_EMBED_BASE_URL` (문서 임베딩 bge-m3, 기본 `DWJE_LLM_BASE_URL` 과 같은 서버) | 기본값으로 기동 — 사내 LLM 채팅 프록시(`POST /api/ai/chat` 스트리밍 · `GET /api/ai/health`) · 대시보드 AI 브리핑·원인 분석 · AI 데이터 도구(`GET /api/ai/tools`). 브라우저는 LLM 서버를 직접 부르지 않는다. LLM 요청에 인증 키를 보내지 않는다 |
 
 > 메일 3종은 이 표에 없었다. 그래서 안내대로 DB·JWT 두 개만 채우면
 > `Could not resolve placeholder 'DEV_MAIL_HOST'` 로 기동조차 못 했다.

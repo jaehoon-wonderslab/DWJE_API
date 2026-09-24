@@ -17,7 +17,6 @@ import jakarta.validation.constraints.NotBlank
  *
  * @param baseUrl        LLM 서버 주소 (`DWJE_LLM_BASE_URL`)
  * @param model          모델 태그 (`DWJE_LLM_MODEL`)
- * @param apiKey         인증 토큰 (`DWJE_LLM_API_KEY`, 선택)
  * @param timeoutMs      응답 전체 제한 시간(ms) (`DWJE_LLM_TIMEOUT_MS`)
  * @param maxTurns       모델에 보낼 최근 대화 턴 수 (user+assistant 한 쌍이 1턴)
  * @param maxInputChars  근거 문서까지 합한 입력 길이 상한(자)
@@ -30,9 +29,6 @@ data class LlmProxyProperties(
 
     @field:NotBlank(message = "LLM 모델 태그(app.llm.model)는 비워 둘 수 없습니다.")
     val model: String = "dwje-ax",
-
-    /** LLM 서버 인증 토큰(선택, `DWJE_LLM_API_KEY`). 있으면 `Authorization: Bearer <값>` 을 붙인다 */
-    val apiKey: String = "",
 
     /**
      * 모델이 메모리에 없으면 첫 응답에 약 20초가 걸리고, LLM 서버는 한 번에 한 건만 처리해

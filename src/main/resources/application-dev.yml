@@ -31,6 +31,12 @@ spring:
       mail.smtp.starttls.enable: true
 
 app:
+  # 서버 DB 개발 환경(case3) — 게이트웨이 주소는 api.env.dev 로 재정의할 수 있다.
+  ai:
+    base-url: "${DWJE_LLM_BASE_URL:http://192.168.2.8:11436}"
+    embed-base-url: "${AX_EMBED_BASE_URL:${DWJE_LLM_BASE_URL:http://192.168.2.8:11436}}"
+  llm:
+    base-url: "${DWJE_LLM_BASE_URL:http://192.168.2.8:11436}"
   jwt:
     secret: "${DEV_JWT_SECRET}"
   security:

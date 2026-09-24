@@ -177,27 +177,31 @@ class LlmChatProxyService(
             .timeout(Duration.ofMillis(cfg.timeoutMs))
             .header("Content-Type", "application/json")
             .header("Accept", "text/event-stream")
-            .apply { if (cfg.apiKey.isNotBlank()) header("Authorization", "Bearer ${cfg.apiKey}") }
             .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
             .build()
 
         val response = try {
             http.send(request, HttpResponse.BodyHandlers.ofInputStream())
         } catch (e: HttpTimeoutException) {
-            log.warn("LLM 서버 응답 시간 초과 : {}ms {}", cfg.timeoutMs, e.toString())
+            log.warn("LLM 서버 응답 시간 초과 : {}ms", cfg.timeoutMs)
             throw BusinessException(ErrorCode.LLM_TIMEOUT, ErrorCode.LLM_TIMEOUT.defaultMessage)
         } catch (e: ConnectException) {
-            log.warn("LLM 서버 연결 실패 : {} {}", cfg.baseUrl, e.toString())
+            log.warn("LLM 서버 연결 실패 : {}", e.javaClass.simpleName)
             throw BusinessException(ErrorCode.LLM_UNAVAILABLE, ErrorCode.LLM_UNAVAILABLE.defaultMessage)
         } catch (e: java.io.IOException) {
-            log.warn("LLM 서버 호출 실패 : {} {}", cfg.baseUrl, e.toString())
+            log.warn("LLM 서버 호출 실패 : {}", e.javaClass.simpleName)
             throw BusinessException(ErrorCode.LLM_UNAVAILABLE, ErrorCode.LLM_UNAVAILABLE.defaultMessage)
         }
 
         if (response.statusCode() != 200) {
-            val detail = response.body().use { it.readNBytes(300).toString(Charsets.UTF_8) }
-            log.warn("LLM 서버 응답 코드 {} : {}", response.statusCode(), detail)
-            throw BusinessException(ErrorCode.LLM_UNAVAILABLE, ErrorCode.LLM_UNAVAILABLE.defaultMessage)
+            response.body().close()
+            log.warn("LLM 서버 응답 코드 {}", response.statusCode())
+            val errorCode = if (response.statusCode() == 401 || response.statusCode() == 403) {
+                ErrorCode.LLM_UPSTREAM_REJECTED
+            } else {
+                ErrorCode.LLM_UNAVAILABLE
+            }
+            throw BusinessException(errorCode, errorCode.defaultMessage)
         }
         return response.body()
     }
@@ -212,12 +216,11 @@ class LlmChatProxyService(
         val request = HttpRequest.newBuilder()
             .uri(URI.create("${cfg.baseUrl.trimEnd('/')}/v1/models"))
             .timeout(Duration.ofSeconds(HEALTH_TIMEOUT_SEC))
-            .apply { if (cfg.apiKey.isNotBlank()) header("Authorization", "Bearer ${cfg.apiKey}") }
             .GET()
             .build()
 
         val response = runCatching { http.send(request, HttpResponse.BodyHandlers.ofString()) }
-            .onFailure { log.warn("LLM 헬스체크 실패 : {} {}", cfg.baseUrl, it.toString()) }
+            .onFailure { log.warn("LLM 헬스체크 실패 : {}", it.javaClass.simpleName) }
             .getOrNull()
         if (response == null || response.statusCode() != 200) return mapOf("ok" to false, "model" to null)
 

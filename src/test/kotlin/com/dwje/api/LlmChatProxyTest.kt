@@ -2,6 +2,7 @@ package com.dwje.api
 
 import com.dwje.api.common.exception.BusinessException
 import com.dwje.api.common.exception.InvalidParameterException
+import com.dwje.api.common.response.ErrorCode
 import com.dwje.api.config.AppProperties
 import com.dwje.api.config.LlmProxyProperties
 import com.dwje.api.model.request.LlmChatMessage
@@ -10,6 +11,7 @@ import com.dwje.api.repository.AiChatRepository
 import com.dwje.api.service.LlmChatProxyService
 import com.dwje.api.service.SllmClient
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.sun.net.httpserver.HttpServer
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -19,6 +21,9 @@ import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.jdbc.datasource.DriverManagerDataSource
+import java.io.File
+import java.net.InetSocketAddress
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * 사내 LLM 채팅 프록시 규약 테스트 (`/api/ai/chat`)
@@ -37,6 +42,22 @@ class LlmChatProxyTest {
     )
 
     private fun msg(role: String, content: String) = LlmChatMessage(role, content)
+
+    @Test
+    @DisplayName("로컬 기본값과 서버 프로파일이 서로 다른 OpenAI 호환 LLM 주소를 쓴다")
+    fun profileGatewayDefaults() {
+        assertEquals("http://wddg.ddns.net:11435", LlmProxyProperties().baseUrl)
+        assertEquals("dwje-ax", LlmProxyProperties().model)
+        assertEquals("openai", AppProperties().ai.provider)
+        assertEquals("http://wddg.ddns.net:11435", AppProperties().ai.baseUrl)
+
+        val local = File("src/main/resources/application-local.yml").readText()
+        val dev = File("src/main/resources/application-dev.yml").readText()
+        val prod = File("src/main/resources/application-prod.yml").readText()
+        assertTrue(local.contains("http://wddg.ddns.net:11435"))
+        assertTrue(dev.contains("http://192.168.2.8:11436"))
+        assertTrue(prod.contains("http://192.168.2.8:11436"))
+    }
 
     @Test
     @DisplayName("system 메시지는 보내지 않는다 — 모델 내장 지시문이 대체되므로")
@@ -110,6 +131,60 @@ class LlmChatProxyTest {
     }
 
     @Test
+    @DisplayName("채팅과 헬스체크는 LLM 인증 헤더 없이 요청한다")
+    fun requestsHaveNoLlmAuthorizationHeader() {
+        val chatAuthorization = AtomicReference<String?>()
+        val healthAuthorization = AtomicReference<String?>()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/v1/chat/completions") { exchange ->
+            chatAuthorization.set(exchange.requestHeaders.getFirst("Authorization"))
+            val body = "data: [DONE]\n\n".toByteArray()
+            exchange.responseHeaders.set("Content-Type", "text/event-stream")
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        }
+        server.createContext("/v1/models") { exchange ->
+            healthAuthorization.set(exchange.requestHeaders.getFirst("Authorization"))
+            val body = "{\"data\":[{\"id\":\"dwje-ax\"}]}".toByteArray()
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        }
+        server.start()
+        try {
+            val svc = service(LlmProxyProperties(baseUrl = "http://127.0.0.1:${server.address.port}"))
+            svc.open(listOf(mapOf("role" to "user", "content" to "안녕"))).use {
+                assertEquals("data: [DONE]\n\n", it.readAllBytes().toString(Charsets.UTF_8))
+            }
+            assertEquals(true, svc.health()["ok"])
+            assertNull(chatAuthorization.get())
+            assertNull(healthAuthorization.get())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    @DisplayName("LLM 게이트웨이의 401은 인증 거부 게이트웨이 오류로 구분한다")
+    fun upstreamUnauthorizedIsBadGateway() {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/v1/chat/completions") { exchange ->
+            exchange.sendResponseHeaders(401, -1)
+            exchange.close()
+        }
+        server.start()
+        try {
+            val svc = service(LlmProxyProperties(baseUrl = "http://127.0.0.1:${server.address.port}"))
+            val e = assertThrows(BusinessException::class.java) {
+                svc.open(listOf(mapOf("role" to "user", "content" to "안녕")))
+            }
+            assertEquals(ErrorCode.LLM_UPSTREAM_REJECTED, e.errorCode)
+            assertEquals(502, e.errorCode.status.value())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     @DisplayName("SSE 조각이 줄·글자 중간에서 끊겨도 본문만 모으고 [DONE] 을 안다")
     fun streamTapParsesSplitChunks() {
         val tap = service().StreamTap()
@@ -120,6 +195,20 @@ class LlmChatProxyTest {
         // 한글 한 글자(3바이트) 중간을 포함해 7바이트씩 잘라 넣는다
         bytes.toList().chunked(7).forEach { part -> tap.feed(part.toByteArray(), part.size) }
         assertEquals("버는 돌기입니다 [1].", tap.text())
+        assertTrue(tap.done)
+    }
+
+    @Test
+    @DisplayName("reasoning 채널은 버리고 OpenAI 호환 content 만 화면에 보낸다")
+    fun streamTapIgnoresReasoningOnlyDeltas() {
+        val tap = service().StreamTap()
+        val sse = "data: {\"choices\":[{\"delta\":{\"reasoning\":\"내장 규칙을 생각한다\",\"reasoning_content\":\"근거가 없으므로 거절한다\"}}]}\n\n" +
+            "data: {\"choices\":[{\"delta\":{\"content\":\"안녕하세요.\"}}]}\n\n" +
+            "data: [DONE]\n\n"
+        val bytes = sse.toByteArray(Charsets.UTF_8)
+        tap.feed(bytes, bytes.size)
+
+        assertEquals("안녕하세요.", tap.text())
         assertTrue(tap.done)
     }
 

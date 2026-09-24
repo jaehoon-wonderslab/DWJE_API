@@ -47,6 +47,9 @@ enum class ErrorCode(
     /** 사내 LLM 서버에 닿지 못했거나 오류로 답했다 (`/api/ai/chat`) */
     LLM_UNAVAILABLE("E-LLM-001", HttpStatus.BAD_GATEWAY, "AI 서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요."),
 
+    /** 사내 LLM 게이트웨이가 요청을 거부함 — 인증 정책을 포함한 게이트웨이 설정 확인 필요 */
+    LLM_UPSTREAM_REJECTED("E-LLM-004", HttpStatus.BAD_GATEWAY, "AI 서버가 요청을 거부했습니다. 관리자에게 문의해 주세요."),
+
     /** 사내 LLM 서버가 제한 시간 안에 답하지 않았다 */
     LLM_TIMEOUT("E-LLM-002", HttpStatus.GATEWAY_TIMEOUT, "AI 서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요."),
 

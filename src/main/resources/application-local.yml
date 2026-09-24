@@ -19,6 +19,12 @@ spring:
       connection-init-sql: "SET search_path TO ax, mes, vec, common, public"
 
 app:
+  # case1 기본값: Mac 로컬 DB + 기존 LLM. case2 는 api.env.local 에서 DWJE_LLM_BASE_URL 만 바꾼다.
+  ai:
+    base-url: "${DWJE_LLM_BASE_URL:http://wddg.ddns.net:11435}"
+    embed-base-url: "${AX_EMBED_BASE_URL:${DWJE_LLM_BASE_URL:http://wddg.ddns.net:11435}}"
+  llm:
+    base-url: "${DWJE_LLM_BASE_URL:http://wddg.ddns.net:11435}"
   jwt:
     secret: "local-dev-only-secret-key-dwje-ax-system-0123456789abcdef"
   security:

@@ -71,13 +71,14 @@ kotlin {
 tasks.withType<Test> {
     useJUnitPlatform()
 
-    // EnvVarDocumentedTest 는 소스가 아닌 파일(README·실행 구성)을 읽어 프로파일 yml 과 대조한다.
+    // EnvVarDocumentedTest / LlmChatProxyTest 는 프로파일 yml·README·env 예시를 직접 확인한다.
     // 입력으로 선언하지 않으면 그 파일만 바뀌었을 때 Gradle 이 test 를 UP-TO-DATE 로 건너뛰어,
     // 문서에서 환경변수를 빼도 빌드가 통과한다. (실제로 그렇게 통과했다)
     inputs.files(
         "README.md",
         ".run/dwje-api [dev].run.xml",
-        "src/main/resources/application.yml",
+        fileTree("src/main/resources") { include("application*.yml") },
+        fileTree("config") { include("*.example") },
         "docs/REQUEST_BODY_CONTRACT.md"
     )
         .withPropertyName("envVarDocs")
@@ -110,17 +111,20 @@ tasks.named<org.springframework.boot.gradle.tasks.bundling.BootJar>("bootJar") {
             filePermissions { unix("755") }
         }
 
-        // 2. config 디렉터리 복사 (api.env.example, api.env 등)
+        // 2. 비밀값이 들어갈 수 있는 api.env 는 제외하고 배포용 예시만 패키징한다.
         val configDir = file("config")
         if (configDir.exists()) {
+            val packagedConfigDir = File(libsDir, "config")
+            delete(packagedConfigDir)
             copy {
-                from(configDir)
-                into(File(libsDir, "config"))
+                from(configDir) {
+                    include("*.example")
+                }
+                into(packagedConfigDir)
                 filePermissions { unix("600") }
             }
         }
 
-        logger.lifecycle("배포 패키지 구성 완료 — build/libs/ 에 실행 스크립트(*.sh) 및 config/ 디렉터리가 복사되었습니다.")
+        logger.lifecycle("배포 패키지 구성 완료 — build/libs/ 에 실행 스크립트(*.sh) 및 환경 예시만 복사했습니다. api.env 는 포함하지 않습니다.")
     }
 }
-

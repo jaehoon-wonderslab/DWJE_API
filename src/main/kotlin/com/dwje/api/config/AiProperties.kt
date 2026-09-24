@@ -36,12 +36,6 @@ data class AiProperties(
     val provider: String = "openai",
 
     /**
-     * LLM 서버 인증 토큰(선택). 있으면 `Authorization: Bearer <값>` 을 붙인다.
-     * 채팅 프록시(`app.llm`)와 같은 서버를 쓰므로 같은 환경변수(`DWJE_LLM_API_KEY`)를 받는다.
-     */
-    val apiKey: String = "",
-
-    /**
      * 임베딩 서버 주소. 비우면 [baseUrl] 을 쓴다.
      *
      * 채팅 모델은 사내 LLM 서버(dwje-ax)로 옮겼지만 문서 임베딩(bge-m3)은 그 서버에 없다.
