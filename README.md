@@ -40,6 +40,32 @@
 ./gradlew test
 ```
 
+### 배포 JAR 교체
+
+실행 중인 `dwje-api-0.0.1.jar`에 `scp`/`cp`를 직접 쓰면 JVM이 나중에 여는
+내장 Tomcat JAR가 깨져 `NoClassDefFoundError`와 `Invalid or corrupt jarfile`이
+발생할 수 있다. 빌드 산출물의 압축 검사 후 서버의 임시 이름으로 전송하고,
+기존 API를 중지한 다음 같은 파일시스템에서 이름을 바꿔 교체한다.
+
+```bash
+# 개발 PC: 빌드·검사 후 서버의 임시 파일로 전송
+./gradlew clean bootJar
+unzip -tq build/libs/dwje-api-0.0.1.jar
+scp build/libs/dwje-api-0.0.1.jar <서버>:/home/gpuadmin/dwax/api/dwje-api-0.0.1.jar.part
+
+# 서버: 기존 프로세스를 중지하고 임시 파일 검사 후 원자적으로 교체
+cd /home/gpuadmin/dwax/api
+./stop.sh
+unzip -tq dwje-api-0.0.1.jar.part
+mv -f dwje-api-0.0.1.jar.part dwje-api-0.0.1.jar
+./start.sh --profile=prod
+```
+
+새 `start.sh`는 실행 전에 JAR 무결성을 검사하고 `run/artifacts/`의 해시별
+사본에서 JVM을 띄운다. 배포 과정에서 `start.sh`를 보존한다면 이 보호 기능은
+서버의 스크립트를 별도로 갱신한 뒤 적용된다. `api.env`는 빌드 산출물에
+포함되지 않으며 이 절차에서 변경하지 않는다.
+
 ### 환경변수와 LLM 대상
 
 | 사용 환경 | API 프로파일·DB | LLM 대상 |

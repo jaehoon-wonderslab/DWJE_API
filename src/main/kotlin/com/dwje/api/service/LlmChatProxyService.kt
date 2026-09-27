@@ -9,6 +9,7 @@ import com.dwje.api.model.request.LlmChatMessage
 import com.dwje.api.model.request.LlmChatRequest
 import com.dwje.api.repository.AiChatRepository
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.databind.JsonNode
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import java.io.InputStream
@@ -25,9 +26,8 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * 사내 LLM 채팅 프록시 (`/api/ai/chat`)
  *
- * 덕우전자 전용 모델(`dwje-ax`, Ollama OpenAI 호환 API)에 대화를 넘기고 SSE 응답을 **그대로** 돌려준다.
- * 응답을 고치지 않는다 — 조각이 도착하는 대로 화면에 흘려보내는 것이 이 서비스의 일이다.
- * 다만 질의 이력에 남기려고 흘려보내면서 본문 텍스트만 따로 모은다([StreamTap]).
+ * 덕우전자 전용 모델(`dwje-ax`, Ollama OpenAI 호환 API)에 대화를 넘긴다.
+ * 본문을 모아 내부 정보 노출을 검사하고, 화면과 질의 이력에 같은 안전한 텍스트를 쓴다.
  *
  * ## 모델 사용 규칙 (어기면 사내 규칙이 적용되지 않는다)
  * - **`role: "system"` 은 절대 보내지 않는다.** 보내면 모델에 내장된 덕우전자 지시문
@@ -47,6 +47,8 @@ class LlmChatProxyService(
     private val aiChatRepository: AiChatRepository,
     private val sllmClient: SllmClient
 ) {
+
+    data class ToolExchange(val callId: String, val name: String, val args: Map<String, Any?>, val result: String)
 
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -131,12 +133,16 @@ class LlmChatProxyService(
 
         // 모델은 오늘 날짜를 모른다. 없으면 "지난달" 을 2024-05 처럼 채운다(LLM 담당 실측, 2026-09-23).
         // [지시] 는 모델 내장 규칙 8번이 형식 지시로 따른다 — system 이 아니라 user 메시지 안에 둔다.
-        val today = "[지시]\n오늘은 ${java.time.LocalDate.now()}이다."
+        val today = "[지시]\n오늘은 ${java.time.LocalDate.now(java.time.ZoneId.of("Asia/Seoul"))}이다."
         val context = request.context?.trim().orEmpty()
         val q = kept[lastUser].content!!.trim()
+        val greeting = Regex("^(안녕(?:하세요|하십니까)?|하이|hi|hello|고마워(?:요)?|감사(?:합니다|해요)?)[!?.~ ]*$", RegexOption.IGNORE_CASE).matches(q)
+        val instruction = if (greeting && context.isEmpty()) "$today\n이 질문은 사실 확인이 필요 없는 일상 인사다. 짧고 자연스럽게 답하라." else today
+        val effectiveContext = if (greeting && context.isEmpty())
+            "일상 인사·감사에는 짧고 정중하게 응답할 수 있다. 생산·품질 사실은 언급하지 않는다." else context
         kept[lastUser] = LlmChatMessage(
             "user",
-            if (context.isNotEmpty()) "$today\n\n[근거]\n$context\n\n[질문]\n$q" else "$today\n\n[질문]\n$q"
+            if (effectiveContext.isNotEmpty()) "$instruction\n\n[근거]\n$effectiveContext\n\n[질문]\n$q" else "$instruction\n\n[질문]\n$q"
         )
 
         var total = kept.sumOf { it.content!!.length }
@@ -162,13 +168,20 @@ class LlmChatProxyService(
      * 아직 화면에 아무것도 보내지 않았으므로 상태 코드로 사유를 알릴 수 있다.
      * 스트림을 연 뒤의 끊김은 호출한 쪽이 받은 데까지만 흘려보낸다.
      */
-    fun open(messages: List<Map<String, String>>): InputStream {
+    fun open(messages: List<Map<String, String>>, exchange: ToolExchange? = null): InputStream {
         val cfg = appProperties.llm
+        val upstreamMessages: List<Map<String, Any?>> = if (exchange == null) messages else messages + listOf(
+            mapOf("role" to "assistant", "content" to null, "tool_calls" to listOf(mapOf(
+                "id" to exchange.callId, "type" to "function", "function" to mapOf(
+                    "name" to exchange.name, "arguments" to objectMapper.writeValueAsString(exchange.args))))),
+            mapOf("role" to "tool", "tool_call_id" to exchange.callId, "content" to exchange.result)
+        )
         val body = mapOf(
             "model" to cfg.model,
-            "messages" to messages,
+            "messages" to upstreamMessages,
             "stream" to true,
-            "reasoning_effort" to "none"
+            "reasoning_effort" to "none",
+            "dwje" to mapOf("rag" to false, "tools" to false)
         )
 
         val request = HttpRequest.newBuilder()
@@ -204,6 +217,37 @@ class LlmChatProxyService(
             throw BusinessException(errorCode, errorCode.defaultMessage)
         }
         return response.body()
+    }
+
+    /** 1차 LLM 판단: 표준 OpenAI tool_calls만 받아 서버가 검증하도록 넘긴다. */
+    fun chooseTool(question: String, tools: List<Map<String, Any?>>, today: java.time.LocalDate): JsonNode? {
+        val cfg = appProperties.llm
+        val functions = tools.map { tool -> mapOf("type" to "function", "function" to mapOf(
+            "name" to tool["name"], "description" to tool["description"], "parameters" to tool["inputSchema"])) }
+        val body = mapOf(
+            "model" to cfg.model,
+            "stream" to false,
+            "reasoning_effort" to "none",
+            "messages" to listOf(mapOf("role" to "user", "content" to
+                "오늘은 $today 이다(Asia/Seoul). 사용자의 의도를 먼저 파악해 필요한 DB 도구 하나를 선택하라. 실적·생산·불량·불량률을 묻는 질문은 문서검색/일반대화 도구로 보내지 말고 관련 DB 도구를 선택한다. 날짜는 교대 업무일 YYYY-MM-DD이며 양 끝 업무일을 포함한다. 연도 없는 월일은 종료 업무일이 오늘을 넘지 않는 가장 최근 유효 연도로 해석한다.\n" +
+                    "도구 선택 기준: 공장 전체 생산량·불량 건수·불량률과 기간 비교 또는 변화(%p 포함)는 production_period_compare를 선택하고, 불량률 변화는 조회 기간과 직전 비교 기간을 모두 채운다. '지난 일주일' 비교는 MES 최신 실적일을 끝 날짜로 최근 7개 업무일과 그 직전 7개 업무일을 비교한다. 제품별 불량률 순위는 defect_rate_top, 불량 유형 수량 순위는 defect_top을 선택한다. 후속 질문에 새 기간이 없고 [직전 조회 기간]이 제공되면 그 기간을 재사용한다.\n[질문]\n$question")),
+            "tools" to functions,
+            "tool_choice" to "auto",
+            "dwje" to mapOf("rag" to false)
+        )
+        val request = HttpRequest.newBuilder()
+            .uri(URI.create("${cfg.baseUrl.trimEnd('/')}/v1/chat/completions"))
+            .timeout(Duration.ofMillis(cfg.timeoutMs))
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
+            .build()
+        return runCatching {
+            val response = http.send(request, HttpResponse.BodyHandlers.ofString())
+            if (response.statusCode() != 200) {
+                log.warn("LLM 도구 판단 실패 status={}", response.statusCode())
+                null
+            } else objectMapper.readTree(response.body()).path("choices").path(0).path("message")
+        }.onFailure { log.warn("LLM 도구 판단 실패 type={}", it.javaClass.simpleName) }.getOrNull()
     }
 
     /**
@@ -260,12 +304,18 @@ class LlmChatProxyService(
      * @param messageId `/ai/chat/ask` 가 준 이력 ID. 없으면 저장하지 않는다
      */
     fun saveAnswer(messageId: Long?, answer: String, elapsedMs: Long) {
-        if (messageId == null || answer.isBlank()) return
+        if (messageId == null) return
         val userId = UserContext.currentOrNull()?.userId ?: return
-        runCatching { aiChatRepository.updateLlmAnswer(messageId, userId, answer, elapsedMs.toInt()) }
+        runCatching { aiChatRepository.updateLlmAnswer(messageId, userId, AiResponseSanitizer.publicText(answer)!!, elapsedMs.toInt()) }
             .onSuccess { if (it == 0) log.warn("LLM 답 저장 대상 없음 : messageId={} user={}", messageId, userId) }
             .onFailure { log.warn("LLM 답 저장 실패 : messageId={} {}", messageId, it.toString()) }
     }
+
+    fun publicAnswer(answer: String): String = AiResponseSanitizer.publicText(answer) ?: ""
+
+    fun completionEvent(answer: String, done: Boolean): String =
+        "data: ${objectMapper.writeValueAsString(mapOf("choices" to listOf(mapOf("index" to 0,
+            "delta" to mapOf("content" to answer), "finish_reason" to null))))}\n\n" + if (done) "data: [DONE]\n\n" else ""
 
     /**
      * SSE 바이트를 흘려보내면서 `choices[0].delta.content` 만 모은다.

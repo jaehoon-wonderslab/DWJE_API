@@ -9,6 +9,7 @@ import com.dwje.api.model.request.LlmChatMessage
 import com.dwje.api.model.request.LlmChatRequest
 import com.dwje.api.repository.AiChatRepository
 import com.dwje.api.service.LlmChatProxyService
+import com.dwje.api.service.AiDataToolService
 import com.dwje.api.service.SllmClient
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.sun.net.httpserver.HttpServer
@@ -24,6 +25,7 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource
 import java.io.File
 import java.net.InetSocketAddress
 import java.util.concurrent.atomic.AtomicReference
+import java.time.LocalDate
 
 /**
  * 사내 LLM 채팅 프록시 규약 테스트 (`/api/ai/chat`)
@@ -84,6 +86,15 @@ class LlmChatProxyTest {
             "[지시]\n오늘은 ${java.time.LocalDate.now()}이다.\n\n[근거]\n[1] 버(burr): 돌기.\n\n[질문]\n버가 뭐야?",
             out.last()["content"]
         )
+    }
+
+    @Test
+    @DisplayName("하이는 고정 응답 없이 모델 입력 메시지로 전달한다")
+    fun greetingGoesToModel() {
+        val out = service().buildMessages(LlmChatRequest(listOf(msg("user", "하이"))))
+        assertEquals("user", out.single()["role"])
+        assertTrue(out.single()["content"]!!.contains("[질문]\n하이"))
+        assertTrue(out.single()["content"]!!.contains("사실 확인이 필요 없는 일상 인사"))
     }
 
     @Test
@@ -158,6 +169,64 @@ class LlmChatProxyTest {
             assertEquals(true, svc.health()["ok"])
             assertNull(chatAuthorization.get())
             assertNull(healthAuthorization.get())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `first model call sends OpenAI tools and parses tool calls without credentials`() {
+        val bodySeen = AtomicReference<String>()
+        val authSeen = AtomicReference<String?>()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/v1/chat/completions") { exchange ->
+            bodySeen.set(exchange.requestBody.readAllBytes().toString(Charsets.UTF_8))
+            authSeen.set(exchange.requestHeaders.getFirst("Authorization"))
+            val body = """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"defect_rate_top","arguments":"{\"from\":\"2026-09-20\",\"to\":\"2026-09-22\",\"limit\":20}"}}]}}]}""".toByteArray()
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        }
+        server.start()
+        try {
+            val svc = service(LlmProxyProperties(baseUrl = "http://127.0.0.1:${server.address.port}"))
+            val message = svc.chooseTool("09-20 부터 09-22 까지 불량률 top 20", AiDataToolService.TOOLS,
+                LocalDate.parse("2026-09-24"))!!
+            assertEquals("defect_rate_top", message.path("tool_calls").path(0).path("function").path("name").asText())
+            val request = ObjectMapper().readTree(bodySeen.get())
+            assertEquals("auto", request.path("tool_choice").asText())
+            assertEquals(false, request.path("dwje").path("rag").asBoolean())
+            assertTrue(request.path("tools").isArray)
+            assertTrue(request.path("messages").path(0).path("content").asText().contains("2026-09-24"))
+            assertNull(authSeen.get())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `second model call includes assistant tool call and matching tool result`() {
+        val seen = AtomicReference<String>()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/v1/chat/completions") { exchange ->
+            seen.set(exchange.requestBody.readAllBytes().toString(Charsets.UTF_8))
+            val body = "data: [DONE]\n\n".toByteArray()
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        }
+        server.start()
+        try {
+            val svc = service(LlmProxyProperties(baseUrl = "http://127.0.0.1:${server.address.port}"))
+            svc.open(listOf(mapOf("role" to "user", "content" to "불량률 top 20")),
+                LlmChatProxyService.ToolExchange("call_123", "defect_rate_top",
+                    mapOf("from" to "2026-09-20", "to" to "2026-09-22", "limit" to 20), "제품 A 10%"))
+                .use { it.readAllBytes() }
+            val body = ObjectMapper().readTree(seen.get())
+            val messages = body.path("messages")
+            assertEquals(listOf("user", "assistant", "tool"), messages.map { it.path("role").asText() })
+            assertEquals("call_123", messages[2].path("tool_call_id").asText())
+            assertEquals("defect_rate_top", messages[1].path("tool_calls").path(0).path("function").path("name").asText())
+            assertEquals(false, body.path("dwje").path("tools").asBoolean())
+            assertEquals(false, body.path("dwje").path("rag").asBoolean())
         } finally {
             server.stop(0)
         }

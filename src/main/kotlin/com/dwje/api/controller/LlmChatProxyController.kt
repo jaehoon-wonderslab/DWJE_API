@@ -3,10 +3,12 @@ package com.dwje.api.controller
 import com.dwje.api.config.AppProperties
 import com.dwje.api.model.request.AiToolCallRequest
 import com.dwje.api.model.request.LlmChatRequest
+import com.dwje.api.model.request.AiAskRequest
 import com.dwje.api.model.request.LlmFollowupRequest
 import com.dwje.api.common.response.ApiResponse
 import com.dwje.api.common.security.UserContext
 import com.dwje.api.service.AiDataToolService
+import com.dwje.api.service.AiChatService
 import com.dwje.api.service.LlmChatProxyService
 import org.springframework.web.bind.annotation.PathVariable
 import io.swagger.v3.oas.annotations.Operation
@@ -30,17 +32,15 @@ import java.util.concurrent.TimeUnit
  * 브라우저는 LLM 서버(`DWJE_LLM_BASE_URL`)를 직접 부르지 않고 이 두 경로만 부른다.
  * 경로가 `/api/v1` 아래가 아닌 것은 LLM 연동 명세(`/api/ai/chat`, `/api/ai/health`)를 그대로 따른 것이다.
  *
- * ## 스트리밍은 서블릿 스레드에서 직접 쓴다
- * `StreamingResponseBody`·`SseEmitter` 는 비동기 요청이라 `spring.mvc.async.request-timeout`
- * (Tomcat 기본 30초)에 걸린다. 첫 호출은 모델 적재에만 약 20초가 걸려 그 제한에 닿는다.
- * 여기서는 응답 스트림에 직접 쓰고 조각마다 `flush` 한다 — 압축(`server.compression`)은
- * `text/event-stream` 에 걸리지 않고, nginx 는 `X-Accel-Buffering: no` 로 버퍼링을 끈다.
+ * 모델 출력을 끝까지 검사한 뒤 SQL·내부 스키마가 없을 때만 SSE content로 보낸다.
+ * 따라서 SSE 포맷은 유지하지만 첫 content는 생성 완료 후 도착한다.
  */
 @RestController
 @RequestMapping("/api/ai")
 @Tag(name = "02. AI 질의")
 class LlmChatProxyController(
     private val llmChatProxyService: LlmChatProxyService,
+    private val aiChatService: AiChatService,
     private val aiDataToolService: AiDataToolService,
     private val appProperties: AppProperties
 ) {
@@ -53,11 +53,10 @@ class LlmChatProxyController(
     }
 
     /**
-     * 채팅 — SSE(`data: {...}` … `data: [DONE]`)를 LLM 서버에서 받은 그대로 흘려보낸다.
+     * 채팅 — 모델 응답을 검사하고 OpenAI 호환 SSE(`data: {...}` … `data: [DONE]`)로 보낸다.
      *
      * 스트림을 열기 전의 실패는 JSON 오류(429 · 502 · 504)로 답한다.
      * 연 뒤에 끊기면 받은 데까지만 보낸다 — `[DONE]` 이 오지 않은 것으로 화면이 끊김을 안다.
-     * 화면이 연결을 끊으면(생성 중단) 다음 조각을 쓰다 실패하고, 그때 LLM 쪽 연결도 닫아 생성을 멈춘다.
      * `messageId` 를 주면 받은 본문을 그 질의 이력의 답변으로 저장한다.
      */
     @Operation(summary = "사내 LLM 채팅 (스트리밍)", description = "덕우전자 전용 모델에 대화를 넘기고 SSE 응답을 그대로 흘려보낸다.")
@@ -68,14 +67,29 @@ class LlmChatProxyController(
         response: HttpServletResponse
     ) {
         llmChatProxyService.checkRate(clientIp(httpRequest))
-        val messages = llmChatProxyService.buildMessages(request)
+        val saved = if (request.messageId == null) {
+            val question = request.messages.orEmpty().lastOrNull { it.role == "user" }?.content.orEmpty()
+            aiChatService.ask(AiAskRequest(request.sessionId, question))
+        } else null
+        val toolExchange = saved?.let(::toolExchange)
+        val effectiveRequest = if (saved != null && request.context.isNullOrBlank())
+            request.copy(context = evidenceContext(saved, includeFacts = toolExchange == null)) else request
+        val messages = llmChatProxyService.buildMessages(effectiveRequest)
+        val messageId = request.messageId ?: saved?.get("messageId") as? Long
         val started = System.currentTimeMillis()
-        val upstream = llmChatProxyService.open(messages)
+        val upstream = try { llmChatProxyService.open(messages, toolExchange) } catch (e: Exception) {
+            llmChatProxyService.saveAnswer(messageId, "", System.currentTimeMillis() - started)
+            throw e
+        }
 
         response.status = HttpServletResponse.SC_OK
         response.contentType = "text/event-stream;charset=UTF-8"
         response.setHeader("Cache-Control", "no-cache, no-transform")
         response.setHeader("X-Accel-Buffering", "no")
+        if (saved != null) {
+            response.setHeader("X-AI-Session-Id", saved["sessionId"].toString())
+            response.setHeader("X-AI-Message-Id", messageId.toString())
+        }
 
         val deadline = watchdog.schedule(
             { runCatching { upstream.close() } },
@@ -86,7 +100,6 @@ class LlmChatProxyController(
         var outcome = "완료"
         try {
             upstream.use { input ->
-                val out = response.outputStream
                 val buf = ByteArray(4096)
                 while (true) {
                     val n = try {
@@ -97,14 +110,6 @@ class LlmChatProxyController(
                     }
                     if (n < 0) break
                     tap.feed(buf, n)
-                    try {
-                        out.write(buf, 0, n)
-                        out.flush()
-                    } catch (e: IOException) {
-                        // 화면이 끊었다(생성 중단·창 닫기). upstream 을 닫으면 LLM 서버도 생성을 멈춘다.
-                        outcome = "화면이 중단"
-                        break
-                    }
                     bytes += n
                 }
             }
@@ -114,7 +119,14 @@ class LlmChatProxyController(
             if (outcome == "완료" && !tap.done) outcome = "LLM 스트림 끊김"
             // 화면에 보인 것과 같은 모양으로 남긴다 — 끊겼으면 끊겼다고 적는다.
             val answer = tap.text().let { if (outcome == "완료" || it.isBlank()) it else "$it\n\n($outcome)" }
-            llmChatProxyService.saveAnswer(request.messageId, answer, elapsed)
+            val publicAnswer = llmChatProxyService.publicAnswer(answer)
+            try {
+                response.outputStream.write(llmChatProxyService.completionEvent(publicAnswer, tap.done).toByteArray(Charsets.UTF_8))
+                response.outputStream.flush()
+            } catch (e: IOException) {
+                outcome = "화면이 중단"
+            }
+            llmChatProxyService.saveAnswer(messageId, publicAnswer, elapsed)
             log.info("LLM 채팅 : {} {}ms {}B 본문={}자 메시지={}건", outcome, elapsed, bytes, tap.text().length, messages.size)
         }
     }
@@ -150,8 +162,11 @@ class LlmChatProxyController(
         val a = args ?: AiToolCallRequest()
         return ApiResponse.ok(aiDataToolService.call(
             name,
-            mapOf("from" to a.from, "to" to a.to, "compareFrom" to a.compareFrom, "compareTo" to a.compareTo,
-                "label" to a.label, "compareLabel" to a.compareLabel),
+            mapOf("from" to a.from, "to" to a.to, "wcCd" to a.wcCd, "eqptCd" to a.eqptCd,
+                "groupByDate" to a.groupByDate,
+                "compareFrom" to a.compareFrom, "compareTo" to a.compareTo,
+                "label" to a.label, "compareLabel" to a.compareLabel, "limit" to a.limit,
+                "years" to a.years, "basis" to a.basis, "defectReports" to a.defectReports),
             UserContext.current()
         ))
     }
@@ -167,5 +182,28 @@ class LlmChatProxyController(
         val fromProxy = remote == "127.0.0.1" || remote == "0:0:0:0:0:0:0:1" || remote == "::1"
         val real = request.getHeader("X-Real-IP")
         return if (fromProxy && !real.isNullOrBlank()) real.trim() else remote
+    }
+
+    private fun evidenceContext(ask: Map<String, Any?>, includeFacts: Boolean): String {
+        @Suppress("UNCHECKED_CAST")
+        val facts = (ask["dataEvidence"] as? List<Map<String, Any?>>).orEmpty()
+        @Suppress("UNCHECKED_CAST")
+        val sources = (ask["sources"] as? List<Map<String, Any?>>).orEmpty()
+        return ((if (includeFacts) facts.mapNotNull { it["text"]?.toString() } else emptyList()) + sources.mapNotNull { source ->
+            source["snippet"]?.toString()?.takeIf { it.isNotBlank() }
+        }).joinToString("\n").take(12_000)
+    }
+
+    private fun toolExchange(ask: Map<String, Any?>): LlmChatProxyService.ToolExchange? {
+        @Suppress("UNCHECKED_CAST")
+        val facts = (ask["dataEvidence"] as? List<Map<String, Any?>>).orEmpty()
+        val first = facts.firstOrNull() ?: return null
+        val name = first["tool"]?.toString() ?: return null
+        if (AiDataToolService.TOOLS.none { it["name"] == name }) return null
+        @Suppress("UNCHECKED_CAST")
+        val args = (first["args"] as? Map<String, Any?>).orEmpty()
+        val result = facts.mapNotNull { it["text"]?.toString() }.joinToString("\n")
+        val id = "call_" + ask["debugRequestId"].toString().replace("-", "")
+        return LlmChatProxyService.ToolExchange(id, name, args, result)
     }
 }

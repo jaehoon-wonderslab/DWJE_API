@@ -20,6 +20,16 @@ class AiChatRepository(
     private val jdbcTemplate: NamedParameterJdbcTemplate
 ) {
 
+    /** V43은 API 시작 때 자동 적용되지 않는다. 적용 전에도 기본 채팅 계약을 유지한다. */
+    private fun hasBasisColumns(): Boolean {
+        val sql = """
+            SELECT count(*) FROM information_schema.columns
+            WHERE table_schema = 'ax' AND table_name = 'tb_ai_chat_log'
+              AND column_name IN ('evidence_summary', 'unanswered_reason')
+        """.trimIndent()
+        return jdbcTemplate.queryForObject(sql, MapSqlParameterSource(), Int::class.java) == 2
+    }
+
     /**
      * 질의 로그를 등록한다. (No.14 — 자연어 질의 요청)
      *
@@ -48,17 +58,22 @@ class AiChatRepository(
         responseMs: Int,
         blindAppliedCnt: Int,
         profileId: Int?,
-        prevChatId: Long?
+        prevChatId: Long?,
+        evidenceSummary: String?,
+        unansweredReason: String?
     ): Long {
+        val basisColumns = hasBasisColumns()
+        val extraColumns = if (basisColumns) ", evidence_summary, unanswered_reason" else ""
+        val extraValues = if (basisColumns) ", :evidenceSummary, :unansweredReason" else ""
         val sql = """
             INSERT INTO ax.tb_ai_chat_log (
                 session_id, asked_at, user_id, dept_nm, question, normalized_question,
                 intent_cd, intent_nm, answer, response_ms, is_reask, prev_chat_id,
-                blind_applied_cnt, profile_id
+                blind_applied_cnt, profile_id$extraColumns
             ) VALUES (
                 :sessionId, now(), :userId, :deptNm, :question, :normalizedQuestion,
                 :intentCd, :intentNm, :answer, :responseMs, :isReask, :prevChatId,
-                :blindAppliedCnt, :profileId
+                :blindAppliedCnt, :profileId$extraValues
             )
             RETURNING chat_id
         """.trimIndent()
@@ -77,6 +92,8 @@ class AiChatRepository(
             .addValue("prevChatId", prevChatId)
             .addValue("blindAppliedCnt", blindAppliedCnt)
             .addValue("profileId", profileId)
+            .addValue("evidenceSummary", evidenceSummary)
+            .addValue("unansweredReason", unansweredReason)
 
         return jdbcTemplate.queryForObject(sql, params, Long::class.java) ?: 0L
     }
@@ -118,10 +135,12 @@ class AiChatRepository(
      * @return 고친 행 수 (0 이면 없는 ID 이거나 남의 이력)
      */
     fun updateLlmAnswer(chatId: Long, userId: String, answer: String, responseMs: Int): Int {
+        val reasonUpdate = if (hasBasisColumns())
+            ", unanswered_reason = CASE WHEN :answer = '' THEN '모델 응답이 생성되지 않았습니다.' ELSE NULL END" else ""
         val sql = """
             UPDATE ax.tb_ai_chat_log
                SET answer      = :answer,
-                   response_ms = :responseMs
+                   response_ms = :responseMs$reasonUpdate
              WHERE chat_id = :chatId
                AND user_id = :userId
         """.trimIndent()
@@ -199,11 +218,13 @@ class AiChatRepository(
      * @param chatId 질의 로그 ID (messageId)
      */
     fun findChatLog(chatId: Long): Map<String, Any?>? {
+        val basisSelect = if (hasBasisColumns()) "c.evidence_summary, c.unanswered_reason" else
+            "NULL::text AS evidence_summary, NULL::text AS unanswered_reason"
         val sql = """
             SELECT
                 c.chat_id, c.session_id, c.user_id, c.dept_nm, c.question, c.normalized_question,
                 c.intent_cd, c.intent_nm, c.answer, c.response_ms, c.rating_cd,
-                c.blind_applied_cnt, c.profile_id, c.asked_at
+                c.blind_applied_cnt, c.profile_id, c.asked_at, $basisSelect
             FROM ax.tb_ai_chat_log c
             WHERE c.chat_id = :chatId
         """.trimIndent()
@@ -224,6 +245,8 @@ class AiChatRepository(
                 "maskedCnt" to rs.getInt("blind_applied_cnt"),
                 "profileId" to Rs.intOrNull(rs, "profile_id"),
                 "askedAt" to Rs.dateTime(rs, "asked_at")
+                ,"evidenceSummary" to rs.getString("evidence_summary")
+                ,"unansweredReason" to rs.getString("unanswered_reason")
             )
         }.firstOrNull()
     }
@@ -242,6 +265,18 @@ class AiChatRepository(
 
         val params = MapSqlParameterSource().addValue("sessionId", sessionId).addValue("userId", userId)
         return jdbcTemplate.query(sql, params) { rs, _ -> rs.getLong("chat_id") }.firstOrNull()
+    }
+
+    /** 이 사용자에게 저장된 가장 최근 대화 세션. 다른 사용자의 세션은 조회하지 않는다. */
+    fun findLatestSessionId(userId: String): UUID? {
+        val sql = """
+            SELECT session_id FROM ax.tb_ai_chat_log
+            WHERE user_id = :userId AND session_id IS NOT NULL
+            ORDER BY asked_at DESC, chat_id DESC LIMIT 1
+        """.trimIndent()
+        return jdbcTemplate.query(sql, MapSqlParameterSource("userId", userId)) { rs, _ ->
+            rs.getObject("session_id", UUID::class.java)
+        }.firstOrNull()
     }
 
     /**
@@ -544,7 +579,7 @@ class AiChatRepository(
             """
             SELECT
                 count(*)                                                              AS question_cnt,
-                count(*) FILTER (WHERE c.intent_cd NOT IN ('unknown', 'denied'))      AS classified_cnt,
+                count(*) FILTER (WHERE c.answer IS NOT NULL AND btrim(c.answer) <> '') AS answered_cnt,
                 count(*) FILTER (WHERE c.is_reask)                                    AS reask_cnt,
                 round(avg(c.response_ms) / 1000.0, 2)                                 AS avg_response_sec,
                 count(*) FILTER (WHERE c.rating_cd = 'USEFUL')                        AS useful_cnt,
@@ -566,12 +601,11 @@ class AiChatRepository(
 
         return jdbcTemplate.queryForObject(sql.toString(), params) { rs, _ ->
             val questionCnt = rs.getLong("question_cnt")
-            val classifiedCnt = rs.getLong("classified_cnt")
+            val answeredCnt = rs.getLong("answered_cnt")
             val reaskCnt = rs.getLong("reask_cnt")
             mapOf(
                 "questionCnt" to questionCnt,
-                // 의도 정확도 = 분류 성공 건수 / 전체 질의
-                "intentAccuracy" to if (questionCnt > 0) Math.round(classifiedCnt * 10000.0 / questionCnt) / 100.0 else 0.0,
+                "answerRate" to if (questionCnt > 0) Math.round(answeredCnt * 10000.0 / questionCnt) / 100.0 else 0.0,
                 "avgResponseSec" to Rs.doubleOrNull(rs, "avg_response_sec"),
                 "requeryRate" to if (questionCnt > 0) Math.round(reaskCnt * 10000.0 / questionCnt) / 100.0 else 0.0,
                 "usefulCnt" to rs.getLong("useful_cnt"),
@@ -583,28 +617,22 @@ class AiChatRepository(
     /**
      * 질의 이력 목록을 조회한다. (No.187)
      *
-     * @param intent 의도 코드 필터
      */
     fun findHistory(
         from: LocalDate,
         to: LocalDate,
         userGroup: String?,
-        intent: String?,
         limit: Int,
         offset: Int
     ): List<Map<String, Any?>> {
+        val basisSelect = if (hasBasisColumns()) "c.evidence_summary, c.unanswered_reason" else
+            "NULL::text AS evidence_summary, NULL::text AS unanswered_reason"
         val sql = StringBuilder(
             """
             SELECT
                 c.chat_id, c.asked_at, c.user_id, u.user_nm, c.dept_nm,
-                c.question, c.intent_cd, c.intent_nm, c.response_ms, c.rating_cd,
-                c.is_reask, c.blind_applied_cnt,
-                (
-                    SELECT string_agg(a.agent_no, ',' ORDER BY ca.call_seq)
-                      FROM ax.tb_ai_chat_agent ca
-                     INNER JOIN ax.tb_ai_agent a ON a.agent_id = ca.agent_id
-                     WHERE ca.chat_id = c.chat_id
-                ) AS agents
+                c.question, c.answer, $basisSelect,
+                c.response_ms, c.rating_cd, c.is_reask, c.blind_applied_cnt
             FROM ax.tb_ai_chat_log c
             LEFT JOIN ax.tb_sys_user u ON u.user_id = c.user_id
             WHERE c.asked_at >= :from
@@ -612,8 +640,8 @@ class AiChatRepository(
             """.trimIndent()
         )
 
-        val params = historyParams(from, to, userGroup, intent)
-        appendHistoryFilters(sql, userGroup, intent)
+        val params = historyParams(from, to, userGroup)
+        appendHistoryFilters(sql, userGroup)
 
         sql.append("\nORDER BY c.asked_at DESC\nLIMIT :limit OFFSET :offset")
         params.addValue("limit", limit).addValue("offset", offset)
@@ -626,9 +654,10 @@ class AiChatRepository(
                 "name" to rs.getString("user_nm"),
                 "dept" to rs.getString("dept_nm"),
                 "question" to rs.getString("question"),
-                "intent" to rs.getString("intent_cd"),
-                "intentNm" to rs.getString("intent_nm"),
-                "agents" to (rs.getString("agents")?.split(",") ?: emptyList()),
+                "answer" to rs.getString("answer"),
+                "judgmentBasis" to rs.getString("evidence_summary"),
+                "unansweredReason" to rs.getString("unanswered_reason"),
+                "evaluationCriteria" to "근거 부합성·질문 충족 여부·응답 적시성",
                 "responseSec" to Rs.intOrNull(rs, "response_ms")?.let { Math.round(it / 100.0) / 10.0 },
                 "rating" to rs.getString("rating_cd"),
                 "reask" to rs.getBoolean("is_reask"),
@@ -638,7 +667,7 @@ class AiChatRepository(
     }
 
     /** 질의 이력 전체 건수 */
-    fun countHistory(from: LocalDate, to: LocalDate, userGroup: String?, intent: String?): Long {
+    fun countHistory(from: LocalDate, to: LocalDate, userGroup: String?): Long {
         val sql = StringBuilder(
             """
             SELECT count(*)
@@ -648,8 +677,8 @@ class AiChatRepository(
             """.trimIndent()
         )
 
-        val params = historyParams(from, to, userGroup, intent)
-        appendHistoryFilters(sql, userGroup, intent)
+        val params = historyParams(from, to, userGroup)
+        appendHistoryFilters(sql, userGroup)
 
         return jdbcTemplate.queryForObject(sql.toString(), params, Long::class.java) ?: 0L
     }
@@ -658,21 +687,18 @@ class AiChatRepository(
     private fun historyParams(
         from: LocalDate,
         to: LocalDate,
-        userGroup: String?,
-        intent: String?
+        userGroup: String?
     ): MapSqlParameterSource {
         val params = MapSqlParameterSource()
             .addValue("from", from.atStartOfDay())
             .addValue("toExclusive", to.plusDays(1).atStartOfDay())
         if (!userGroup.isNullOrBlank()) params.addValue("userGroup", userGroup.trim())
-        if (!intent.isNullOrBlank()) params.addValue("intent", intent.trim())
         return params
     }
 
     /** 질의 이력 공통 동적 조건 */
-    private fun appendHistoryFilters(sql: StringBuilder, userGroup: String?, intent: String?) {
+    private fun appendHistoryFilters(sql: StringBuilder, userGroup: String?) {
         if (!userGroup.isNullOrBlank()) sql.append(" AND c.dept_nm = :userGroup")
-        if (!intent.isNullOrBlank()) sql.append(" AND c.intent_cd = :intent")
     }
 
     /**
@@ -688,12 +714,11 @@ class AiChatRepository(
     ): List<Map<String, Any?>> {
         val sql = StringBuilder(
             """
-            SELECT c.chat_id, c.question, c.normalized_question, c.intent_cd, c.answer, c.rating_cd
+            SELECT c.chat_id, c.question, c.normalized_question, c.answer, c.rating_cd
             FROM ax.tb_ai_chat_log c
             WHERE c.asked_at >= :from
               AND c.asked_at <  :toExclusive
               AND c.answer IS NOT NULL
-              AND c.intent_cd <> 'denied'
             """.trimIndent()
         )
 
@@ -714,7 +739,6 @@ class AiChatRepository(
                 "chatId" to rs.getLong("chat_id"),
                 "question" to rs.getString("question"),
                 "normalizedQuestion" to rs.getString("normalized_question"),
-                "intent" to rs.getString("intent_cd"),
                 "answer" to rs.getString("answer"),
                 "rating" to rs.getString("rating_cd")
             )

@@ -1,12 +1,16 @@
 package com.dwje.api.service
 
 import com.dwje.api.common.exception.ResourceNotFoundException
+import com.dwje.api.common.exception.MenuAccessDeniedException
+import com.dwje.api.common.exception.InvalidParameterException
+import com.dwje.api.common.security.UserContext
 import com.dwje.api.common.response.PageMeta
 import com.dwje.api.common.util.DateUtils
 import com.dwje.api.common.util.MenuId
 import com.dwje.api.common.util.PageRequestParam
 import com.dwje.api.repository.AiChatRepository
 import com.dwje.api.repository.VectorIndexRepository
+import java.util.UUID
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -24,7 +28,8 @@ class AiAdminService(
     private val aiChatRepository: AiChatRepository,
     private val vectorIndexRepository: VectorIndexRepository,
     private val authorizationService: AuthorizationService,
-    private val objectMapper: ObjectMapper
+    private val objectMapper: ObjectMapper,
+    private val askDebugRecorder: AiAskDebugRecorder
 ) {
 
     // =================================================================================
@@ -37,10 +42,7 @@ class AiAdminService(
         authorizationService.requireMenu(MenuId.CHAT_HISTORY)
         val (fromDate, toDate) = DateUtils.periodOf(from, to)
 
-        val summary = aiChatRepository.findHistorySummary(fromDate, toDate, userGroup).toMutableMap()
-        // 목표 의도 정확도는 AI 성능 검증 기준(90%)을 따른다.
-        summary["targetAccuracy"] = 90.0
-        return summary.toMap()
+        return aiChatRepository.findHistorySummary(fromDate, toDate, userGroup)
     }
 
     /** 질의 이력 조회 (No.187) */
@@ -49,7 +51,6 @@ class AiAdminService(
         from: String?,
         to: String?,
         userGroup: String?,
-        intent: String?,
         page: Int?,
         size: Int?
     ): Pair<List<Map<String, Any?>>, PageMeta> {
@@ -58,8 +59,13 @@ class AiAdminService(
         val (fromDate, toDate) = DateUtils.periodOf(from, to)
         val paging = PageRequestParam.of(page, size)
 
-        val total = aiChatRepository.countHistory(fromDate, toDate, userGroup, intent)
-        val rows = aiChatRepository.findHistory(fromDate, toDate, userGroup, intent, paging.limit, paging.offset)
+        val total = aiChatRepository.countHistory(fromDate, toDate, userGroup)
+        val rows = aiChatRepository.findHistory(fromDate, toDate, userGroup, paging.limit, paging.offset).map { row ->
+            row + mapOf("question" to AiResponseSanitizer.publicText(row["question"] as? String),
+                "answer" to AiResponseSanitizer.publicText(row["answer"] as? String),
+                "judgmentBasis" to (AiResponseSanitizer.publicText(row["judgmentBasis"] as? String) ?: "판단 근거 기록 없음"),
+                "unansweredReason" to (row["unansweredReason"] ?: if ((row["answer"] as? String).isNullOrBlank()) "응답이 기록되지 않았습니다." else null))
+        }
 
         return rows to PageMeta.of(paging.page, paging.size, total)
     }
@@ -67,29 +73,41 @@ class AiAdminService(
     /** 질의 상세 조회 (No.188) */
     @Transactional(readOnly = true)
     fun getChatDetail(messageId: Long): Map<String, Any?> {
-        authorizationService.requireMenu(MenuId.CHAT_HISTORY)
+        requireDetailAdmin()
 
         val chat = aiChatRepository.findChatLog(messageId)
             ?: throw ResourceNotFoundException("질의를 찾을 수 없습니다. [messageId=$messageId]")
-
-        val query = vectorIndexRepository.findQueryDetail(messageId)
-        val hits = (query?.get("queryId") as? Long)?.let { vectorIndexRepository.findQueryHits(it) } ?: emptyList()
+        val basis = (chat["evidenceSummary"] as? String)?.takeIf { it.isNotBlank() } ?: run {
+            val query = vectorIndexRepository.findQueryDetail(messageId)
+            val hits = (query?.get("queryId") as? Long)?.let { vectorIndexRepository.findQueryHits(it) }.orEmpty()
+            hits.mapNotNull { it["title"] as? String }.distinct().joinToString("; ").ifBlank { "판단 근거 기록 없음" }
+        }
 
         return mapOf(
             "messageId" to messageId,
-            "question" to chat["question"],
-            "normalizedQuestion" to chat["normalizedQuestion"],
-            "intent" to chat["intent"],
-            "intentNm" to chat["intentNm"],
-            "prompt" to chat["normalizedQuestion"],
-            "answer" to chat["answer"],
-            "hits" to hits,
-            "search" to query,
-            "agents" to aiChatRepository.findChatAgents(messageId),
+            "question" to AiResponseSanitizer.publicText(chat["question"] as? String),
+            "answer" to AiResponseSanitizer.publicText(chat["answer"] as? String),
+            "judgmentBasis" to AiResponseSanitizer.publicText(basis),
+            "unansweredReason" to (chat["unansweredReason"] ?: if ((chat["answer"] as? String).isNullOrBlank()) "응답이 기록되지 않았습니다." else null),
+            "evaluationCriteria" to "근거 부합성·질문 충족 여부·응답 적시성",
+            "debug" to askDebugRecorder.byChatId(messageId),
             "elapsedMs" to chat["responseMs"],
             "maskedCnt" to chat["maskedCnt"],
             "rating" to chat["rating"]
         )
+    }
+
+    @Transactional(readOnly = true)
+    fun getAskDebug(requestId: String): Map<String, Any?> {
+        requireDetailAdmin()
+        val id = runCatching { UUID.fromString(requestId) }
+            .getOrElse { throw InvalidParameterException("요청 ID 형식이 올바르지 않습니다.", "requestId") }
+        return askDebugRecorder.byRequestId(id) ?: throw ResourceNotFoundException("진단 기록을 찾을 수 없습니다.")
+    }
+
+    private fun requireDetailAdmin() {
+        authorizationService.requireMenu(MenuId.CHAT_HISTORY)
+        if (!UserContext.current().superAdmin) throw MenuAccessDeniedException(MenuId.CHAT_HISTORY)
     }
 
     /** 학습데이터 내보내기 대상 (No.189) */
@@ -103,10 +121,10 @@ class AiAdminService(
             objectMapper.writeValueAsString(
                 mapOf(
                     "messages" to listOf(
-                        mapOf("role" to "user", "content" to (row["normalizedQuestion"] ?: row["question"])),
-                        mapOf("role" to "assistant", "content" to stripHtml(row["answer"] as? String))
+                        mapOf("role" to "user", "content" to AiResponseSanitizer.publicText((row["normalizedQuestion"] ?: row["question"]) as? String)),
+                        mapOf("role" to "assistant", "content" to AiResponseSanitizer.publicText(stripHtml(row["answer"] as? String)))
                     ),
-                    "meta" to mapOf("intent" to row["intent"], "rating" to row["rating"], "chatId" to row["chatId"])
+                    "meta" to mapOf("rating" to row["rating"], "chatId" to row["chatId"])
                 )
             )
         }

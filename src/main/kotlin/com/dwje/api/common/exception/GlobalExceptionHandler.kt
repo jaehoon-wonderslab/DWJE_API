@@ -121,7 +121,11 @@ class GlobalExceptionHandler {
      */
     @ExceptionHandler(Exception::class)
     fun handleUnexpected(e: Exception, request: HttpServletRequest): ResponseEntity<ApiResponse<Nothing?>> {
-        log.error("예상치 못한 시스템 오류 발생 [URI: {} {}]", request.method, request.requestURI, e)
+        if (request.requestURI == "/api/v1/ai/chat/ask") {
+            log.error("AI 질의 처리 오류 [URI: {} {}] exceptionType={}", request.method, request.requestURI, e.javaClass.simpleName)
+        } else {
+            log.error("예상치 못한 시스템 오류 발생 [URI: {} {}]", request.method, request.requestURI, e)
+        }
         return ResponseEntity.status(ErrorCode.SERVER_ERROR.status)
             .body(ApiResponse.error(ErrorCode.SERVER_ERROR.code, ErrorCode.SERVER_ERROR.defaultMessage))
     }

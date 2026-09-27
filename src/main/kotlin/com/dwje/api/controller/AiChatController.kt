@@ -2,6 +2,13 @@ package com.dwje.api.controller
 
 import com.dwje.api.common.response.ApiResponse
 import com.dwje.api.model.request.AiAskRequest
+import com.dwje.api.model.request.AiDefectTopExportRequest
+import com.dwje.api.common.exception.InvalidParameterException
+import com.dwje.api.common.exception.SystemErrorException
+import com.dwje.api.common.security.UserContext
+import com.dwje.api.service.AiDataToolService
+import java.time.LocalDate
+import java.time.temporal.ChronoUnit
 import com.dwje.api.model.request.AiExportRequest
 import com.dwje.api.model.request.AiFeedbackRequest
 import com.dwje.api.service.AiChatService
@@ -33,6 +40,7 @@ import org.springframework.web.multipart.MultipartFile
 @Tag(name = "02. AI 질의")
 class AiChatController(
     private val aiChatService: AiChatService,
+    private val aiDataToolService: AiDataToolService,
     private val exportService: ExportService,
     private val downloadLogService: DownloadLogService
 ) {
@@ -48,6 +56,10 @@ class AiChatController(
     @PostMapping("/ask")
     fun ask(@Valid @RequestBody request: AiAskRequest): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(aiChatService.ask(request), "질의가 처리되었습니다.")
+
+    /** 화면 재진입 시 로그인한 사용자의 마지막 저장 대화를 복원한다. */
+    @GetMapping("/sessions/latest")
+    fun latestSession(): ApiResponse<Map<String, Any?>> = ApiResponse.ok(aiChatService.getLatestSessionMessages())
 
     /**
      * 세션 대화 조회 (No.15)
@@ -114,6 +126,27 @@ class AiChatController(
             keys = listOf("askedAt", "question", "intent", "answer", "elapsedMs"),
             rows = rows
         )
+    }
+
+    /** 실제 xlsx 파일을 만들고 기존 보고서 다운로드 이력에 남긴다. */
+    @PostMapping("/defects/top/export")
+    fun exportDefectTop(@Valid @RequestBody request: AiDefectTopExportRequest): ResponseEntity<ByteArrayResource> {
+        fun date(value: String): LocalDate = runCatching { LocalDate.parse(value) }
+            .getOrElse { throw InvalidParameterException("날짜 형식은 YYYY-MM-DD이어야 합니다.", "date") }
+        val from = date(request.from)
+        val to = date(request.to)
+        if (request.limit !in 1..10 || from.isAfter(to) || ChronoUnit.DAYS.between(from, to) > 92)
+            throw InvalidParameterException("기간은 93일 이내, 순위는 1~10이어야 합니다.", "limit")
+        val (rows, blindCnt) = aiDataToolService.defectTopForExport(from, to, request.limit, UserContext.current())
+        val fileName = "defect_top_${from}_${to}_${exportService.timestamp()}"
+        val result = exportService.excel(fileName,
+            listOf("순위", "시작 업무일", "종료 업무일", "불량 유형", "불량 수량"),
+            listOf("rank", "from", "to", "defect", "quantity"), rows)
+        val logId = downloadLogService.record(reportId = null, reportNm = "불량 유형 상위 ${request.limit}", menuId = "ai-chat",
+            format = "xlsx", scope = "${from}~${to}", rowCnt = rows.size, blindCnt = blindCnt,
+            fileNm = "$fileName.xlsx", fileSize = result.body?.contentLength())
+        if (logId == 0L) throw SystemErrorException("다운로드 이력을 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.")
+        return result
     }
 
     /**

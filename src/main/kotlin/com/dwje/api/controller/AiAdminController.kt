@@ -41,7 +41,7 @@ class AiAdminController(
     // =================================================================================
 
     /** 질의 이력 요약 (No.186) */
-    @Operation(summary = "질의 이력 요약", description = "질의 건수·의도 정확도·평균 응답 시간·재질의율을 반환한다.")
+    @Operation(summary = "질의 이력 요약", description = "질의 건수·응답률·평균 응답 시간·재질의율을 반환한다.")
     @GetMapping("/chat/history/summary")
     fun historySummary(
         @RequestParam(required = false) from: String?,
@@ -73,23 +73,27 @@ class AiAdminController(
     }
 
     /** 질의 이력 조회 (No.187) */
-    @Operation(summary = "질의 이력 조회", description = "기간·부서·의도별 질의 이력을 조회한다.")
+    @Operation(summary = "질의 이력 조회", description = "기간·부서별 질의 이력을 조회한다.")
     @GetMapping("/chat/history")
     fun history(
         @RequestParam(required = false) from: String?,
         @RequestParam(required = false) to: String?,
         @RequestParam(required = false) userGroup: String?,
-        @RequestParam(required = false) intent: String?,
         @RequestParam(required = false) page: Int?,
         @RequestParam(required = false) size: Int?
     ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta) = aiAdminService.getChatHistory(from, to, userGroup, intent, page, size)
+        val (rows, meta) = aiAdminService.getChatHistory(from, to, userGroup, page, size)
         return ApiResponse.page(mapOf("items" to rows), meta)
     }
 
     /** 질의 상세 조회 (No.188) */
-    @Operation(summary = "질의 상세 조회", description = "질의 원문·정규화 문장·검색 히트·참여 Agent 를 반환한다.")
+    @Operation(summary = "질의 상세 조회", description = "질문·응답·판단 근거·미응답 사유·응답시간·평가 기준을 반환한다.")
     @GetMapping("/chat/history/{messageId}")
     fun historyDetail(@PathVariable messageId: Long): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(aiAdminService.getChatDetail(messageId))
+
+    /** chat_id가 생성되기 전에 실패한 ask도 requestId로 조회할 수 있다. 통합관리자 전용. */
+    @GetMapping("/chat/history/debug/{requestId}")
+    fun askDebug(@PathVariable requestId: String): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(aiAdminService.getAskDebug(requestId))
 }

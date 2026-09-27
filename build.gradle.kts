@@ -98,6 +98,14 @@ tasks.withType<Test> {
 tasks.named<org.springframework.boot.gradle.tasks.bundling.BootJar>("bootJar") {
     archiveFileName.set("dwje-api-${project.version}.jar")
 
+    // 스크립트/환경 예시만 바뀌어도 doLast의 배포 패키지 복사를 다시 실행한다.
+    inputs.files(fileTree(layout.projectDirectory) { include("*.sh") })
+        .withPropertyName("deployScripts")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.files(fileTree("config") { include("*.example") })
+        .withPropertyName("deployEnvExamples")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+
     doLast {
         val libsDir = layout.buildDirectory.dir("libs").get().asFile
 

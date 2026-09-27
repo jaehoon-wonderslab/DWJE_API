@@ -39,6 +39,13 @@ data class AiExportRequest(
     val format: String = "xls"
 )
 
+/** 양 끝 교대 영업일을 포함하는 불량 유형 순위 엑셀 요청. */
+data class AiDefectTopExportRequest(
+    val from: String,
+    val to: String,
+    val limit: Int = 10
+)
+
 /**
  * 용어 정규화 미리보기 요청 — POST /api/v1/glossary/normalize
  *
@@ -77,7 +84,9 @@ data class LlmChatRequest(
     @field:Size(max = 100_000, message = "근거 문서가 너무 깁니다.")
     val context: String? = null,
 
-    val messageId: Long? = null
+    val messageId: Long? = null,
+    /** /ask를 별도 호출하지 않는 화면에서도 같은 사용자 대화에 저장한다. */
+    val sessionId: String? = null
 )
 
 /**
@@ -96,10 +105,17 @@ data class LlmChatRequest(
 data class AiToolCallRequest(
     val from: String? = null,
     val to: String? = null,
+    val wcCd: String? = null,
+    val eqptCd: String? = null,
+    val groupByDate: Boolean? = null,
     val compareFrom: String? = null,
     val compareTo: String? = null,
     val label: String? = null,
-    val compareLabel: String? = null
+    val compareLabel: String? = null,
+    val limit: Int? = null,
+    val years: List<Int>? = null,
+    val basis: String? = null,
+    val defectReports: Boolean? = null
 )
 
 /**

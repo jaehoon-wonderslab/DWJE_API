@@ -128,6 +128,33 @@ if [[ -z "$JAR_PATH" || ! -f "$JAR_PATH" ]]; then
     산출물 위치: build/libs/dwje-api-0.0.1.jar"
 fi
 
+# 실행 중인 JVM이 읽는 JAR를 배포/재빌드가 덮어쓰지 못하게 고유 경로에 보관한다.
+# 동일한 고정 이름에 scp/cp를 직접 수행하면 Boot loader가 나중에 여는 중첩 JAR가
+# 손상되어 Lifecycle$SingleUse 누락 및 Invalid or corrupt jarfile이 발생할 수 있다.
+jar_hash() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    else
+        die "JAR 검증에 sha256sum 또는 shasum 이 필요합니다."
+    fi
+}
+
+verify_jar() {
+    if command -v unzip >/dev/null 2>&1; then
+        unzip -tqq "$1" >/dev/null || die "JAR 압축 검사 실패: $1"
+    elif command -v jar >/dev/null 2>&1; then
+        jar tf "$1" >/dev/null || die "JAR 목록 검사 실패: $1"
+    else
+        die "JAR 검사에 unzip 또는 JDK jar 명령이 필요합니다."
+    fi
+}
+
+verify_jar "$JAR_PATH"
+SOURCE_HASH="$(jar_hash "$JAR_PATH")"
+[[ -n "$SOURCE_HASH" ]] || die "JAR 해시 계산에 실패했습니다."
+
 # ── 5. 필수 환경변수 사전 검증 ───────────────────────────────────────────────────────
 #  개발자 PC 오기동 방지 : api.env.local 이 있는데 운영 프로파일로 뜨려 하면 경고한다.
 #  (이 조합은 운영 비밀번호로 로컬 DB 에 붙어 전 API 가 500 이 되는 대표적인 사고다)
@@ -178,6 +205,21 @@ fi
 if [[ "$PORT_OCCUPIED" -eq 1 ]]; then
     die "포트 ${PORT} 가 이미 다른 프로세스에 의해 사용 중입니다. 점유 중인 프로세스를 확인하십시오."
 fi
+
+ARTIFACT_DIR="$PID_DIR/artifacts"
+mkdir -p "$ARTIFACT_DIR"
+RUN_JAR="$ARTIFACT_DIR/dwje-api-${SOURCE_HASH}.jar"
+if [[ ! -f "$RUN_JAR" ]]; then
+    PART_JAR="$ARTIFACT_DIR/.dwje-api-${SOURCE_HASH}.$$.part"
+    trap 'rm -f "${PART_JAR:-}"' EXIT
+    cp "$JAR_PATH" "$PART_JAR"
+    [[ "$(jar_hash "$PART_JAR")" == "$SOURCE_HASH" ]] || die "JAR 복사 중 내용이 바뀌었습니다. 배포 파일을 확인하십시오."
+    verify_jar "$PART_JAR"
+    mv "$PART_JAR" "$RUN_JAR"
+    trap - EXIT
+fi
+verify_jar "$RUN_JAR"
+JAR_PATH="$RUN_JAR"
 
 # ── 7. JVM 옵션 구성 ─────────────────────────────────────────────────────────────────
 DEFAULT_JAVA_OPTS="-Xms1g -Xmx4g -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Duser.timezone=Asia/Seoul -Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8"
