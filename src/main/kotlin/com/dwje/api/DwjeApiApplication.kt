@@ -1,5 +1,7 @@
 package com.dwje.api
 
+import com.dwje.api.config.EnvFileLoader
+import com.dwje.api.config.PlaceholderValuesRemainException
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.runApplication
 
@@ -67,6 +69,26 @@ fun main(args: Array<String>) {
                 "지정할 수 있는 값 : ${KNOWN_PROFILES.joinToString(" / ")}"
         )
         kotlin.system.exitProcess(1)
+    }
+
+    // 프로파일을 알아냈으니 그 프로파일의 환경 파일(config/api.env.<프로파일>)을 읽는다.
+    // IntelliJ 실행 구성과 `bootRun` 은 `start.sh` 처럼 env 파일을 source 하지 않아
+    // 비밀값 자리표시자가 그대로 남아 기동에 실패했다. 여기서 한 번만 채운다.
+    //
+    // 예시 값이 남아 있으면 기동을 멈춘다. 값을 안 넣은 상태로 기동되다 DB 인증에서
+    // 죽는 것보다 "무엇을 채워야 하는지"를 먼저 보여 주는 편이 낫다.
+    val envFile = try {
+        EnvFileLoader.load(profile)
+    } catch (e: PlaceholderValuesRemainException) {
+        System.err.println(e.message)
+        kotlin.system.exitProcess(1)
+    }
+
+    envFile?.let { loaded ->
+        System.err.println(
+            "환경 파일 로드: ${loaded.file.name} " +
+                "(${loaded.keys.size}개 설정: ${loaded.keys.joinToString(", ")})"
+        )
     }
 
     runApplication<DwjeApiApplication>(*args)

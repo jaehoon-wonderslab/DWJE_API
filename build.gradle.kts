@@ -74,9 +74,13 @@ tasks.withType<Test> {
     // EnvVarDocumentedTest / LlmChatProxyTest 는 프로파일 yml·README·env 예시를 직접 확인한다.
     // 입력으로 선언하지 않으면 그 파일만 바뀌었을 때 Gradle 이 test 를 UP-TO-DATE 로 건너뛰어,
     // 문서에서 환경변수를 빼도 빌드가 통과한다. (실제로 그렇게 통과했다)
+    // `.run` 은 파일 이름 하나가 아니라 디렉터리 전체를 입력으로 준다.
+    // 실행 구성을 하나씩 나열하면(= 예전의 dwje-api [dev].run.xml) 나열하지 않은 구성이
+    // 바뀌어도 test 가 UP-TO-DATE 로 건너뛰어 "비밀값이 커밋된다" 는 검사가
+    // 조용히 통과한다. 실제로 주입해 보고 통과하는 것까지 확인했다.
     inputs.files(
         "README.md",
-        ".run/dwje-api [dev].run.xml",
+        fileTree(".run") { include("*.run.xml") },
         fileTree("src/main/resources") { include("application*.yml") },
         fileTree("config") { include("*.example") },
         "docs/REQUEST_BODY_CONTRACT.md"

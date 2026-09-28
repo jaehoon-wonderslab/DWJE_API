@@ -40,6 +40,130 @@
 ./gradlew test
 ```
 
+### IntelliJ 실행 구성
+
+`.run/` 에 실행 구성이 있다. 실행은 **DB × LLM 2×2** 로 나뉜다 — 프로파일 하나로는
+"어느 DB 에 붙고 어느 LLM 으로 답을 받는지"를 함께 고를 수 없다.
+
+| 실행 구성 | 프로파일 | DB | LLM |
+|---|---|---|---|
+| `dwje-api [local+jetsonLLM]` | `local` | 로컬 `localhost:5432/dwjedb` | Jetson `wddg.ddns.net:11435` |
+| `dwje-api [local+실서버LLM]` | `local` | 로컬 `localhost:5432/dwjedb` | 실서버 `192.168.2.8:11436` |
+| `dwje-api [prod+jetsonLLM]` | `prod` | 실서버 `192.168.2.8:5432/dwjedb` | Jetson `wddg.ddns.net:11435` |
+| `dwje-api [prod+실서버LLM]` | `prod` | 실서버 `192.168.2.8:5432/dwjedb` | 실서버 `192.168.2.8:11436` |
+
+`[prod+jetsonLLM]` 은 "DB 는 실서버인데 LLM 응답만 Jetson 에서 받는다"는 조합이다.
+
+### 실서버를 쓰는 구성은 사내망이 필요하다
+
+`192.168.2.8` 은 사내 대역이라 사내망 밖에서는 **라우팅조차 되지 않는다**(게이트웨이로
+흘러 소멸). 그래서 실서버를 쓰는 구성은 사내망·VPN 에서만 온전히 동작한다.
+
+| 사내망 밖에서 띄웠을 때 | 기동 | 실제로 되는 것 |
+|---|---|---|
+| `[local+jetsonLLM]` | 정상 | 전부 동작 (DB·LLM 모두 도달 가능) |
+| `[local+실서버LLM]` | 정상 | DB 만 동작, **AI 기능 실패** (LLM 도달 불가) |
+| `[prod+jetsonLLM]` | 성공한 **척** 함 | LLM 만 동작, **전 API 500** (DB 도달 불가) |
+| `[prod+실서버LLM]` | 성공한 **척** 함 | **아무것도 안 됨** |
+
+여기서 위험한 점은, 실서버를 쓰는 두 구성이 **기동 로그의 "Started" 만으로는 성공처럼
+보인다**는 것이다. Hikari 는 지연 연결이라 DB 에 못 붙어도 기동은 통과한다. 반드시
+헬스체크로 확인한다.
+
+```bash
+curl -s http://localhost:8080/api/v1/health    # "database":"UP" 이어야 정상
+```
+
+`DEGRADED` / `DOWN` 이 나오면 사내망에 연결한 뒤 다시 띄운다. LLM 은
+`curl -s http://localhost:8080/api/ai/health` 로 따로 확인한다.
+
+`.run/*.run.xml` 은 git 으로 함께 배포되므로 **비밀값은 두지 않는다.** 실행 구성이 정하는
+것은 프로파일과 LLM 주소(고르는 값)뿐이고, 비밀값은 아래 환경 파일에서 온다.
+
+| 프로파일 | 읽는 환경 파일 | 담는 값 |
+|---|---|---|
+| `local` | `config/api.env.local` | DB 비밀번호 · AOI MSSQL 계정 |
+| `prod` | `config/api.env.prod` | DB 비밀번호 · JWT 시크릿 · 메일 3종 · AOI MSSQL 계정 |
+
+`[dev]` 도 하나 있다. 개발 서버(`dev-db.dwje.internal`)용인데 그 호스트는 아직 DNS 로도
+해석되지 않아 **지금 실행할 수 없다.** `EnvVarDocumentedTest` 가 이 파일의 존재와 필수
+변수 5종을 검사하므로 지우려면 그 검사도 함께 없애야 한다.
+
+### 메일(SMTP)은 아직 없다 — 운영 이메일 인증이 동작하지 않는다
+
+실서버에 SMTP 가 구성되어 있지 않다(확인함). `prod` 프로파일은
+`spring.mail.host/username/password` 를 기본값 없이 필수로 요구하므로, 그대로 두면
+prod 기동이 불가능하다. 지면에 대한 결정:
+
+- **실서버 배포 경로(`start.sh` + `config/api.env`)는 손대지 않았다.**
+  서버의 메일 값은 여전히 템플릿 문자열이므로, 서버의 이메일 인증(회원가입 인증코드·
+  비밀번호 찾기)은 **지금 동작하지 않는다.** SMTP 를 붙이는 순간 고칠 지점이다.
+- `[prod+jetsonLLM]` · `[prod+실서버LLM]` 두 구성만 `sender-mode=LOG` 로 메일을 끈다.
+  개발 PC 에서 prod 스케일로 DB·LLM 을 확인하기 위한 검증용이며, 배포에는 쓰지 않는다.
+  LOG 모드에서는 인증 코드가 로그에 찍힌다 — 회원가입을 시험하면 메일 함 대신
+  로그에서 코드를 확인해야 한다.
+- `config/api.env.prod` 의 메일 3종은 "사용하지 않음"을 명시하는 값이다. 서버는 이
+  파일을 읽지 않으므로 서버 설정에는 영향이 없다.
+
+> 이 두 구성의 `APP_SECURITY_EMAIL_VERIFICATION_SENDER_MODE=LOG` 는 `.run` 에 있어
+> `java -jar` 로 띄우는 실서버에는 전달되지 않는다. 나중에 SMTP 를 붙이면 이 줄을
+> 지우면 prod 설정(SMTP)이 그대로 적용된다.
+
+### LLM 서버는 두 곳이고 서로 다르다
+
+| 주소 | 정체 | 도달 조건 |
+|---|---|---|
+| `192.168.2.8:11436` | **실서버**의 OpenAI 호환 게이트웨이 | 사내망·VPN 필요 |
+| `wddg.ddns.net:11435` | **Jetson** (공인 IP `115.140.82.10`) | 인터넷만 되면 됨 |
+
+`192.168.2.8` 한 대가 DB · API · LLM 게이트웨기를 모두 겸한다
+(`CorsConfig` 의 `allowedOriginPatterns`, 마이그레이션 주석, `docs/AI_CHAT_DEBUG_DB_CONTRACT_20260924.md`).
+Jetson 은 실서버가 **아니므로** 실서버 데이터와 섞이지 않는다는 점에 주의한다.
+
+`[dev]`·`[prod+…]` 의 5개 비밀값은 비어 있어도 된다. 비어 있으면 환경 파일이 채운다.
+IDE 의 Environment 칸에 직접 넣어 도 된다(그 값은 `.idea/workspace.xml` 에 저장되므로
+저장소에 새지 않는다). **저장소에 추적되는 `.run/*.run.xml` 에 값을 채워 넣지는 말 것** —
+`EnvFileLoaderTest` 가 실패시킨다.
+
+> IntelliJ 의 기본 Spring Boot 구성을 그대로 쓰면(main class `com.dwje.api.DwjeApiApplication`)
+> 기동하지 않는다. 실제 main 은 `com.dwje.api.DwjeApiApplicationKt` 이고 프로파일 지정도 없다.
+> 프로파일 없이 띄우면 `활성 프로파일을 지정해야 합니다` 로 종료된다.
+> `.run` 의 구성을 쓰면 두 값이 이미 들어 있다.
+
+### 환경 파일 로딩 규칙
+
+`EnvFileLoader` 가 `config/api.env.<프로파일>` → `config/api.env` → `.env` 순으로
+첫 번째 파일을 읽는다(`start.sh` 와 같은 순서). 적용 규칙은 다음 세 가지다.
+
+- 값을 감싼 **한 겹의 같은 따옴표**는 벗긴다. `config/api.env.local` 이
+  `AX_MSSQL_URL="jdbc:sqlserver://..."` 처럼 따옴표로 감싸 적고 있어서 이것을 안 하면
+  JDBC URL 이 깨져 `No suitable driver` 로 기동이 죽는다.
+- **비어 있지 않은** 기존 값(환경변수 · `-D` · 실행 구성)이 이긴다. IDE 에서 임시로
+  덮어쓴 값이 파일에 밀리지 않는다. 빈 문자열은 미설정으로 보고 파일이 채운다.
+- `local`·`dev` 인데 **운영 전용** `config/api.env` 로 떨어지면 경고한다. 이 파일의
+  `SPRING_DATASOURCE_URL` 이 프로파일 yml 보다 우선하기 때문에, 조용히 운영 DB 로
+  접속하지 않게 하기 위한 것이다.
+- 값이 **예시 템플릿 그대로**(`your_…` · `replace_…` · `<HOST>` 같은 꺾쇠 괄호)면
+  기동을 멈춘다. `start.sh` 의 필수 변수 검사는 비어 있음만 보므로, 복사만 하고 안 채운
+  파일은 통과해 버린 채 DB 인증·SMTP 인증에서 죽는다. "안 넣었다"를 "틀렸다"로
+  오해하지 않게 기동 단계에서 막는다. 이 규칙은 `EnvFileLoaderTest` 가 고정한다.
+
+### 환경 파일 이름
+
+| 파일 | 쓰임 | git |
+|---|---|---|
+| `config/api.env.example` | 배포 템플릿 → 실서버 `config/api.env` 로 복사 | 추적 |
+| `config/api.env.dev.example` | 개발 템플릿 → `config/api.env.dev` 로 복사 | 추적 |
+| `config/api.env.local.example` | 로컬 템플릿 → `config/api.env.local` 로 복사 | 추적 |
+| `config/api.env` | **실서버 전용** (start.sh 가 읽는다) | 제외 |
+| `config/api.env.prod` | 개발 PC 에서 `[prod]` 로 검증할 때 (실서버와 같은 값) | 제외 |
+| `config/api.env.dev` | 개발 서버용 | 제외 |
+| `config/api.env.local` | 개발자 PC 용 | 제외 |
+
+`api.env.prod` 와 `api.env` 는 같은 값으로 유지한다. `EnvFileLoader` 와 `start.sh` 모두
+`api.env.<프로파일>` 을 먼저 찾으므로, 개발 PC 에는 `api.env.prod` 가, 실서버에는
+`api.env` 가 있어야 프로파일 실행이 각각의 파일을 읽는다.
+
 ### 배포 JAR 교체
 
 실행 중인 `dwje-api-0.0.1.jar`에 `scp`/`cp`를 직접 쓰면 JVM이 나중에 여는
@@ -68,11 +192,12 @@ mv -f dwje-api-0.0.1.jar.part dwje-api-0.0.1.jar
 
 ### 환경변수와 LLM 대상
 
-| 사용 환경 | API 프로파일·DB | LLM 대상 |
-|---|---|---|
-| case1: Mac 개발 기본 | `local` · Mac의 PostgreSQL | `wddg.ddns.net:11435` |
-| case2: Mac 개발, 내부 LLM 사용 | `local` · Mac의 PostgreSQL | `192.168.2.8:11436` — 로컬 `config/api.env.local`의 `DWJE_LLM_BASE_URL`만 변경 |
-| case3: 서버 DB | `dev` 또는 `prod` · 서버 DB | `192.168.2.8:11436` |
+| 사용 환경 | API 프로파일·DB | LLM 대상 | IntelliJ 실행 구성 |
+|---|---|---|---|
+| 로컬 DB + Jetson | `local` · 로컬 PostgreSQL | `wddg.ddns.net:11435` | `dwje-api [local+jetsonLLM]` |
+| 로컬 DB + 실서버 LLM | `local` · 로컬 PostgreSQL | `192.168.2.8:11436` | `dwje-api [local+실서버LLM]` |
+| 실서버 DB + Jetson | `prod` · `192.168.2.8:5432` | `wddg.ddns.net:11435` | `dwje-api [prod+jetsonLLM]` |
+| 실서버 DB + 실서버 LLM | `prod` · `192.168.2.8:5432` | `192.168.2.8:11436` | `dwje-api [prod+실서버LLM]` |
 
 Mac 로컬은 `config/api.env.local.example`을 `config/api.env.local`로 복사하고
 `./start.sh --profile=local`로 실행한다. 서버 개발 프로파일은 `config/api.env.dev.example`을

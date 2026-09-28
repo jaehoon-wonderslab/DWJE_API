@@ -1,0 +1,50 @@
+<component name="ProjectRunConfigurationManager">
+  <!--
+    [prod+jetsonLLM] — 매트릭스 (DB × LLM) 의 prod/ jetson 칸
+
+      DB  : 실서버 PostgreSQL (192.168.2.8:5432/dwjedb · dwje_local)
+      LLM : Jetson  wddg.ddns.net:11435  (공인 IP 115.140.82.10)
+
+    [prod+실서버LLM] 과의 차이는 LLM 하나뿐이고, DB 는 둘 다 실서버다.
+    즉 "DB 는 실서버인데 LLM 응답만 Jetson 에서 받는다"는 조합이다.
+
+    ⚠ 사내망 또는 VPN 이 있어야 한다.
+      192.168.2.8 은 사내 대역이라 사내망 밖에서는 라우팅조차 되지 않는다(게이트웨이로
+      흘러 소멸). 사내망 밖에서 띄우면 **기동은 성공한 것처럼 보이지만** DB 에 붙지 못한다
+      — 모든 API 가 500 이 되고 원인은 DB 연결 실패다. 기동 직후 반드시 확인할 것:
+        curl -s http://localhost:8080/api/v1/health    →  "database":"UP" 이어야 정상
+
+    [주의] prod 프로파일은 실서버 스케일을 흉내 내므로 API 문서(swagger)를 끄고
+    스레드·풀 크기를 크게 잡는다.
+
+    아래 5개 비밀값은 이 파일에 두지 않는다. 기동 시 config/api.env.prod 에서 읽는다
+    (DB 비밀번호 · JWT 시크릿 · 메일 3종 · AOI MSSQL 계정). IDE 의 Environment 칸에
+    직접 넣어 덮어쓸 수는 있지만 그 값은 .idea/workspace.xml 에 저장되므로
+    저장소에 새지 않는다. 값이 있는 채로 커밋하지 말 것 — EnvFileLoaderTest 가 막는다.
+  -->
+  <configuration default="false" name="dwje-api [prod+jetsonLLM]" type="SpringBootApplicationConfigurationType"
+                 factoryName="Spring Boot" nameIsGenerated="false">
+    <option name="ACTIVE_PROFILES" value="prod" />
+    <option name="FRAME_DEACTIVATION_UPDATE_POLICY" value="UpdateClassesAndResources" />
+    <option name="MAIN_CLASS_NAME" value="com.dwje.api.DwjeApiApplicationKt" />
+    <module name="dwje-api.main" />
+    <option name="SPRING_BOOT_MAIN_CLASS" value="com.dwje.api.DwjeApiApplicationKt" />
+    <envs>
+      <env name="DWJE_LLM_BASE_URL" value="http://wddg.ddns.net:11435" />
+      <env name="AX_EMBED_BASE_URL" value="http://wddg.ddns.net:11435" />
+      <!--
+        ⚠ 검증 전용 설정 — 실서버 배포에는 절대 쓰지 않는다.
+
+        SMTP 가 아직 없으므로(실서버에도 없음) 이 구성만 메일을 끈다.
+        LOG 모드에서는 인증 코드가 로그에 찍힌다. 그래서 회원가입을 시험하면
+        메일 함을 보는 대신 로그에서 코드를 확인해야 한다.
+        실서버는 start.sh + config/api.env 로 띄우므로 이 env 는 그쪽에 전달되지 않는다.
+        나중에 SMTP 를 붙이면 아래 한 줄을 지우면 prod 설정(SMTP)이 그대로 적용된다.
+      -->
+      <env name="APP_SECURITY_EMAIL_VERIFICATION_SENDER_MODE" value="LOG" />
+    </envs>
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>

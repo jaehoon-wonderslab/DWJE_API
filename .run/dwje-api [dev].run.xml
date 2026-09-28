@@ -1,7 +1,17 @@
 <component name="ProjectRunConfigurationManager">
+  <!--
+    사내 개발 서버 DB(dev-db.dwje.internal) — README case3.
+    아래 5개는 application-dev.yml 의 ${...} 이 **기본값 없이** 참조하므로 하나라도 없으면
+    "Could not resolve placeholder" 로 기동이 실패한다. 값은 비워 둔다.
+    채우는 곳은 아래 둘 중 하나다.
+      1. config/api.env.dev — DwjeApiApplication 이 기동 시 프로파일 이름으로 찾아 읽는다.
+      2. 이 화면의 Environment 칸 — .idea/workspace.xml 에 저장되므로 git 에 새지 않는다.
+    (빈 값이어도 괜찮다. 비어 있으면 환경 파일이 채운다.)
+  -->
   <configuration default="false" name="dwje-api [dev]" type="SpringBootApplicationConfigurationType"
                  factoryName="Spring Boot" nameIsGenerated="false">
     <option name="ACTIVE_PROFILES" value="dev" />
+    <option name="FRAME_DEACTIVATION_UPDATE_POLICY" value="UpdateClassesAndResources" />
     <option name="MAIN_CLASS_NAME" value="com.dwje.api.DwjeApiApplicationKt" />
     <module name="dwje-api.main" />
     <option name="SPRING_BOOT_MAIN_CLASS" value="com.dwje.api.DwjeApiApplicationKt" />

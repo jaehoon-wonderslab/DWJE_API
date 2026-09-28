@@ -1,0 +1,27 @@
+<component name="ProjectRunConfigurationManager">
+  <!--
+    [local+jetsonLLM] — 매트릭스 (DB × LLM) 의 local/ jetson 칸
+
+      DB  : 로컬 PostgreSQL (localhost:5432/dwjedb · dwje_local/dwje_local)
+      LLM : Jetson  wddg.ddns.net:11435  (공인 IP 115.140.82.10 · 사내망 불필요)
+
+    아래 두 값은 이 구성에서 "고르는 것"이다 — 비밀값이 아니다.
+    DB 비밀번호·AOI MSSQL 계정은 config/api.env.local 에 있고, 기동 시 읽힌다.
+    (config/api.env.local 이 없으면 DB 비밀번호 기본값 dwje_local 로 돈다)
+  -->
+  <configuration default="false" name="dwje-api [local+jetsonLLM]" type="SpringBootApplicationConfigurationType"
+                 factoryName="Spring Boot" nameIsGenerated="false">
+    <option name="ACTIVE_PROFILES" value="local" />
+    <option name="FRAME_DEACTIVATION_UPDATE_POLICY" value="UpdateClassesAndResources" />
+    <option name="MAIN_CLASS_NAME" value="com.dwje.api.DwjeApiApplicationKt" />
+    <module name="dwje-api.main" />
+    <option name="SPRING_BOOT_MAIN_CLASS" value="com.dwje.api.DwjeApiApplicationKt" />
+    <envs>
+      <env name="DWJE_LLM_BASE_URL" value="http://wddg.ddns.net:11435" />
+      <env name="AX_EMBED_BASE_URL" value="http://wddg.ddns.net:11435" />
+    </envs>
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>
