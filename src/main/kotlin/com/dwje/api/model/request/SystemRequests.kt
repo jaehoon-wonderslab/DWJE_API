@@ -2,6 +2,8 @@ package com.dwje.api.model.request
 
 import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.NotBlank
+import jakarta.validation.constraints.Pattern
+import jakarta.validation.constraints.Size
 
 /**
  * 계정 등록·수정 요청 — POST/PUT /api/v1/system/users
@@ -136,4 +138,34 @@ data class DownloadLogRecordRequest(
     /** 내려받은 파일 크기(byte). 인쇄(PDF) 처럼 파일이 없으면 생략한다. */
     @field:Min(0, message = "fileSize 는 0 이상이어야 합니다.")
     val fileSize: Long? = null
+)
+
+/**
+ * 그룹웨어 부서 매핑 저장(upsert) 요청 — PUT /api/v1/system/gw-dept-maps (2026-09-30 WEB 요청)
+ *
+ * 웹은 빈 값(`null`·`''`)을 요청에서 빼므로 **전체 덮어쓰기**다. 빠진 [deptId] 는 미배정, 빠진 [remark] 는 비움.
+ *
+ * @param gwDeptNm 그룹웨어 부서명 — 엔진이 글자 그대로 비교하므로 앞뒤 공백을 다듬지 않는다
+ * @param deptId   가입시킬 AX 부서. 없으면 미배정. [joinYn] 이 `N` 이면 무시하고 비운다
+ * @param joinYn   자동 가입 대상 여부 `Y`|`N`. 없으면 `Y`
+ * @param remark   매핑 근거·메모
+ */
+data class GwDeptMapSaveRequest(
+    @field:NotBlank(message = "그룹웨어 부서명을 입력해 주세요.")
+    @field:Size(max = 100, message = "그룹웨어 부서명은 100자 이내여야 합니다.")
+    val gwDeptNm: String,
+    val deptId: Int? = null,
+    @field:Pattern(regexp = "^[YN]$", message = "가입 여부는 Y 또는 N 이어야 합니다.")
+    val joinYn: String? = null,
+    @field:Size(max = 200, message = "메모는 200자 이내여야 합니다.")
+    val remark: String? = null
+)
+
+/**
+ * 미배정 계정 재배정 요청 — POST /api/v1/system/gw-dept-maps/reassign
+ *
+ * @param empNos 옮길 사번. 웹은 빈 배열을 요청에서 빼므로 **없으면 제안 부서가 있는 미배정 계정 전체**
+ */
+data class GwDeptReassignRequest(
+    val empNos: List<String>? = null
 )

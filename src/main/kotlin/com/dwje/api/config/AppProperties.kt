@@ -33,6 +33,8 @@ import org.springframework.validation.annotation.Validated
  * @param nas                    NAS 이미지 경로 설정
  * @param aoi                    AOI 치수 원천(MSSQL) 직접 조회·한계 세트 설정
  * @param llm                    사내 LLM 채팅 프록시 설정
+ * @param unassignedDeptName     그룹웨어 자동 가입의 미배정 부서 이름 — MES 이관 엔진
+ *                               `migration.groupware.ax-join.default-dept-name` 과 같은 값이어야 한다
  */
 @Validated
 @ConfigurationProperties(prefix = "app")
@@ -106,5 +108,14 @@ data class AppProperties(
 
     /** 사내 LLM 채팅 프록시(`/api/ai/chat`) — [LlmProxyProperties] */
     @field:jakarta.validation.Valid
-    val llm: LlmProxyProperties = LlmProxyProperties()
+    val llm: LlmProxyProperties = LlmProxyProperties(),
+
+    /**
+     * 그룹웨어 자동 가입 계정 중 부서 매핑이 없는 사람이 들어가는 부서 이름 (`ax.tb_sys_dept.dept_nm`).
+     *
+     * 엔진이 이 이름으로 부서를 찾아 넣고, API 는 같은 이름으로 미배정 계정을 찾는다.
+     * 한쪽만 바꾸면 그룹웨어 부서 매핑 화면의 미배정 목록이 비어 보인다.
+     */
+    @field:NotBlank(message = "미배정 부서 이름(app.unassigned-dept-name)은 비워 둘 수 없습니다.")
+    val unassignedDeptName: String = "미배정"
 )

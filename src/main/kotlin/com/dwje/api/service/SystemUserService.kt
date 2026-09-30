@@ -6,6 +6,7 @@ import com.dwje.api.common.response.ErrorCode
 import com.dwje.api.common.security.UserPrincipal
 import com.dwje.api.common.exception.DuplicatedValueException
 import com.dwje.api.common.exception.InvalidParameterException
+import com.dwje.api.common.exception.MenuAccessDeniedException
 import com.dwje.api.common.exception.ResourceNotFoundException
 import com.dwje.api.common.response.PageMeta
 import com.dwje.api.common.util.DataField
@@ -20,6 +21,7 @@ import com.dwje.api.model.request.UserSaveRequest
 import com.dwje.api.repository.SystemUserRepository
 import org.slf4j.LoggerFactory
 import com.dwje.api.common.security.PasswordEncoderService
+import com.dwje.api.config.AppProperties
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
@@ -35,7 +37,8 @@ class SystemUserService(
     private val systemUserRepository: SystemUserRepository,
     private val authorizationService: AuthorizationService,
     private val auditLogService: AuditLogService,
-    private val passwordEncoderService: PasswordEncoderService
+    private val passwordEncoderService: PasswordEncoderService,
+    private val appProperties: AppProperties = AppProperties()
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -253,18 +256,42 @@ class SystemUserService(
     /** 계정 부서 이동 (No.133) */
     @Transactional
     fun changeUserDept(empNo: String, deptId: Int): Map<String, Any?> {
-        val principal = authorizationService.requireMenu(MenuId.SYS_ACCOUNT)
+        // 계정 관리 화면 외에 그룹웨어 부서 매핑 화면(미배정 계정 한 명씩 옮기기)도 이 API 를 쓴다 (2026-09-30)
+        val principal = authorizationService.requireAnyMenu(MenuId.SYS_ACCOUNT, MenuId.SYS_GW_DEPT)
         requireUser(empNo)
 
         val dept = systemUserRepository.findDept(deptId)
             ?: throw ResourceNotFoundException("부서를 찾을 수 없습니다. [deptId=$deptId]")
+
+        // 계정 관리 권한 없이 그룹웨어 부서 매핑 권한으로만 들어오면 미배정 부서 계정만, 통합관리자 부서가 아닌 곳으로만 옮긴다
+        val viaGwDept = !principal.canAccessMenu(MenuId.SYS_ACCOUNT)
+        if (viaGwDept) {
+            val unassignedId = systemUserRepository.findDeptIdByName(appProperties.unassignedDeptName)
+            if (unassignedId == null || systemUserRepository.findUserDeptId(empNo) != unassignedId) {
+                throw MenuAccessDeniedException(MenuId.SYS_ACCOUNT)
+            }
+            if (dept["superAdmin"] == true) {
+                throw InvalidParameterException("통합관리자 부서로는 옮길 수 없습니다.", "deptId")
+            }
+        }
 
         systemUserRepository.updateUserDept(empNo, deptId, principal.userId)
 
         // 이동한 부서의 메뉴/데이터 권한을 그대로 상속한다.
         val appliedMenuCnt = systemUserRepository.findMenuPermMatrix().count { it["deptId"] == deptId }
         val appliedDataCnt = systemUserRepository.findDataPermMatrix().count { it["deptId"] == deptId }
+        recordDeptMove(empNo, dept, appliedMenuCnt, appliedDataCnt,
+            if (viaGwDept) MenuId.SYS_GW_DEPT else MenuId.SYS_ACCOUNT)
 
+        return mapOf("success" to true, "appliedMenuCnt" to appliedMenuCnt, "appliedDataCnt" to appliedDataCnt)
+    }
+
+    /**
+     * 계정 부서 이동의 이력 기록 — 권한 변경 이력(ACCOUNT)과 감사 로그.
+     * 그룹웨어 부서 매핑 화면의 일괄 재배정도 같은 형식으로 남긴다.
+     */
+    fun recordDeptMove(empNo: String, dept: Map<String, Any?>, appliedMenuCnt: Int, appliedDataCnt: Int, menuId: String) {
+        val deptId = dept["deptId"] as Int
         auditLogService.recordPermChange(
             actCd = "ACCOUNT",
             targetKindCd = "USER",
@@ -275,12 +302,10 @@ class SystemUserService(
         )
         auditLogService.record(
             logType = "PERM_CHANGE",
-            menuId = MenuId.SYS_ACCOUNT,
+            menuId = menuId,
             targetDesc = "계정 부서 이동 [$empNo → ${dept["deptNm"]}]",
             remark = "메뉴 ${appliedMenuCnt}건 · 데이터 ${appliedDataCnt}건"
         )
-
-        return mapOf("success" to true, "appliedMenuCnt" to appliedMenuCnt, "appliedDataCnt" to appliedDataCnt)
     }
 
     // =================================================================================
@@ -290,7 +315,7 @@ class SystemUserService(
     /** 부서 목록 조회 (No.135) */
     @Transactional(readOnly = true)
     fun getDepts(): Map<String, Any?> {
-        authorizationService.requireAnyMenu(MenuId.SYS_ACCOUNT, MenuId.SYS_MENU, MenuId.SYS_DATA)
+        authorizationService.requireAnyMenu(MenuId.SYS_ACCOUNT, MenuId.SYS_MENU, MenuId.SYS_DATA, MenuId.SYS_GW_DEPT)
         return mapOf("items" to systemUserRepository.findDepts())
     }
 
@@ -300,7 +325,8 @@ class SystemUserService(
      */
     @Transactional(readOnly = true)
     fun getDepts(keyword: String?, page: Int?, size: Int?): Pair<List<Map<String, Any?>>, PageMeta?> {
-        authorizationService.requireAnyMenu(MenuId.SYS_ACCOUNT, MenuId.SYS_MENU, MenuId.SYS_DATA)
+        // 그룹웨어 부서 매핑 화면도 부서 선택지로 쓴다 (2026-09-30)
+        authorizationService.requireAnyMenu(MenuId.SYS_ACCOUNT, MenuId.SYS_MENU, MenuId.SYS_DATA, MenuId.SYS_GW_DEPT)
         val paged = page != null || (size != null && size > 0)
         if (!paged) return systemUserRepository.findDepts(keyword, null, 0) to null
         val paging = PageRequestParam.of(page, size)

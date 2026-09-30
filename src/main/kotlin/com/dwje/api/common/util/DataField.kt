@@ -58,6 +58,8 @@ object MenuId {
     const val SYS_AUDIT = "sys-audit"
     const val SYS_DL = "sys-dl"
     const val SYS_SYNC = "sys-sync"
+    /** 시스템관리 › 그룹웨어 부서 매핑 (SY-17) — V46 으로 tb_sys_menu 에 등록된다 */
+    const val SYS_GW_DEPT = "sys-gw-dept"
 
     // 2026-09-15 에 5개 화면(sys-rank · base-model · sys-model-ver · ai-agent · sys-metric)의 API 를
     // 상수와 함께 지웠다가, 2026-09-22 요청으로 **sys-rank 를 뺀 4개**를 다시 붙였다.

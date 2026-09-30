@@ -278,6 +278,20 @@ class SystemUserRepository(
         return (jdbcTemplate.queryForObject(sql, MapSqlParameterSource("empNo", empNo), Long::class.java) ?: 0L) > 0
     }
 
+    /** 계정의 현재 부서 ID (없는 계정이면 null) */
+    fun findUserDeptId(empNo: String): Int? =
+        jdbcTemplate.query(
+            "SELECT dept_id FROM ax.tb_sys_user WHERE user_id = :empNo",
+            MapSqlParameterSource("empNo", empNo)
+        ) { rs, _ -> rs.getInt("dept_id") }.firstOrNull()
+
+    /** 이름으로 부서 ID 를 찾는다 (그룹웨어 자동 가입의 미배정 부서) */
+    fun findDeptIdByName(deptNm: String): Int? =
+        jdbcTemplate.query(
+            "SELECT dept_id FROM ax.tb_sys_dept WHERE dept_nm = :deptNm",
+            MapSqlParameterSource("deptNm", deptNm)
+        ) { rs, _ -> rs.getInt("dept_id") }.firstOrNull()
+
     // =================================================================================
     // 부서 관리
     // =================================================================================

@@ -48,6 +48,8 @@ app:
   masking-enabled: true
   # 보고서 다운로드 이력 보존 연수
   download-retention-years: 3
+  # 그룹웨어 자동 가입의 미배정 부서 이름 — MES 이관 엔진 migration.groupware.ax-join.default-dept-name 과 같게
+  unassigned-dept-name: 미배정
   # 프레스 작업장 코드 — 일일 생산현황 보고에서 공정 미지정 시 이 범위만 집계한다.
   # tb_md_workcenter 에 공정 구분 컬럼이 없어 코드로 못 박는다. (W110/W150/W120 = A/B/C-프레스)
   press-workcenters:
