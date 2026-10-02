@@ -118,7 +118,7 @@ class ProductionResultExportControllerTest {
 
     @org.junit.jupiter.api.BeforeEach
     fun login() = com.dwje.api.common.security.UserContext.set(
-        com.dwje.api.common.security.UserPrincipal("10003", "제조", 4, "제조팀", null, null, null, false, dataPerms = setOf(DataField.QTY))
+        com.dwje.api.common.security.UserPrincipal("10003", "제조", 4, "제조팀", null, null, false, dataPerms = setOf(DataField.QTY))
     )
 
     @org.junit.jupiter.api.AfterEach

@@ -46,6 +46,36 @@ class LlmChatProxyTest {
     private fun msg(role: String, content: String) = LlmChatMessage(role, content)
 
     @Test
+    fun generalAndDocumentRoutesUseDifferentModelsAndPrompts() {
+        val seen = AtomicReference<String>()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/v1/chat/completions") { exchange ->
+            seen.set(exchange.requestBody.readAllBytes().toString(Charsets.UTF_8))
+            val body = "data: [DONE]\n\n".toByteArray()
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        }
+        server.start()
+        try {
+            val svc = service(LlmProxyProperties(baseUrl = "http://127.0.0.1:${server.address.port}", systemPrompt = "문서 근거만 사용"))
+            val req = LlmChatRequest(listOf(msg("user", "ㅎㅇ")), context = "무관한 문서")
+            svc.open(svc.buildMessages(req, general = true), general = true).use { it.readAllBytes() }
+            var body = ObjectMapper().readTree(seen.get())
+            assertEquals("google/gemma-4-26B-A4B-it", body.path("model").asText())
+            assertEquals("ㅎㅇ", body.path("messages").last().path("content").asText())
+            assertFalse(body.toString().contains("무관한 문서"))
+            assertTrue(body.path("messages")[0].path("content").asText().contains("대화 도우미"))
+            svc.open(svc.buildMessages(req)).use { it.readAllBytes() }
+            body = ObjectMapper().readTree(seen.get())
+            assertEquals("dwje-ax", body.path("model").asText())
+            assertEquals("문서 근거만 사용", body.path("messages")[0].path("content").asText())
+            assertTrue(body.toString().contains("무관한 문서"))
+            assertTrue(com.dwje.api.service.AiQuestionPlanner.isGreeting("ㅎㅇ!"))
+            assertFalse(com.dwje.api.service.AiQuestionPlanner.isGreeting("안녕 오늘 생산 실적 알려줘"))
+        } finally { server.stop(0) }
+    }
+
+    @Test
     @DisplayName("로컬 기본값과 서버 프로파일이 서로 다른 OpenAI 호환 LLM 주소를 쓴다")
     fun profileGatewayDefaults() {
         assertEquals("http://wddg.ddns.net:11435", LlmProxyProperties().baseUrl)
@@ -57,8 +87,10 @@ class LlmChatProxyTest {
         val dev = File("src/main/resources/application-dev.yml").readText()
         val prod = File("src/main/resources/application-prod.yml").readText()
         assertTrue(local.contains("http://wddg.ddns.net:11435"))
-        assertTrue(dev.contains("http://192.168.2.8:11436"))
-        assertTrue(prod.contains("http://192.168.2.8:11436"))
+        // GPU 서버 vLLM(2026-10 전환) — 채팅 :8000, 임베딩 :8001(채팅 주소로 떨어지지 않는다)
+        assertTrue(dev.contains("http://192.168.2.8:8000") && dev.contains("embed-base-url: \"\${AX_EMBED_BASE_URL:http://192.168.2.8:8001}\""))
+        assertTrue(prod.contains("http://192.168.2.8:8000") && prod.contains("embed-base-url: \"\${AX_EMBED_BASE_URL:http://192.168.2.8:8001}\""))
+        assertTrue(!dev.contains(":11436") && !prod.contains(":11436"))
     }
 
     @Test

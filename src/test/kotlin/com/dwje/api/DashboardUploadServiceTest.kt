@@ -62,7 +62,7 @@ class DashboardUploadServiceTest {
         AppProperties(upload = UploadProperties(dir = dir.toString())), ObjectMapper(), mock(CodeValidator::class.java)
     )
 
-    private fun login(write: Boolean = true) = UserContext.set(UserPrincipal("10004", "전산", 5, "전산팀", null, null, null, false,
+    private fun login(write: Boolean = true) = UserContext.set(UserPrincipal("10004", "전산", 5, "전산팀", null, null, false,
         menuPerms = setOf("dash-ai-upload", "dash-ai"), writePerms = if (write) setOf("dash-ai-upload") else emptySet()))
 
     private fun xlsxBytes(): ByteArray = ByteArrayOutputStream().also { out ->

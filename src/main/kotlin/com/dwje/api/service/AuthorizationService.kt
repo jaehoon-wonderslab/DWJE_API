@@ -107,7 +107,6 @@ class AuthorizationService(
             userName = user["userName"] as String,
             deptId = deptId,
             deptName = deptName,
-            deptAbbr = user["deptAbbr"] as String?,
             positionCd = user["positionCd"] as String?,
             plantCd = user["plantCd"] as String?,
             superAdmin = superAdmin,

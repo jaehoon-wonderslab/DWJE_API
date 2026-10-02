@@ -64,7 +64,11 @@ class AiDataToolService(
         val period: AiBusinessPeriod?,
         val elapsedMs: Int,
         val rawRows: List<Map<String, Any?>> = emptyList(),
-        val isDaily: Boolean = false
+        val isDaily: Boolean = false,
+        /** MES 최신 실적일 — 빈 결과 안내 문구에 쓴다 */
+        val latestDataDate: LocalDate? = null,
+        /** 조건 오류(INVALID) 갈래 — 안내 문구를 고른다 */
+        val invalidReason: AiQuestionPlanner.InvalidReason? = null
     )
 
     companion object {
@@ -406,11 +410,21 @@ class AiDataToolService(
         principal: UserPrincipal,
         previousPeriod: AiBusinessPeriod? = null
     ): EvidenceResult {
-        val started = System.currentTimeMillis()
         val today = LocalDate.now(java.time.ZoneId.of("Asia/Seoul"))
         val latestDataDate = runCatching {
             LocalDate.parse(commonMasterService.getProductionDateRange(null, null)["toDate"].toString())
         }.getOrNull() ?: today
+        return evidenceAt(question, principal, previousPeriod, today, latestDataDate).copy(latestDataDate = latestDataDate)
+    }
+
+    private fun evidenceAt(
+        question: String,
+        principal: UserPrincipal,
+        previousPeriod: AiBusinessPeriod?,
+        today: LocalDate,
+        latestDataDate: LocalDate
+    ): EvidenceResult {
+        val started = System.currentTimeMillis()
         val decision = questionPlanner.plan(question, today, previousPeriod, latestDataDate)
         val product = decision as? AiQuestionPlanner.Decision.ProductList
         val dailyDefect = decision as? AiQuestionPlanner.Decision.DailyProductDefect
@@ -425,22 +439,24 @@ class AiDataToolService(
             is AiQuestionPlanner.Decision.DefectTop -> "DEFECT_TOP"
             is AiQuestionPlanner.Decision.ProductionCompare -> "PRODUCTION_COMPARE"
             is AiQuestionPlanner.Decision.DocumentCount -> "DOCUMENT_COUNT"
+            AiQuestionPlanner.Decision.General -> "GENERAL"
             AiQuestionPlanner.Decision.Greeting -> "GREETING"
             AiQuestionPlanner.Decision.Refusal -> "REFUSAL"
             AiQuestionPlanner.Decision.Other -> "OTHER"
-            AiQuestionPlanner.Decision.Invalid -> "INVALID"
+            is AiQuestionPlanner.Decision.Invalid -> "INVALID"
             AiQuestionPlanner.Decision.Unavailable -> "PLANNER_UNAVAILABLE"
         }
         val period = product?.period ?: dailyDefect?.period ?: rate?.period ?: (decision as? AiQuestionPlanner.Decision.DefectTop)?.period
             ?: (decision as? AiQuestionPlanner.Decision.ProductionCompare)?.period
-        if (decision == AiQuestionPlanner.Decision.Invalid || decision == AiQuestionPlanner.Decision.Unavailable) {
+        if (decision is AiQuestionPlanner.Decision.Invalid || decision == AiQuestionPlanner.Decision.Unavailable) {
+            val invalid = decision as? AiQuestionPlanner.Decision.Invalid
             val evidence = listOf(mapOf<String, Any?>("title" to "조회 조건 확인",
-                "text" to if (decision == AiQuestionPlanner.Decision.Unavailable) "질문을 판단하는 모델을 사용할 수 없습니다. 잠시 후 다시 시도해 주세요."
-                    else "날짜 범위 또는 순위 조건을 해석할 수 없습니다. 날짜와 1~20 사이의 순위를 확인해 주세요.",
+                "text" to if (invalid == null) "질문을 판단하는 모델을 사용할 수 없습니다. 잠시 후 다시 시도해 주세요."
+                    else AiFixedAnswer.invalid(invalid.reason, today),
                 "tool" to "condition_check", "args" to emptyMap<String, Any>()))
-            return EvidenceResult(evidence, route, null, if (decision == AiQuestionPlanner.Decision.Invalid) "INVALID" else "UNAVAILABLE",
-                "SKIPPED", if (decision == AiQuestionPlanner.Decision.Invalid) "INVALID_CONDITION" else "MODEL_UNAVAILABLE", 0, null,
-                (System.currentTimeMillis() - started).toInt())
+            return EvidenceResult(evidence, route, null, if (invalid != null) "INVALID" else "UNAVAILABLE",
+                "SKIPPED", if (invalid != null) "INVALID_CONDITION" else "MODEL_UNAVAILABLE", 0, null,
+                (System.currentTimeMillis() - started).toInt(), invalidReason = invalid?.reason)
         }
         if (decision == AiQuestionPlanner.Decision.AoiWorkcenterRequired) {
             val allowed = principal.canAccessMenu(MenuId.QC_AOI)
@@ -619,7 +635,7 @@ class AiDataToolService(
             EvidenceResult(listOf(mapOf("title" to "AOI 조회 조건",
                 "text" to "AOI 조회 기간 또는 작업장·설비 조건을 확인해 주세요.", "tool" to "condition_check",
                 "args" to emptyMap<String, Any>())), route, null, "INVALID", "SKIPPED", "INVALID_CONDITION", 0,
-                null, (System.currentTimeMillis() - started).toInt())
+                null, (System.currentTimeMillis() - started).toInt(), invalidReason = AiQuestionPlanner.InvalidReason.CONDITION)
         } catch (e: MenuAccessDeniedException) {
             EvidenceResult(listOf(mapOf("title" to "AOI 열람 제한", "text" to "AOI 판정 분석 화면의 열람 권한이 없습니다.",
                 "tool" to "condition_check", "args" to emptyMap<String, Any>())), route, null,

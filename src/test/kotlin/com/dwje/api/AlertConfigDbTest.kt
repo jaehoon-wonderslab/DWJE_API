@@ -56,11 +56,11 @@ class AlertConfigDbTest {
     @Autowired lateinit var jdbc: NamedParameterJdbcTemplate
     @MockitoBean lateinit var audit: AuditLogService
 
-    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, null, true)
+    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, true)
 
     /** 전산팀 — 두 화면 쓰기, worker 있음 */
     private val itTeam = UserPrincipal(
-        "10004", "전산", 5, "전산팀", null, null, null, false,
+        "10004", "전산", 5, "전산팀", null, null, false,
         menuPerms = setOf(MenuId.ALERT_COND, MenuId.SYS_RECIP), dataPerms = setOf("worker"),
         writePerms = setOf(MenuId.ALERT_COND, MenuId.SYS_RECIP)
     )
@@ -221,14 +221,14 @@ class AlertConfigDbTest {
     @Test
     @DisplayName("ALC-02·RCP-01 — alert-cond 만이면 그룹 멤버 키 없음, worker 없으면 이름·연락처 null + masked, 연락처 쓰기 403")
     fun groupsAndMasking() {
-        val condOnly = UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, null, false, menuPerms = setOf(MenuId.ALERT_COND))
+        val condOnly = UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, false, menuPerms = setOf(MenuId.ALERT_COND))
         UserContext.set(condOnly)
         val (data, _) = service.getRecipientGroups()
         @Suppress("UNCHECKED_CAST") val items = data["items"] as List<Map<String, Any?>>
         assertTrue(items.isNotEmpty())
         assertTrue(items.all { "members" !in it && "memberEmpNos" !in it && "memberCnt" in it && "receivingCnt" in it })
 
-        val noWorker = UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, null, false,
+        val noWorker = UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, false,
             menuPerms = setOf(MenuId.SYS_RECIP), writePerms = setOf(MenuId.SYS_RECIP))
         UserContext.set(noWorker)
         val (rows, _, masked) = service.getRecipients(null, 1, 50)
@@ -274,7 +274,7 @@ class AlertConfigDbTest {
     @DisplayName("쓰기 권한 — 조회만 있는 계정은 조건 등록·수정·상태·테스트 모두 E-AUTH-004, DB 불변")
     fun writePerm() {
         val condId = newCond()
-        UserContext.set(UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, null, false, menuPerms = setOf(MenuId.ALERT_COND)))
+        UserContext.set(UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, false, menuPerms = setOf(MenuId.ALERT_COND)))
         val name = str("SELECT cond_nm FROM ax.tb_alm_cond WHERE cond_id = $condId")
         assertThrows(WriteAccessDeniedException::class.java) { service.updateCondition(condId, AlertConditionUpdateRequest(name = "x")) }
         assertThrows(WriteAccessDeniedException::class.java) { service.changeConditionState(condId, false, null) }

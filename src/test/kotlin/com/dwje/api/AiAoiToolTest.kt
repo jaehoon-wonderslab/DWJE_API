@@ -18,8 +18,8 @@ import java.time.LocalDate
 import java.time.temporal.ChronoUnit
 
 class AiAoiToolTest {
-    private val admin = UserPrincipal("admin", "관리자", 1, "전산", null, null, null, true)
-    private val denied = UserPrincipal("user", "사용자", 2, "생산", null, null, null, false)
+    private val admin = UserPrincipal("admin", "관리자", 1, "전산", null, null, true)
+    private val denied = UserPrincipal("user", "사용자", 2, "생산", null, null, false)
     private val masked = denied.copy(menuPerms = setOf("qc-aoi"))
     private val mapper = ObjectMapper()
 
@@ -53,9 +53,9 @@ class AiAoiToolTest {
             if (call.method.name == "chooseTool") plannerMessage(arguments) else null
         })
         val planner = AiQuestionPlanner(model, mapper)
-        assertEquals(AiQuestionPlanner.Decision.Invalid, planner.plan("AOI", LocalDate.parse("2026-09-26")))
+        assertEquals(AiQuestionPlanner.Decision.Invalid(), planner.plan("AOI", LocalDate.parse("2026-09-26")))
         arguments = """{"wcCd":"S120","to":"2026-09-27"}"""
-        assertEquals(AiQuestionPlanner.Decision.Invalid, planner.plan("AOI", LocalDate.parse("2026-09-26")))
+        assertEquals(AiQuestionPlanner.Decision.Invalid(AiQuestionPlanner.InvalidReason.FUTURE), planner.plan("AOI", LocalDate.parse("2026-09-26")))
     }
 
     private fun service(aoi: AoiDimensionService, planner: AiQuestionPlanner = mock(AiQuestionPlanner::class.java)) =

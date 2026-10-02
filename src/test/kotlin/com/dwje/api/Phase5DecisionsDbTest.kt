@@ -53,10 +53,10 @@ class Phase5DecisionsDbTest {
     @Autowired lateinit var jdbc: NamedParameterJdbcTemplate
     @MockitoBean lateinit var audit: AuditLogService
 
-    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, null, true)
+    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, true)
     /** 제조팀 — customer 데이터 권한 없음. 관리 화면 쓰기 가능 */
     private val maker = UserPrincipal(
-        "10003", "제조", 4, "제조팀", null, null, null, false,
+        "10003", "제조", 4, "제조팀", null, null, false,
         menuPerms = setOf(MenuId.SYS_GLOSS, MenuId.GLOSS_VIEW, MenuId.SYS_UPLOAD_DOC), dataPerms = setOf("qty", "mold", "worker"),
         writePerms = setOf(MenuId.SYS_GLOSS)
     )

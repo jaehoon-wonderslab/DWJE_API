@@ -100,7 +100,6 @@ data class DataFieldInfo(
  *
  * @param deptId     부서 ID
  * @param deptNm     부서명
- * @param deptAbbr   부서 약칭
  * @param superAdmin 통합관리자 부서 여부
  * @param plantCd    사업장 코드
  * @param unassigned 미배정 부서 여부 — 고정 5개 화면 조회 전용 · 데이터 권한 0건 (R-01·R-11). 화면의 NoAccess 문구가 쓴다
@@ -108,7 +107,6 @@ data class DataFieldInfo(
 data class DeptInfo(
     val deptId: Int,
     val deptNm: String,
-    val deptAbbr: String?,
     val superAdmin: Boolean,
     val plantCd: String?,
     val unassigned: Boolean = false

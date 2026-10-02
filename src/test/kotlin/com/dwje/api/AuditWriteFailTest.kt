@@ -52,7 +52,7 @@ class AuditWriteFailTest {
     @Test
     @DisplayName("저장소 실패 — record·recordPermChange·recordPermChangeAs·recordAfterCommit·recordAuditView 모두 예외 없이 끝나고 각각 1건씩 센다")
     fun repoFailures() {
-        UserContext.set(UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, null, true))
+        UserContext.set(UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, true))
         val s = service()
         assertNull(assertDoesNotThrow<Long?> { s.record("AUTO_GEN", "sys-audit") })
         assertEquals(1, s.writeFailSinceBoot)

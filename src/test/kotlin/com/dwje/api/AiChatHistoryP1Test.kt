@@ -47,9 +47,9 @@ class AiChatHistoryP1Test {
     @MockitoBean lateinit var downloadLog: DownloadLogService
 
     /** 제조팀 — 질의 이력 조회만, 데이터 권한 없음 */
-    private val viewer = UserPrincipal("10003", "제조", 4, "제조팀", null, null, null, false, menuPerms = setOf(MenuId.CHAT_HISTORY))
+    private val viewer = UserPrincipal("10003", "제조", 4, "제조팀", null, null, false, menuPerms = setOf(MenuId.CHAT_HISTORY))
     /** 전산팀 — 질의 이력 쓰기 */
-    private val manager = UserPrincipal("10004", "전산", 5, "전산팀", null, null, null, false,
+    private val manager = UserPrincipal("10004", "전산", 5, "전산팀", null, null, false,
         menuPerms = setOf(MenuId.CHAT_HISTORY), writePerms = setOf(MenuId.CHAT_HISTORY))
 
     @BeforeEach

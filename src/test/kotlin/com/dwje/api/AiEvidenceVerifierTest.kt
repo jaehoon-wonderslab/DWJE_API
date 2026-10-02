@@ -126,8 +126,7 @@ class AiEvidenceVerifierTest {
 
     private fun mask(vararg fields: String) = MaskingSupport(
         UserPrincipal(
-            userId = "10001", userName = "테스터", deptId = 1, deptName = "품질보증팀",
-            deptAbbr = null, positionCd = "STAFF", plantCd = "PL01",
+            userId = "10001", userName = "테스터", deptId = 1, deptName = "품질보증팀", positionCd = "STAFF", plantCd = "PL01",
             superAdmin = false, dataPerms = fields.toSet()
         )
     )

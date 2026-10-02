@@ -42,7 +42,6 @@ class AuthRepository(
                 u.email,
                 u.pwd_change_req_yn,
                 d.dept_nm,
-                d.dept_abbr,
                 d.is_super_admin
             FROM ax.tb_sys_user u
             INNER JOIN ax.tb_sys_dept d ON d.dept_id = u.dept_id
@@ -67,7 +66,6 @@ class AuthRepository(
                 // 초기 비밀번호 변경 요구 (R-04, 01 ACC-03). 컬럼 기본값이 'Y' 다.
                 "pwdChangeRequired" to (rs.getString("pwd_change_req_yn") == "Y"),
                 "deptName" to rs.getString("dept_nm"),
-                "deptAbbr" to rs.getString("dept_abbr"),
                 "superAdmin" to rs.getBoolean("is_super_admin")
             )
         }.firstOrNull()
@@ -541,7 +539,7 @@ class AuthRepository(
      */
     fun findSignupDepts(unassignedDeptName: String): List<Map<String, Any?>> {
         val sql = """
-            SELECT dept_id, dept_nm, dept_abbr, dept_desc
+            SELECT dept_id, dept_nm, dept_desc
             FROM ax.tb_sys_dept
             WHERE use_flg = 'Y' AND is_super_admin = false AND dept_nm <> :unassignedDeptName
             ORDER BY sort_seq, dept_nm
@@ -551,7 +549,6 @@ class AuthRepository(
             mapOf(
                 "deptId" to rs.getInt("dept_id"),
                 "deptNm" to rs.getString("dept_nm"),
-                "abbr" to rs.getString("dept_abbr"),
                 "desc" to rs.getString("dept_desc")
             )
         }

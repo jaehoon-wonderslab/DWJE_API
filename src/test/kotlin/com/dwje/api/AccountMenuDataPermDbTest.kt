@@ -46,11 +46,11 @@ class AccountMenuDataPermDbTest {
     @Autowired lateinit var jdbc: NamedParameterJdbcTemplate
     @MockitoBean lateinit var audit: AuditLogService
 
-    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, null, true)
+    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, true)
 
     /** 전산팀 관리자(비통합관리자) — 시스템관리 화면 쓰기 */
     private val itAdmin = UserPrincipal(
-        "10004", "최전산", 5, "전산팀", null, null, null, false,
+        "10004", "최전산", 5, "전산팀", null, null, false,
         menuPerms = setOf(MenuId.SYS_ACCOUNT, MenuId.SYS_MENU, MenuId.SYS_DATA),
         writePerms = setOf(MenuId.SYS_ACCOUNT, MenuId.SYS_MENU, MenuId.SYS_DATA)
     )
@@ -104,7 +104,7 @@ class AccountMenuDataPermDbTest {
     @Test
     @DisplayName("ACC-04 부서 — 참조가 있으면 409 + data.refs(500 아님), 목록 systemRole·미배정 고정 표시")
     fun deptRefs() {
-        exec("INSERT INTO ax.tb_sys_dept (dept_id, dept_nm, dept_abbr) VALUES (9901, 'ZT부서', 'ZT')")
+        exec("INSERT INTO ax.tb_sys_dept (dept_id, dept_nm) VALUES (9901, 'ZT부서')")
         exec("INSERT INTO ax.tb_sys_dept_gw_map (gw_dept_nm, dept_id) VALUES ('ZT그룹웨어부서', 9901)")
         val e = assertThrows(BusinessException::class.java) { service.deleteDept(9901) }
         assertEquals("다른 설정이 이 부서를 쓰고 있어 삭제할 수 없습니다. 그룹웨어 매핑 1건", e.message)
@@ -282,7 +282,7 @@ class AccountMenuDataPermDbTest {
         exec("INSERT INTO ax.tb_sys_user_menu_grant (user_id, menu_id, can_write) VALUES ('10004', 'sys-dl', false)")
         @Suppress("UNCHECKED_CAST")
         assertTrue(((service.getMenuPermMatrix()["grants"] as Map<String, List<Map<String, Any?>>>)["sys-dl"]).orEmpty().any { it["empNo"] == "10004" })
-        UserContext.set(UserPrincipal("10002", "생산", 3, "생산관리팀", null, null, null, false, menuPerms = setOf(MenuId.SYS_ACCOUNT)))
+        UserContext.set(UserPrincipal("10002", "생산", 3, "생산관리팀", null, null, false, menuPerms = setOf(MenuId.SYS_ACCOUNT)))
         val m = service.getMenuPermMatrix()
         assertTrue("grants" !in m)
         @Suppress("UNCHECKED_CAST")

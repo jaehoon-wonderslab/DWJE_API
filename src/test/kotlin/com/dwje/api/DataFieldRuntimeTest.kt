@@ -84,7 +84,7 @@ class DataFieldRuntimeTest {
     }
 
     private fun principal(dataPerms: Set<String>, superAdmin: Boolean = false) = UserPrincipal(
-        userId = "T1", userName = "t", deptId = 9, deptName = "d", deptAbbr = null, positionCd = null, plantCd = null,
+        userId = "T1", userName = "t", deptId = 9, deptName = "d", positionCd = null, plantCd = null,
         superAdmin = superAdmin, menuPerms = setOf(MenuId.SYS_DATA), dataPerms = dataPerms
     )
 

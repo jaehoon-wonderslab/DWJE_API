@@ -113,7 +113,7 @@ class GlossaryDuplicateTest {
     }
 
     private val admin = UserPrincipal(
-        userId = "T1", userName = "t", deptId = 9, deptName = "전산팀", deptAbbr = null, positionCd = null,
+        userId = "T1", userName = "t", deptId = 9, deptName = "전산팀", positionCd = null,
         plantCd = null, superAdmin = true, menuPerms = setOf(MenuId.SYS_GLOSS)
     )
 

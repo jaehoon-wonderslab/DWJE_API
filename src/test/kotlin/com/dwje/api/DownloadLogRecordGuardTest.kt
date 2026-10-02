@@ -66,7 +66,7 @@ class DownloadLogRecordGuardTest {
     )
 
     /** 제조팀 — 출하 계획 화면 조회 권한만(쓰기 없음) */
-    private fun login() = UserContext.set(UserPrincipal("10003", "제조", 4, "제조팀", null, null, null, false,
+    private fun login() = UserContext.set(UserPrincipal("10003", "제조", 4, "제조팀", null, null, false,
         menuPerms = setOf("rpt-ship-plan")))
 
     @Test

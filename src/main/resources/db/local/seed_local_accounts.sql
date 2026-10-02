@@ -35,14 +35,34 @@ SET search_path TO ax, mes, vec, common, public;
 -- -------------------------------------------------------------------------------------
 -- 1. 부서
 -- -------------------------------------------------------------------------------------
-INSERT INTO ax.tb_sys_dept (dept_nm, dept_abbr, dept_desc, plant_cd, is_super_admin, sort_seq, ins_user, upd_user) VALUES
- ('통합관리자',   '관리', '전 화면·전 데이터 접근',            'PL01', true,  1, 'SEED', 'SEED'),
- ('품질보증팀',   '품보', '품질 지표·보고서·AOI 분석',          'PL01', false, 2, 'SEED', 'SEED'),
- ('생산관리팀',   '생관', '생산 계획·실적·일일보고',            'PL01', false, 3, 'SEED', 'SEED'),
- ('제조팀',       '제조', '설비 운전·비가동 등록',              'PL01', false, 4, 'SEED', 'SEED'),
- ('전산팀',       '전산', '시스템·권한·AI 운영 관리',           'PL01', false, 5, 'SEED', 'SEED'),
- ('경영진',       '경영', '성과지표·보고서 열람',               'PL01', false, 6, 'SEED', 'SEED')
-ON CONFLICT (dept_nm) DO NOTHING;
+--    부서 약칭(dept_abbr)은 2026-10-02 사용 중지(V68 제약 완화 · V69 컬럼 삭제). 컬럼이 아직 NOT NULL 인
+--    옛 DB(V68 이전)에서만 약칭을 함께 넣고, 그 밖에는 약칭 없이 넣는다.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'ax' AND table_name = 'tb_sys_dept'
+                  AND column_name = 'dept_abbr' AND is_nullable = 'NO') THEN
+        EXECUTE $q$
+            INSERT INTO ax.tb_sys_dept (dept_nm, dept_abbr, dept_desc, plant_cd, is_super_admin, sort_seq, ins_user, upd_user) VALUES
+             ('통합관리자', '관리', '전 화면·전 데이터 접근',     'PL01', true,  1, 'SEED', 'SEED'),
+             ('품질보증팀', '품보', '품질 지표·보고서·AOI 분석',   'PL01', false, 2, 'SEED', 'SEED'),
+             ('생산관리팀', '생관', '생산 계획·실적·일일보고',     'PL01', false, 3, 'SEED', 'SEED'),
+             ('제조팀',     '제조', '설비 운전·비가동 등록',       'PL01', false, 4, 'SEED', 'SEED'),
+             ('전산팀',     '전산', '시스템·권한·AI 운영 관리',    'PL01', false, 5, 'SEED', 'SEED'),
+             ('경영진',     '경영', '성과지표·보고서 열람',        'PL01', false, 6, 'SEED', 'SEED')
+            ON CONFLICT (dept_nm) DO NOTHING
+        $q$;
+    ELSE
+        INSERT INTO ax.tb_sys_dept (dept_nm, dept_desc, plant_cd, is_super_admin, sort_seq, ins_user, upd_user) VALUES
+         ('통합관리자', '전 화면·전 데이터 접근',     'PL01', true,  1, 'SEED', 'SEED'),
+         ('품질보증팀', '품질 지표·보고서·AOI 분석',   'PL01', false, 2, 'SEED', 'SEED'),
+         ('생산관리팀', '생산 계획·실적·일일보고',     'PL01', false, 3, 'SEED', 'SEED'),
+         ('제조팀',     '설비 운전·비가동 등록',       'PL01', false, 4, 'SEED', 'SEED'),
+         ('전산팀',     '시스템·권한·AI 운영 관리',    'PL01', false, 5, 'SEED', 'SEED'),
+         ('경영진',     '성과지표·보고서 열람',        'PL01', false, 6, 'SEED', 'SEED')
+        ON CONFLICT (dept_nm) DO NOTHING;
+    END IF;
+END $$;
 
 -- -------------------------------------------------------------------------------------
 -- 2. 계정 (비밀번호는 전부 'Dwje!2026' — PBKDF2-HMAC-SHA512 해시)

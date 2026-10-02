@@ -49,7 +49,7 @@ class ProcessPeriodTest {
     }
 
     @Test fun `masking preserves explicit null metrics under application serialization defaults`() {
-        val principal = UserPrincipal("test", "test", 1, "test", "test", "STAFF", "PL01", false,
+        val principal = UserPrincipal("test", "test", 1, "test", "STAFF", "PL01", false,
             dataPerms = setOf(DataField.YIELD))
         val mask = MaskingSupport(principal)
         val row = ProcessPeriodRow.of(BigDecimal("90"), BigDecimal.TEN).copy(code = "P1", productNm = "Product").masked(mask)

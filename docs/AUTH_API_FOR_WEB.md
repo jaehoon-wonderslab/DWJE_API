@@ -109,7 +109,7 @@ GET /auth/signup/check-emp-no?empNo=30001
 ### 3-2. 가입 가능 부서 목록
 ```
 GET /auth/signup/depts
-→ data: { "depts": [ { "deptId": 2, "deptNm": "품질보증팀", "abbr": "품보", "desc": "…" }, … ] }
+→ data: { "depts": [ { "deptId": 2, "deptNm": "품질보증팀", "desc": "…" }, … ] }
 ```
 통합관리자 부서는 목록에 없다(스스로 신청 불가).
 

@@ -41,7 +41,7 @@ class WritePermissionTest {
 
     private fun userRow(dept: String, superAdmin: Boolean = false, state: String = "ACTIVE", pwdChange: Boolean = false) =
         mapOf<String, Any?>(
-            "userId" to "U1", "userName" to "시험", "deptId" to 9, "deptName" to dept, "deptAbbr" to null,
+            "userId" to "U1", "userName" to "시험", "deptId" to 9, "deptName" to dept,
             "positionCd" to null, "plantCd" to null, "superAdmin" to superAdmin, "userStateCd" to state,
             "pwdChangeRequired" to pwdChange
         )
@@ -55,7 +55,7 @@ class WritePermissionTest {
     }
 
     private fun login(vararg read: String, write: Set<String> = emptySet(), superAdmin: Boolean = false) = UserContext.set(
-        UserPrincipal("U1", "시험", 9, "시험부서", null, null, null, superAdmin, menuPerms = read.toSet(), writePerms = write)
+        UserPrincipal("U1", "시험", 9, "시험부서", null, null, superAdmin, menuPerms = read.toSet(), writePerms = write)
     )
 
     private val service = AuthorizationService(mock(AuthRepository::class.java))
@@ -131,7 +131,7 @@ class WritePermissionTest {
     @DisplayName("초기 비밀번호 변경 전 — 허용 5개(정확 일치)만 통과, 그 밖은 컨트롤러 전에 403 E-AUTH-006")
     fun passwordChangeGate() {
         val tokens = JwtTokenProvider(JwtProperties(secret = "test-only-jwt-signing-secret-123456"))
-        val principal = UserPrincipal("U1", "시험", 9, "미배정", null, null, null, false,
+        val principal = UserPrincipal("U1", "시험", 9, "미배정", null, null, false,
             menuPerms = setOf("dash-ai"), pwdChangeRequired = true)
         val authz = mock(AuthorizationService::class.java)
         doReturn(principal).`when`(authz).loadPrincipal("U1", false, null)

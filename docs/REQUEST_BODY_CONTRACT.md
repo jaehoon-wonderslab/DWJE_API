@@ -8,8 +8,8 @@
 > `RequestBodyContractTest` 가 `Map` 본문 개수가 코드와 맞는지 검사한다 —
 > 이 문서를 처음 쓴 날 용어 API 4개를 DTO 로 바꾸고 갱신하지 않아 같은 날 안에 틀렸다.
 
-- 본문을 받는 엔드포인트 **86개**
-- 타입 DTO **71개** — 모르는 키는 400
+- 본문을 받는 엔드포인트 **87개**
+- 타입 DTO **72개** — 모르는 키는 400
 - `Map` 본문 **0개** — **전부 타입 DTO 로 전환 완료**
 
 ## 왜 켰는가
@@ -36,7 +36,7 @@
 > 키·타입이 어긋난 항목만 빠지고 200 이 나가서, 10개를 보냈는데 3개만 반영되고도
 > 화면은 성공으로 읽었다. 지금은 어긋난 항목이 하나라도 있으면 400 이다.
 
-## B. 타입 DTO 71개 — 선언 키만 허용
+## B. 타입 DTO 72개 — 선언 키만 허용
 
 ### `TrainsetExportRequest`
 
@@ -330,6 +330,12 @@
 
 - `POST /api/ai/chat`
 
+### `LlmFollowupRequest`
+
+허용 키 — `question`, `answer`
+
+- `POST /api/ai/followups`
+
 ### `AiToolCallRequest`
 
 허용 키 — `from`, `to`, `wcCd`, `eqptCd`, `groupByDate`, `compareFrom`, `compareTo`, `label`, `compareLabel`, `limit`, `years`, `basis`, `defectReports`
@@ -451,6 +457,8 @@
 ### `DeptSaveRequest`
 
 허용 키 — `deptNm`, `abbr`, `desc`, `plantCd`, `initPermFrom`
+
+> `abbr` 는 사용 중지 — 옛 WEB 번들 호환으로 받기만 하고 값은 무시한다. 모든 WEB 배포 뒤 키를 지운다.
 
 - `POST /api/v1/system/depts`
 - `PUT /api/v1/system/depts/{deptId}`

@@ -26,13 +26,13 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * 사내 LLM 채팅 프록시 (`/api/ai/chat`)
  *
- * 덕우전자 전용 모델(`dwje-ax`, Ollama OpenAI 호환 API)에 대화를 넘긴다.
+ * 덕우전자 전용 모델(`dwje-ax`, GPU 서버 vLLM 의 LoRA · OpenAI 호환 API)에 대화를 넘긴다.
  * 본문을 모아 내부 정보 노출을 검사하고, 화면과 질의 이력에 같은 안전한 텍스트를 쓴다.
  *
  * ## 모델 사용 규칙 (어기면 사내 규칙이 적용되지 않는다)
- * - **`role: "system"` 은 절대 보내지 않는다.** 보내면 모델에 내장된 덕우전자 지시문
- *   (근거 기반 답변, `[1]` 근거 번호, 도메인 용어, 단가·개인정보 금지)이 통째로 대체된다.
- *   화면이 보내 와도 여기서 버린다. 근거는 마지막 user 메시지 안에 넣는다.
+ * - **system 은 서버가 정한 것(`app.llm.system-prompt`, 학습 데이터의 문서 어시스턴트 원문)만 보낸다.**
+ *   vLLM LoRA 에는 예전 Ollama 모델처럼 내장 지시문이 없다(2026-10 전환). 화면이 보낸 system 은 버린다 —
+ *   사용자가 지시문을 바꿔 근거 밖 답·금지 항목을 끌어내지 못하게. 근거는 마지막 user 메시지 안에 넣는다.
  * - `temperature`·`top_p` 같은 샘플링 값은 보내지 않는다(모델 기본값).
  * - `reasoning_effort: "none"` 은 반드시 넣는다. 빼면 추론(thinking)부터 해 응답이 느려진다.
  *
@@ -60,6 +60,12 @@ class LlmChatProxyService(
             .build()
     }
 
+    /** auto 도구 선택이 서버의 도구 파서 부재를 보고 json-schema 로 바뀌었는지 — 프로세스가 끝날 때까지 유지 */
+    private val toolJsonMode = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** 지금 도구 선택이 json-schema 방식인지 */
+    fun toolJsonSchemaActive(): Boolean = appProperties.llm.toolMode == "json-schema" || (appProperties.llm.toolMode == "auto" && toolJsonMode.get())
+
     /** IP → 최근 1분 안의 요청 시각(ms) */
     private val hits = ConcurrentHashMap<String, ArrayDeque<Long>>()
 
@@ -68,6 +74,9 @@ class LlmChatProxyService(
         private const val HEALTH_TIMEOUT_SEC = 5L
         private const val WINDOW_MS = 60_000L
         private val ROLES = setOf("user", "assistant")
+
+        /** json-schema 도구 선택에서 「도구 필요 없음」 */
+        const val NO_TOOL = "none"
 
         /** 후속 질의 지시문 — 이 시스템이 실제로 답할 수 있는 범위 안에서만 묻게 한다 */
         private val FOLLOWUP_SYSTEM = """
@@ -118,7 +127,7 @@ class LlmChatProxyService(
      * 3. 마지막 user 메시지를 `[지시](오늘 날짜) · [근거] · [질문]` 으로 감싼다(근거가 없으면 [근거] 없이)
      * 4. 전체 길이가 상한을 넘으면 **오래된 것부터** 뺀다. 마지막 질문 하나로도 넘으면 거절한다
      */
-    fun buildMessages(request: LlmChatRequest): List<Map<String, String>> {
+    fun buildMessages(request: LlmChatRequest, general: Boolean = false): List<Map<String, String>> {
         val cfg = appProperties.llm
 
         val kept = request.messages.orEmpty()
@@ -134,7 +143,7 @@ class LlmChatProxyService(
         // 모델은 오늘 날짜를 모른다. 없으면 "지난달" 을 2024-05 처럼 채운다(LLM 담당 실측, 2026-09-23).
         // [지시] 는 모델 내장 규칙 8번이 형식 지시로 따른다 — system 이 아니라 user 메시지 안에 둔다.
         val today = "[지시]\n오늘은 ${java.time.LocalDate.now(java.time.ZoneId.of("Asia/Seoul"))}이다."
-        val context = request.context?.trim().orEmpty()
+        val context = if (general) "" else request.context?.trim().orEmpty()
         val q = kept[lastUser].content!!.trim()
         val greeting = Regex("^(안녕(?:하세요|하십니까)?|하이|hi|hello|고마워(?:요)?|감사(?:합니다|해요)?)[!?.~ ]*$", RegexOption.IGNORE_CASE).matches(q)
         val instruction = if (greeting && context.isEmpty()) "$today\n이 질문은 사실 확인이 필요 없는 일상 인사다. 짧고 자연스럽게 답하라." else today
@@ -142,7 +151,7 @@ class LlmChatProxyService(
             "일상 인사·감사에는 짧고 정중하게 응답할 수 있다. 생산·품질 사실은 언급하지 않는다." else context
         kept[lastUser] = LlmChatMessage(
             "user",
-            if (effectiveContext.isNotEmpty()) "$instruction\n\n[근거]\n$effectiveContext\n\n[질문]\n$q" else "$instruction\n\n[질문]\n$q"
+            if (general) q else if (effectiveContext.isNotEmpty()) "$instruction\n\n[근거]\n$effectiveContext\n\n[질문]\n$q" else "$instruction\n\n[질문]\n$q"
         )
 
         var total = kept.sumOf { it.content!!.length }
@@ -168,7 +177,7 @@ class LlmChatProxyService(
      * 아직 화면에 아무것도 보내지 않았으므로 상태 코드로 사유를 알릴 수 있다.
      * 스트림을 연 뒤의 끊김은 호출한 쪽이 받은 데까지만 흘려보낸다.
      */
-    fun open(messages: List<Map<String, String>>, exchange: ToolExchange? = null): InputStream {
+    fun open(messages: List<Map<String, String>>, exchange: ToolExchange? = null, general: Boolean = false): InputStream {
         val cfg = appProperties.llm
         val upstreamMessages: List<Map<String, Any?>> = if (exchange == null) messages else messages + listOf(
             mapOf("role" to "assistant", "content" to null, "tool_calls" to listOf(mapOf(
@@ -176,13 +185,18 @@ class LlmChatProxyService(
                     "name" to exchange.name, "arguments" to objectMapper.writeValueAsString(exchange.args))))),
             mapOf("role" to "tool", "tool_call_id" to exchange.callId, "content" to exchange.result)
         )
+        // 서버가 정한 system 을 첫 메시지로 (화면이 보낸 system 은 buildMessages 에서 이미 버렸다)
+        val systemPrompt = (if (general) cfg.generalSystemPrompt else cfg.systemPrompt).trim()
+        val withSystem = if (systemPrompt.isEmpty() || upstreamMessages.firstOrNull()?.get("role") == "system") upstreamMessages
+        else listOf(mapOf("role" to "system", "content" to systemPrompt)) + upstreamMessages
         val body = mapOf(
-            "model" to cfg.model,
-            "messages" to upstreamMessages,
+            "model" to if (general) cfg.generalModel else cfg.model,
+            "messages" to withSystem,
             "stream" to true,
+            "max_tokens" to 512,
             "reasoning_effort" to "none",
             "dwje" to mapOf("rag" to false, "tools" to false)
-        )
+        ) + cfg.sampling.fields() + mapOf("temperature" to if (general) 0.2 else 0.0)
 
         val request = HttpRequest.newBuilder()
             .uri(URI.create("${cfg.baseUrl.trimEnd('/')}/v1/chat/completions"))
@@ -219,35 +233,112 @@ class LlmChatProxyService(
         return response.body()
     }
 
-    /** 1차 LLM 판단: 표준 OpenAI tool_calls만 받아 서버가 검증하도록 넘긴다. */
+    /**
+     * 1차 LLM 판단 — 도구 하나를 고르게 하고, 결과는 표준 OpenAI `message`(`tool_calls[0].function.{name, arguments}`) 모양으로 돌려준다.
+     * 도구가 필요 없으면 `tool_calls` 없이 `content` 만 있는 message 다([AiQuestionPlanner] 가 Other 로 본다). 인자 검증은 서버가 한다.
+     *
+     * 방식은 `app.llm.tool-mode` 다. auto 는 native 로 시도하고, 서버가 도구 파서가 없다는 400 을 주면 json-schema 로 다시 부르고
+     * 그 뒤로는 json-schema 만 쓴다(GPU 서버에 `--tool-call-parser` 를 켜면 native 그대로).
+     */
     fun chooseTool(question: String, tools: List<Map<String, Any?>>, today: java.time.LocalDate): JsonNode? {
+        val instruction = "오늘은 $today 이다(Asia/Seoul). 사용자의 의도를 먼저 파악해 필요한 DB 도구 하나를 선택하라. 실적·생산·불량·불량률을 묻는 질문은 문서검색/일반대화 도구로 보내지 말고 관련 DB 도구를 선택한다. 날짜는 교대 업무일 YYYY-MM-DD이며 양 끝 업무일을 포함한다. 연도 없는 월일은 종료 업무일이 오늘을 넘지 않는 가장 최근 유효 연도로 해석한다.\n" +
+                    "도구 선택 기준: 인사·일상 대화·일반 지식은 general_chat을 선택한다. 사내 규정·문서 질문은 DB 도구 없이 문서 검색 대상으로 남긴다. 이전 업무 질문의 후속 조회는 일반 대화로 분류하지 않는다. 공장 전체 생산량·불량 건수·불량률과 기간 비교 또는 변화(%p 포함)는 production_period_compare를 선택하고, 불량률 변화는 조회 기간과 직전 비교 기간을 모두 채운다. '지난 일주일' 비교는 MES 최신 실적일을 끝 날짜로 최근 7개 업무일과 그 직전 7개 업무일을 비교한다. 제품별 불량률 순위는 defect_rate_top, 불량 유형 수량 순위는 defect_top을 선택한다. 후속 질문에 새 기간이 없고 [직전 조회 기간]이 제공되면 그 기간을 재사용한다.\n[질문]\n$question"
+        if (toolJsonSchemaActive()) return chooseToolJson(instruction, tools)
+        val (status, body) = callTool(nativeToolBody(instruction, tools)) ?: return null
+        if (status == 200) return runCatching { objectMapper.readTree(body).path("choices").path(0).path("message") }.getOrNull()
+        if (appProperties.llm.toolMode == "auto" && status == 400 && (body.contains("tool-call-parser") || body.contains("enable-auto-tool-choice"))) {
+            if (toolJsonMode.compareAndSet(false, true)) {
+                log.info("LLM 서버에 도구 파서가 없어 도구 선택을 json-schema 방식으로 바꿉니다(프로세스가 끝날 때까지)")
+            }
+            return chooseToolJson(instruction, tools)
+        }
+        log.warn("LLM 도구 판단 실패 status={}", status)
+        return null
+    }
+
+    private fun toolMessages(content: String): List<Map<String, Any?>> {
         val cfg = appProperties.llm
-        val functions = tools.map { tool -> mapOf("type" to "function", "function" to mapOf(
-            "name" to tool["name"], "description" to tool["description"], "parameters" to tool["inputSchema"])) }
-        val body = mapOf(
-            "model" to cfg.model,
+        val system = cfg.systemPrompt.trim().takeIf { cfg.toolSystemPrompt && it.isNotEmpty() }
+        return listOfNotNull(system?.let { mapOf("role" to "system", "content" to it) }, mapOf("role" to "user", "content" to content))
+    }
+
+    private fun nativeToolBody(instruction: String, tools: List<Map<String, Any?>>): Map<String, Any?> = mapOf(
+        "model" to appProperties.llm.generalModel,
+        "stream" to false,
+            "max_tokens" to 512,
+        "reasoning_effort" to "none",
+        "temperature" to appProperties.llm.toolTemperature,
+        "messages" to toolMessages(instruction),
+        "tools" to tools.map { tool -> mapOf("type" to "function", "function" to mapOf(
+            "name" to tool["name"], "description" to tool["description"], "parameters" to tool["inputSchema"])) },
+        "tool_choice" to "auto",
+        "dwje" to mapOf("rag" to false)
+    )
+
+    /** 도구 목록을 지시문에 넣고 `{name, arguments}` 를 스키마로 받는다 — 서버에 도구 파서가 없을 때 */
+    internal fun jsonToolBody(instruction: String, tools: List<Map<String, Any?>>): Map<String, Any?> {
+        val catalog = tools.map { mapOf("name" to it["name"], "description" to it["description"], "arguments" to it["inputSchema"]) }
+        val content = instruction + "\n\n[도구 목록]\n" + objectMapper.writeValueAsString(catalog) +
+            "\n\n위 도구 중 하나를 골라 name 과 arguments(그 도구의 arguments 스키마를 따른다)로 답하라. " +
+            "사내 문서·규정 질문이면 name 을 \"$NO_TOOL\", arguments 를 {} 로 답하라."
+        return mapOf(
+            "model" to appProperties.llm.generalModel,
             "stream" to false,
+            "max_tokens" to 512,
             "reasoning_effort" to "none",
-            "messages" to listOf(mapOf("role" to "user", "content" to
-                "오늘은 $today 이다(Asia/Seoul). 사용자의 의도를 먼저 파악해 필요한 DB 도구 하나를 선택하라. 실적·생산·불량·불량률을 묻는 질문은 문서검색/일반대화 도구로 보내지 말고 관련 DB 도구를 선택한다. 날짜는 교대 업무일 YYYY-MM-DD이며 양 끝 업무일을 포함한다. 연도 없는 월일은 종료 업무일이 오늘을 넘지 않는 가장 최근 유효 연도로 해석한다.\n" +
-                    "도구 선택 기준: 공장 전체 생산량·불량 건수·불량률과 기간 비교 또는 변화(%p 포함)는 production_period_compare를 선택하고, 불량률 변화는 조회 기간과 직전 비교 기간을 모두 채운다. '지난 일주일' 비교는 MES 최신 실적일을 끝 날짜로 최근 7개 업무일과 그 직전 7개 업무일을 비교한다. 제품별 불량률 순위는 defect_rate_top, 불량 유형 수량 순위는 defect_top을 선택한다. 후속 질문에 새 기간이 없고 [직전 조회 기간]이 제공되면 그 기간을 재사용한다.\n[질문]\n$question")),
-            "tools" to functions,
-            "tool_choice" to "auto",
+            "temperature" to appProperties.llm.toolTemperature,
+            "messages" to toolMessages(content),
+            "response_format" to mapOf("type" to "json_schema", "json_schema" to mapOf("name" to "tool_choice", "schema" to toolChoiceSchema(tools))),
             "dwje" to mapOf("rag" to false)
         )
+    }
+
+    /**
+     * `{name, arguments}` 스키마 — 도구마다 한 갈래(`anyOf`)로 묶어 name 에 맞는 arguments 스키마(required 포함)를 강제한다.
+     * arguments 를 그냥 object 로 두면 「9/20 불량 유형 top 3」 에서 to 를 빼먹는 일이 15회 중 5회였다(2026-10-02).
+     */
+    internal fun toolChoiceSchema(tools: List<Map<String, Any?>>): Map<String, Any?> {
+        fun branch(name: String, args: Any?) = mapOf(
+            "type" to "object",
+            "properties" to mapOf("name" to mapOf("type" to "string", "enum" to listOf(name)), "arguments" to args),
+            "required" to listOf("name", "arguments")
+        )
+        val none = branch(NO_TOOL, mapOf("type" to "object", "properties" to emptyMap<String, Any>()))
+        return mapOf("anyOf" to tools.mapNotNull { t -> (t["name"] as String?)?.let { branch(it, t["inputSchema"] ?: mapOf("type" to "object")) } } + none)
+    }
+
+    private fun chooseToolJson(instruction: String, tools: List<Map<String, Any?>>): JsonNode? {
+        val (status, body) = callTool(jsonToolBody(instruction, tools)) ?: return null
+        if (status != 200) { log.warn("LLM 도구 판단(json-schema) 실패 status={}", status); return null }
+        val content = runCatching { objectMapper.readTree(body).path("choices").path(0).path("message").path("content").asText("") }.getOrNull()
+            ?: return null
+        return toolMessageOf(content)
+    }
+
+    /** json-schema 응답 `{name, arguments}` → native 와 같은 message 모양. 도구 없음이면 content 만 있는 message */
+    internal fun toolMessageOf(content: String): JsonNode? {
+        val picked = runCatching { objectMapper.readTree(content) }.getOrNull()?.takeIf { it.isObject } ?: return null
+        val name = picked.path("name").asText("")
+        val message = objectMapper.createObjectNode()
+        if (name.isEmpty() || name == NO_TOOL) { message.put("content", NO_TOOL); return message }
+        val call = message.putArray("tool_calls").addObject()
+        call.put("id", "call_json_1"); call.put("type", "function")
+        call.putObject("function").put("name", name)
+            .put("arguments", objectMapper.writeValueAsString(picked.path("arguments").takeIf { it.isObject } ?: objectMapper.createObjectNode()))
+        return message
+    }
+
+    /** 도구 판단 호출 — (상태 코드, 본문). 연결 실패면 null */
+    private fun callTool(body: Map<String, Any?>): Pair<Int, String>? {
+        val cfg = appProperties.llm
         val request = HttpRequest.newBuilder()
             .uri(URI.create("${cfg.baseUrl.trimEnd('/')}/v1/chat/completions"))
             .timeout(Duration.ofMillis(cfg.timeoutMs))
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
             .build()
-        return runCatching {
-            val response = http.send(request, HttpResponse.BodyHandlers.ofString())
-            if (response.statusCode() != 200) {
-                log.warn("LLM 도구 판단 실패 status={}", response.statusCode())
-                null
-            } else objectMapper.readTree(response.body()).path("choices").path(0).path("message")
-        }.onFailure { log.warn("LLM 도구 판단 실패 type={}", it.javaClass.simpleName) }.getOrNull()
+        return runCatching { http.send(request, HttpResponse.BodyHandlers.ofString()).let { it.statusCode() to it.body() } }
+            .onFailure { log.warn("LLM 도구 판단 실패 type={}", it.javaClass.simpleName) }.getOrNull()
     }
 
     /**

@@ -46,7 +46,7 @@ class AccountGwP1DbTest {
     /** 조회용 진짜 감사 서비스 — 빈은 목이라 따로 만든다(조회만 한다) */
     private val audit by lazy { AuditLogService(auditRepo, authz) }
 
-    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, null, true)
+    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, true)
 
     @BeforeEach
     fun login() = UserContext.set(admin)
@@ -130,7 +130,7 @@ class AccountGwP1DbTest {
         }
         assertThrows(InvalidParameterException::class.java) { audit.getPermLogs("2025-01-01", "2026-10-01", null, null, 1, 10) }
 
-        UserContext.set(UserPrincipal("10004", "전산", 5, "전산팀", null, null, null, false, menuPerms = setOf(MenuId.SYS_GW_DEPT)))
+        UserContext.set(UserPrincipal("10004", "전산", 5, "전산팀", null, null, false, menuPerms = setOf(MenuId.SYS_GW_DEPT)))
         val (gwOnly, _) = audit.getPermLogs("2026-09-01", null, null, null, 1, 0)
         assertTrue(gwOnly.all { it["actType"] == "GW_DEPT_MAP" || (it["actType"] == "ACCOUNT" && (it["detail"] as String).startsWith("부서 이동 →")) })
         assertEquals(0L, audit.getPermLogs("2026-09-01", null, null, "DEPT", 1, 10).second.total)
@@ -162,7 +162,7 @@ class AccountGwP1DbTest {
         assertNull(jdbc.queryForObject("SELECT dept_id FROM ax.tb_sys_dept_gw_map WHERE gw_dept_nm = 'ZT부서C'", MapSqlParameterSource(), Int::class.java))
         assertThrows(InvalidParameterException::class.java) { gw.saveMapsBulk(GwDeptMapBulkSaveRequest(gwDeptNms = (1..201).map { "ZT$it" })) }
 
-        UserContext.set(UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, null, false, menuPerms = setOf(MenuId.SYS_GW_DEPT)))
+        UserContext.set(UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, false, menuPerms = setOf(MenuId.SYS_GW_DEPT)))
         assertThrows(WriteAccessDeniedException::class.java) { gw.saveMapsBulk(GwDeptMapBulkSaveRequest(gwDeptNms = listOf("ZT부서D"))) }
     }
 }

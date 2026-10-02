@@ -579,7 +579,7 @@ class SystemUserService(
     }
 
     /**
-     * 부서 목록 — 키워드(부서명·약칭·설명)와 쪽 나눔 (2026-09-13 WEB 요청).
+     * 부서 목록 — 키워드(부서명·설명)와 쪽 나눔 (2026-09-13 WEB 요청).
      * `page`·`size` 가 없으면 전량(기존 선택지 호출 호환)이고 meta 는 null 이다. `size=0` 이면 page 와 무관하게 전량이고 meta 는 전량 표시다.
      */
     @Transactional(readOnly = true)
@@ -623,15 +623,14 @@ class SystemUserService(
 
         val deptNm = request.deptNm?.trim()?.takeIf { it.isNotEmpty() }
             ?: throw InvalidParameterException("부서명을 입력해 주세요.", "deptNm")
-        val abbr = request.abbr?.trim()?.takeIf { it.isNotEmpty() }
-            ?: throw InvalidParameterException("부서 약칭을 입력해 주세요.", "abbr")
-        checkDeptFields(deptNm, abbr, request.desc)
+        // 부서 약칭은 없앴다(2026-10-02) — 요청의 abbr 는 옛 화면 호환으로 받기만 하고 쓰지 않는다
+        checkDeptFields(deptNm, request.desc)
 
-        if (systemUserRepository.existsDeptName(deptNm, abbr, null)) {
-            throw DuplicatedValueException("이미 등록된 부서명 또는 약칭입니다.", "deptNm")
+        if (systemUserRepository.existsDeptName(deptNm, null)) {
+            throw DuplicatedValueException("이미 등록된 부서명입니다.", "deptNm")
         }
 
-        val deptId = systemUserRepository.insertDept(deptNm, abbr, request.desc, request.plantCd, principal.userId)
+        val deptId = systemUserRepository.insertDept(deptNm, request.desc, request.plantCd, principal.userId)
 
         // 초기 권한을 지정 부서에서 복사한다.
         var copiedCnt = 0
@@ -652,7 +651,7 @@ class SystemUserService(
             actCd = "DEPT",
             targetKindCd = "DEPT",
             targetNm = deptNm,
-            detail = "부서 등록 — 약칭=$abbr, 초기 권한 복사=${copiedCnt}건, 기본 조회 화면=${defaults.joinToString(",")}",
+            detail = "부서 등록 — 초기 권한 복사=${copiedCnt}건, 기본 조회 화면=${defaults.joinToString(",")}",
             targetDeptId = deptId
         )
 
@@ -664,10 +663,9 @@ class SystemUserService(
         if (value.length > max) throw InvalidParameterException("$label ${max}자 이내여야 합니다.", field)
     }
 
-    /** 부서명 50자 · 약칭 1~4자 · 설명 200자 (01 ACC-12, 컬럼 길이와 같다) */
-    private fun checkDeptFields(deptNm: String?, abbr: String?, desc: String?) {
+    /** 부서명 50자 · 설명 200자 (01 ACC-12, 컬럼 길이와 같다) */
+    private fun checkDeptFields(deptNm: String?, desc: String?) {
         deptNm?.let { checkMax(it, 50, "부서명은", "deptNm") }
-        abbr?.let { checkMax(it, 4, "부서 약칭은", "abbr") }
         desc?.trim()?.let { checkMax(it, 200, "설명은", "desc") }
     }
 
@@ -677,23 +675,22 @@ class SystemUserService(
         val principal = authorizationService.requireWrite(MenuId.SYS_ACCOUNT)
         val dept = systemUserRepository.findDept(deptId)
             ?: throw ResourceNotFoundException("부서를 찾을 수 없습니다. [deptId=$deptId]")
-        // 미배정·통합관리자 부서의 이름은 바꿀 수 없다 — 자동 가입과 권한 판정이 이름으로 찾는다(CMN-01). 약칭·설명은 바꿀 수 있다.
+        // 미배정·통합관리자 부서의 이름은 바꿀 수 없다 — 자동 가입과 권한 판정이 이름으로 찾는다(CMN-01). 설명은 바꿀 수 있다.
         systemDeptGuard.assertSystemDeptImmutable(dept, newName = request.deptNm?.trim())
         request.deptNm?.let { if (it.isBlank()) throw InvalidParameterException("부서명을 입력해 주세요.", "deptNm") }
-        request.abbr?.let { if (it.isBlank()) throw InvalidParameterException("부서 약칭을 입력해 주세요.", "abbr") }
-        checkDeptFields(request.deptNm?.trim(), request.abbr?.trim(), request.desc)
+        checkDeptFields(request.deptNm?.trim(), request.desc)
 
-        if (systemUserRepository.existsDeptName(request.deptNm?.trim(), request.abbr?.trim(), deptId)) {
-            throw DuplicatedValueException("이미 등록된 부서명 또는 약칭입니다.", "deptNm")
+        if (systemUserRepository.existsDeptName(request.deptNm?.trim(), deptId)) {
+            throw DuplicatedValueException("이미 등록된 부서명입니다.", "deptNm")
         }
 
-        systemUserRepository.updateDept(deptId, request.deptNm?.trim(), request.abbr?.trim(), request.desc, principal.userId)
+        systemUserRepository.updateDept(deptId, request.deptNm?.trim(), request.desc, principal.userId)
 
         auditLogService.recordPermChange(
             actCd = "DEPT",
             targetKindCd = "DEPT",
             targetNm = request.deptNm ?: "$deptId",
-            detail = "부서 수정 — 약칭=${request.abbr ?: "-"}",
+            detail = "부서 수정 — 부서명=${request.deptNm?.trim() ?: "(그대로)"}, 설명 변경=${if (request.desc != null) "예" else "아니오"}",
             targetDeptId = deptId
         )
 

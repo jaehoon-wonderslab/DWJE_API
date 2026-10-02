@@ -44,7 +44,7 @@ class DownloadUploadSyncP1DbTest {
     @Autowired lateinit var jdbc: NamedParameterJdbcTemplate
     @MockitoBean lateinit var audit: AuditLogService
 
-    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, null, true)
+    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, true)
     private lateinit var recorder: RecordingDownloadLogService
     private lateinit var export: ListExportService
 

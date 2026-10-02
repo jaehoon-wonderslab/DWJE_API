@@ -29,7 +29,7 @@ class ProcessPeriodServiceTest {
     }
 
     @Test fun `quantity denied across summary all lists and generated empty bucket`() {
-        val principal = UserPrincipal("test", "test", 1, "test", "test", "STAFF", "PL01", false,
+        val principal = UserPrincipal("test", "test", 1, "test", "STAFF", "PL01", false,
             menuPerms = setOf(MenuId.DASH_PROC), dataPerms = setOf(DataField.YIELD))
         `when`(authorization.guard(MenuId.DASH_PROC)).thenReturn(principal to MaskingSupport(principal))
         val row = ProcessPeriodRow.of(BigDecimal("90"), BigDecimal.TEN)

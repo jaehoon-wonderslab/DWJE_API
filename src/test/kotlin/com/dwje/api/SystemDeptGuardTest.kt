@@ -31,7 +31,7 @@ class SystemDeptGuardTest {
     private val it = dept(5, "전산팀")
 
     private fun user(superAdmin: Boolean) =
-        UserPrincipal("10004", "전산", 5, "전산팀", null, null, null, superAdmin)
+        UserPrincipal("10004", "전산", 5, "전산팀", null, null, superAdmin)
 
     private fun assertCode(code: ErrorCode, block: () -> Unit): BusinessException {
         val e = assertThrows(BusinessException::class.java) { block() }
@@ -59,7 +59,7 @@ class SystemDeptGuardTest {
     }
 
     @Test
-    @DisplayName("시스템 부서 이름 변경·삭제는 409 — 약칭·설명만 바꾸는 수정(이름 그대로·null)은 통과")
+    @DisplayName("시스템 부서 이름 변경·삭제는 409 — 설명만 바꾸는 수정(이름 그대로·null)은 통과")
     fun systemDeptImmutable() {
         assertCode(ErrorCode.RULE_VIOLATION) { guard.assertSystemDeptImmutable(unassigned, newName = "임시") }
         assertCode(ErrorCode.RULE_VIOLATION) { guard.assertSystemDeptImmutable(superDept, deleting = true) }

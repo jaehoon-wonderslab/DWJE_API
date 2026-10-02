@@ -48,9 +48,9 @@
 | 실행 구성 | 프로파일 | DB | LLM |
 |---|---|---|---|
 | `dwje-api [local+jetsonLLM]` | `local` | 로컬 `localhost:5432/dwjedb` | Jetson `wddg.ddns.net:11435` |
-| `dwje-api [local+실서버LLM]` | `local` | 로컬 `localhost:5432/dwjedb` | 실서버 `192.168.2.8:11436` |
+| `dwje-api [local+실서버LLM]` | `local` | 로컬 `localhost:5432/dwjedb` | 실서버 vLLM `192.168.2.8:8000`(채팅)·`:8001`(임베딩) |
 | `dwje-api [prod+jetsonLLM]` | `prod` | 실서버 `192.168.2.8:5432/dwjedb` | Jetson `wddg.ddns.net:11435` |
-| `dwje-api [prod+실서버LLM]` | `prod` | 실서버 `192.168.2.8:5432/dwjedb` | 실서버 `192.168.2.8:11436` |
+| `dwje-api [prod+실서버LLM]` | `prod` | 실서버 `192.168.2.8:5432/dwjedb` | 실서버 vLLM `192.168.2.8:8000`(채팅)·`:8001`(임베딩) |
 
 `[prod+jetsonLLM]` 은 "DB 는 실서버인데 LLM 응답만 Jetson 에서 받는다"는 조합이다.
 
@@ -113,7 +113,7 @@ prod 기동이 불가능하다. 지면에 대한 결정:
 
 | 주소 | 정체 | 도달 조건 |
 |---|---|---|
-| `192.168.2.8:11436` | **실서버**의 OpenAI 호환 게이트웨이 | 사내망·VPN 필요 |
+| `192.168.2.8:8000` · `:8001` | **실서버** GPU vLLM — 채팅(dwje-ax LoRA) · 임베딩(BAAI/bge-m3), OpenAI 형식 (2026-10, 예전 게이트웨이 :11436 대신) | 사내망·VPN 필요 |
 | `wddg.ddns.net:11435` | **Jetson** (공인 IP `115.140.82.10`) | 인터넷만 되면 됨 |
 
 `192.168.2.8` 한 대가 DB · API · LLM 게이트웨기를 모두 겸한다
@@ -195,9 +195,9 @@ mv -f dwje-api-0.0.1.jar.part dwje-api-0.0.1.jar
 | 사용 환경 | API 프로파일·DB | LLM 대상 | IntelliJ 실행 구성 |
 |---|---|---|---|
 | 로컬 DB + Jetson | `local` · 로컬 PostgreSQL | `wddg.ddns.net:11435` | `dwje-api [local+jetsonLLM]` |
-| 로컬 DB + 실서버 LLM | `local` · 로컬 PostgreSQL | `192.168.2.8:11436` | `dwje-api [local+실서버LLM]` |
+| 로컬 DB + 실서버 LLM | `local` · 로컬 PostgreSQL | `192.168.2.8:8000`·`:8001` | `dwje-api [local+실서버LLM]` |
 | 실서버 DB + Jetson | `prod` · `192.168.2.8:5432` | `wddg.ddns.net:11435` | `dwje-api [prod+jetsonLLM]` |
-| 실서버 DB + 실서버 LLM | `prod` · `192.168.2.8:5432` | `192.168.2.8:11436` | `dwje-api [prod+실서버LLM]` |
+| 실서버 DB + 실서버 LLM | `prod` · `192.168.2.8:5432` | `192.168.2.8:8000`·`:8001` | `dwje-api [prod+실서버LLM]` |
 
 Mac 로컬은 `config/api.env.local.example`을 `config/api.env.local`로 복사하고
 `./start.sh --profile=local`로 실행한다. 서버 개발 프로파일은 `config/api.env.dev.example`을
@@ -226,7 +226,7 @@ DB 비밀번호는 `PROD_DB_PASSWORD`에 설정한다. DB가 별도 서버라면
 | prod | `PROD_DB_PASSWORD` · `PROD_JWT_SECRET` · `PROD_MAIL_HOST` · `PROD_MAIL_USERNAME` · `PROD_MAIL_PASSWORD` | **기동 실패** (5개 전부 필수) |
 | 공통(선택) | `AX_UPLOAD_DIR` (기본 `./data/ax-uploads`) | 기본값으로 기동 — 업로드 리포트 원본 저장소 |
 | 공통(선택) | `AX_MSSQL_URL` (기본 EDGE 192.168.7.203) · `AX_MSSQL_USER` · `AX_MSSQL_PASSWORD` | 기본값으로 기동 — 계정이 비면 AOI 치수 API 가 `SOURCE_NOT_CONFIGURED` 를 낸다(원천 MSSQL 직접 조회, `docs/AOI_DIMENSION_API_20260913.md`) |
-| 공통(선택) | `DWJE_LLM_BASE_URL` (local 기본 `http://wddg.ddns.net:11435`, dev/prod 기본 `http://192.168.2.8:11436`) · `DWJE_LLM_MODEL` (기본 `dwje-ax`) · `DWJE_LLM_TIMEOUT_MS` (기본 `120000`) · `DWJE_LLM_PROVIDER` (`openai` 기본, 예전 로컬 Ollama 는 `ollama`) · `AX_EMBED_BASE_URL` (문서 임베딩 bge-m3, 기본 `DWJE_LLM_BASE_URL` 과 같은 서버) | 기본값으로 기동 — 사내 LLM 채팅 프록시(`POST /api/ai/chat` 스트리밍 · `GET /api/ai/health`) · 대시보드 AI 브리핑·원인 분석 · AI 데이터 도구(`GET /api/ai/tools`). 브라우저는 LLM 서버를 직접 부르지 않는다. LLM 요청에 인증 키를 보내지 않는다 |
+| 공통(선택) | `DWJE_LLM_BASE_URL` (local 기본 `http://wddg.ddns.net:11435`, dev/prod 기본 `http://192.168.2.8:8000` — GPU vLLM) · `DWJE_LLM_MODEL` (기본 `dwje-ax`) · `DWJE_LLM_TIMEOUT_MS` (기본 `120000`) · `DWJE_LLM_PROVIDER` (`openai` 기본, 예전 로컬 Ollama 는 `ollama`) · `DWJE_LLM_TOOL_MODE` (`auto` 기본 · `native` · `json-schema`) · `AX_EMBED_BASE_URL` (문서 임베딩 bge-m3 — local 기본 `DWJE_LLM_BASE_URL` 과 같은 서버, dev/prod 기본 `http://192.168.2.8:8001`) · `AX_EMBED_MODEL` (local `bge-m3:latest`, dev/prod `BAAI/bge-m3`) · `AX_EMBED_API` (local `ollama`, dev/prod `openai`) | 기본값으로 기동 — 사내 LLM 채팅 프록시(`POST /api/ai/chat` 스트리밍 · `GET /api/ai/health`) · 대시보드 AI 브리핑·원인 분석 · AI 데이터 도구(`GET /api/ai/tools`). 브라우저는 LLM 서버를 직접 부르지 않는다. LLM 요청에 인증 키를 보내지 않는다 |
 
 > 메일 3종은 이 표에 없었다. 그래서 안내대로 DB·JWT 두 개만 채우면
 > `Could not resolve placeholder 'DEV_MAIL_HOST'` 로 기동조차 못 했다.

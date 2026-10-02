@@ -49,7 +49,7 @@ class MiscP2DbTest {
     @Autowired lateinit var jdbc: NamedParameterJdbcTemplate
     @MockitoBean lateinit var audit: AuditLogService
 
-    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, null, true)
+    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, true)
 
     @BeforeEach
     fun login() = UserContext.set(admin)

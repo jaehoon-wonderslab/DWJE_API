@@ -78,7 +78,7 @@ class SystemDeptGuard(
     /**
      * 시스템 부서의 이름 변경·삭제를 막는다 (409).
      *
-     * @param newName 바꾸려는 이름. null 이면 이름을 바꾸지 않는 수정(약칭·설명만)으로 보고 통과시킨다
+     * @param newName 바꾸려는 이름. null 이면 이름을 바꾸지 않는 수정(설명만)으로 보고 통과시킨다
      * @param deleting 삭제 요청이면 true
      */
     fun assertSystemDeptImmutable(dept: Map<String, Any?>, newName: String? = null, deleting: Boolean = false) {

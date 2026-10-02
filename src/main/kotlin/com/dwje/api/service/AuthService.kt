@@ -256,7 +256,7 @@ class AuthService(
             return MyInfoResponse(
                 user = user,
                 dept = DeptInfo(
-                    deptId = principal.deptId, deptNm = principal.deptName, deptAbbr = null,
+                    deptId = principal.deptId, deptNm = principal.deptName,
                     superAdmin = principal.superAdmin, plantCd = null, unassigned = principal.unassigned
                 ),
                 menuPerms = emptyList(),
@@ -304,7 +304,6 @@ class AuthService(
             dept = DeptInfo(
                 deptId = principal.deptId,
                 deptNm = principal.deptName,
-                deptAbbr = principal.deptAbbr,
                 superAdmin = principal.superAdmin,
                 plantCd = principal.plantCd,
                 unassigned = principal.unassigned

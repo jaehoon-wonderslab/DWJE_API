@@ -181,9 +181,14 @@ class AiChatService(
         trace.toolMs = toolResult.elapsedMs
         val dataEvidence = toolResult.evidence
 
+        // 5-0. DB 조회가 0건(EMPTY)이거나 모델이 고른 DB 도구의 조건이 검증에서 떨어졌으면(INVALID) LLM 없이 고정 답이다.
+        //      문서 어시스턴트 모델에 넘기면 「사내 문서에서 확인할 수 없습니다」 로 답해 틀린 안내가 된다.
+        val fixedAnswer = AiFixedAnswer.of(toolResult, java.time.LocalDate.now(java.time.ZoneId.of("Asia/Seoul")))
+
         // 5-1. 근거 문서 검색 — 문서 질의에만 실행한다. MES/품질 데이터 질문은 DB 도구 결과가
         // 유일한 근거여야 하며, 오래된 벡터 문서가 빈 조회 결과를 대신하거나 답을 덮지 않게 한다.
-        val hits = (if (toolResult.route in DATABASE_TOOL_ROUTES) emptyList() else
+        // 고정 답(조건 오류 포함)도 문서를 찾지 않는다 — 모델이 DB 도구를 고른 질문이다.
+        val hits = (if (toolResult.route in DATABASE_TOOL_ROUTES || toolResult.route in setOf("GREETING", "GENERAL") || fixedAnswer != null) emptyList() else
             aiChatRepository.searchDocumentChunks(searchTextOf(question, normalized.replacements), principal.deptId, SEARCH_TOP_K, principal.superAdmin))
             .map { it.toMutableMap() }
         trace.docHitCount = hits.size
@@ -191,6 +196,7 @@ class AiChatService(
 
         // 6. 근거가 없으면 답을 추정하지 않고 자료 소재를 안내한다. (unknown)
         val finalIntent = when {
+            toolResult.route == "GENERAL" -> "general"
             toolResult.route == "GREETING" -> "greeting"
             toolResult.route == "REFUSAL" -> "unknown"
             dataEvidence.isNotEmpty() && intent == "unknown" -> "metric"
@@ -226,14 +232,14 @@ class AiChatService(
             normalizedQuestion = AiQuestionPrivacy.forStorage(normalized.normalizedText),
             intentCd = finalIntent,
             intentNm = intentName(finalIntent),
-            answer = answerHtml,
+            answer = fixedAnswer ?: answerHtml,
             responseMs = elapsedMs,
             blindAppliedCnt = blindAppliedCnt,
             profileId = aiChatRepository.findActiveProfileId(),
             prevChatId = prevChatId,
             evidenceSummary = (hits.mapNotNull { it["title"]?.toString() } + dataEvidence.mapNotNull { it["text"]?.toString() })
                 .joinToString("; ").take(5000).ifEmpty { null },
-            unansweredReason = if (hits.isEmpty() && dataEvidence.isEmpty() && intent != "greeting") "답변 근거를 찾지 못했습니다." else "응답 생성 중입니다.",
+            unansweredReason = if (fixedAnswer != null) null else if (hits.isEmpty() && dataEvidence.isEmpty() && finalIntent !in setOf("greeting", "general")) "답변 근거를 찾지 못했습니다." else "응답 생성 중입니다.",
             // 질의자에게 가린 데이터 항목 — 질의 이력에서 권한이 더 좁은 열람자에게 응답을 가리는 기준(08 CHH-02)
             blindFieldKeys = blindKeys,
             askMs = elapsedMs
@@ -270,15 +276,18 @@ class AiChatService(
             message = "AI 답변 보안 필터링 (의도=$finalIntent · 가린 항목=${blindKeys.size}종)"
         )
 
-        val followups = generateFollowups(question, finalIntent, toolResult, hits)
+        val followups = if (finalIntent in setOf("greeting", "general")) emptyList() else generateFollowups(question, finalIntent, toolResult, hits)
 
         return mapOf(
             "messageId" to chatId,
             "debugRequestId" to trace.requestId.toString(),
             "sessionId" to sessionId.toString(),
+            "chatRoute" to if (finalIntent in setOf("greeting", "general")) "general" else "rag",
             "intent" to finalIntent,
             "intentNm" to intentName(finalIntent),
             "answerHtml" to answerHtml,
+            // LLM 없이 정한 답(조회 0건·조건 오류) — 있으면 /api/ai/chat 이 모델을 부르지 않고 이 문장을 보낸다
+            "fixedAnswer" to fixedAnswer,
             "blocks" to blocks,
             "blindFields" to blindKeys.sorted(),
             "blindAppliedCnt" to blindAppliedCnt,
@@ -306,6 +315,23 @@ class AiChatService(
             "elapsedMs" to elapsedMs
         )
     }
+
+    /**
+     * `/ai/chat/ask` 가 질의 이력에 미리 적어 둔 고정 답 — 본인 이력이고 답이 비어 있지 않을 때만.
+     * 화면은 ask 뒤 `/api/ai/chat` 에 messageId 를 넘기므로 이것으로 모델 호출을 건너뛴다.
+     */
+    @Transactional(readOnly = true)
+    fun storedChatRoute(messageId: Long, userId: String): String =
+        aiChatRepository.findChatLog(messageId)
+            ?.takeIf { it["userId"] == userId }
+            ?.get("intent")?.toString()
+            .let { if (it in setOf("greeting", "general")) "general" else "rag" }
+
+    @Transactional(readOnly = true)
+    fun storedFixedAnswer(messageId: Long, userId: String): String? =
+        aiChatRepository.findChatLog(messageId)
+            ?.takeIf { it["userId"] == userId }
+            ?.get("answer")?.toString()?.takeIf { it.isNotBlank() }
 
     /**
      * 세션 대화 이력을 조회한다. (No.15)
@@ -425,7 +451,7 @@ class AiChatService(
         "trace" -> "이력 추적"
         "downtime" -> "비가동 조회"
         "metric" -> "지표 조회"
-        "greeting" -> "일반 대화"
+        "greeting", "general" -> "일반 대화"
         "denied" -> "권한 없음"
         else -> "미분류"
     }

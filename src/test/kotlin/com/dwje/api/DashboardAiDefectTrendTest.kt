@@ -72,7 +72,7 @@ class DashboardAiDefectTrendTest {
 
     private fun grantAll() {
         val principal = UserPrincipal(
-            "test", "test", 1, "test", "test", "STAFF", "PL01", false,
+            "test", "test", 1, "test", "STAFF", "PL01", false,
             menuPerms = setOf(MenuId.DASH_AI), dataPerms = setOf(DataField.YIELD, DataField.QTY)
         )
         `when`(authorization.guard(MenuId.DASH_AI)).thenReturn(principal to MaskingSupport(principal))
@@ -209,7 +209,7 @@ class DashboardAiDefectTrendTest {
     @DisplayName("수율 권한이 없으면 topN=all 이어도 계열을 내리지 않는다")
     fun yieldDeniedReturnsNoSeries() {
         val principal = UserPrincipal(
-            "test", "test", 1, "test", "test", "STAFF", "PL01", false,
+            "test", "test", 1, "test", "STAFF", "PL01", false,
             menuPerms = setOf(MenuId.DASH_AI), dataPerms = emptySet()
         )
         `when`(authorization.guard(MenuId.DASH_AI)).thenReturn(principal to MaskingSupport(principal))
@@ -224,7 +224,7 @@ class DashboardAiDefectTrendTest {
     @DisplayName("컨트롤러는 topN 쿼리를 그대로 서비스에 넘긴다")
     fun controllerPassesTopN() {
         val svc = mock(DashboardAiService::class.java)
-        val principal = UserPrincipal("test", "test", 1, "test", "test", "STAFF", "PL01", true)
+        val principal = UserPrincipal("test", "test", 1, "test", "STAFF", "PL01", true)
         `when`(svc.getDefectTrend("2026-08-28", "2026-08-01", "2026-08-28", "2h", "all"))
             .thenReturn(mapOf("labels" to emptyList<String>()) to MaskingSupport(principal))
 

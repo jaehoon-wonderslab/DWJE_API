@@ -66,7 +66,7 @@ class SyncServiceRetryRuleTest {
         mock(AgentRunRecorder::class.java), mock(CodeValidator::class.java))
 
     @BeforeEach
-    fun login() = UserContext.set(UserPrincipal("10004", "전산", 5, "전산팀", null, null, null, false,
+    fun login() = UserContext.set(UserPrincipal("10004", "전산", 5, "전산팀", null, null, false,
         menuPerms = setOf("sys-sync"), writePerms = setOf("sys-sync")))
 
     @AfterEach
@@ -104,7 +104,7 @@ class SyncServiceRetryRuleTest {
     @Test
     @DisplayName("조회만 있으면 403 E-AUTH-004, 새 작업 없음 — 거부 기록은 전역 예외 처리기(ACCESS_DENIED)가 남겨 서비스는 따로 남기지 않는다")
     fun readOnly() {
-        UserContext.set(UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, null, false, menuPerms = setOf("sys-sync")))
+        UserContext.set(UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, false, menuPerms = setOf("sys-sync")))
         assertThrows(WriteAccessDeniedException::class.java) { service.retryJob("F1") }
         assertTrue(repo.retries.isEmpty()); assertTrue(audit.rows.isEmpty(), "거부가 두 줄로 남지 않는다 (09 AUD-10)")
     }

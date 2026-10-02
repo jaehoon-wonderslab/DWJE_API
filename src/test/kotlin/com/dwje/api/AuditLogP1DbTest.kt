@@ -64,7 +64,7 @@ class AuditLogP1DbTest {
     @Autowired lateinit var retention: AuditRetentionService
     @MockitoBean lateinit var audit: AuditLogService
 
-    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, null, true)
+    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, true)
     private lateinit var service: AuditLogService
 
     @BeforeEach

@@ -14,8 +14,9 @@ import java.time.Duration
 /**
  * sLLM 호출 클라이언트 — 사내 LLM(dwje-ax) OpenAI 호환 `/v1/chat/completions` 또는 로컬 Ollama `/api/chat`
  *
- * 형식은 `app.ai.provider` 로 고른다(기본 `openai`). openai 형식에서는 system 을 보내지 않는다 —
- * 지시문은 user 메시지의 `[지시]` 블록으로 옮긴다([openAiUserMessage]).
+ * 형식은 `app.ai.provider` 로 고른다(기본 `openai`). openai 형식에서는 system 으로 `app.llm.system-prompt`
+ * (학습 데이터의 문서 어시스턴트 원문)를 보내고, 작업별 지시문은 user 메시지의 `[지시]` 블록에 둔다([openAiUserMessage]).
+ * GPU 서버 vLLM 의 LoRA 에는 예전 Ollama 모델처럼 내장 지시문이 없기 때문이다(2026-10 전환). 지시문이 비어 있으면 보내지 않는다.
  *
  * ## 의존성을 더하지 않는다
  * `java.net.http.HttpClient` 는 JDK 표준(Java 11+)이고 이 프로젝트는 JDK 21 이다.
@@ -48,6 +49,9 @@ class SllmClient(
 
     private val http: HttpClient by lazy {
         HttpClient.newBuilder()
+            // HTTP/1.1 고정 — JDK 기본(HTTP/2)은 http 주소에 h2c 업그레이드 헤더를 붙이는데, vLLM(uvicorn)은 그 요청의 본문을 잃고
+            // 400 「body Field required」 를 낸다(2026-10 전환 때 임베딩·JSON 호출이 모두 400). 채팅 프록시와 같은 설정이다.
+            .version(HttpClient.Version.HTTP_1_1)
             .connectTimeout(Duration.ofSeconds(CONNECT_TIMEOUT_SEC))
             .build()
     }
@@ -103,7 +107,8 @@ class SllmClient(
     }
 
     /**
-     * 질의 문장을 임베딩한다. (`/api/embed`)
+     * 질의 문장을 임베딩한다. `app.ai.embed-api` 가 openai 면 `/v1/embeddings`(vLLM, 응답 `data[0].embedding`),
+     * ollama 면 `/api/embed`(응답 `embeddings[0]`).
      *
      * `vec.fn_search_chunk` 가 질의 벡터를 요구한다. 저장된 임베딩과 **같은 모델·차원**
      * 이어야 한다 — 저장분은 1024차원(`embed_model_id = 1`)이고 `bge-m3` 출력도
@@ -113,9 +118,10 @@ class SllmClient(
      */
     fun embed(text: String): List<Double>? {
         val cfg = appProperties.ai
+        val openai = cfg.embedApi == "openai"
 
         val request = HttpRequest.newBuilder()
-            .uri(URI.create("${cfg.embedBaseUrl.ifBlank { cfg.baseUrl }.trimEnd('/')}/api/embed"))
+            .uri(URI.create("${cfg.embedBaseUrl.ifBlank { cfg.baseUrl }.trimEnd('/')}${if (openai) "/v1/embeddings" else "/api/embed"}"))
             .timeout(Duration.ofSeconds(cfg.timeoutSec))
             .header("Content-Type", "application/json")
             .POST(
@@ -132,12 +138,13 @@ class SllmClient(
             .getOrNull() ?: return null
 
         if (response.statusCode() != 200) {
-            log.warn("임베딩 응답 코드 {}", response.statusCode())
+            log.warn("임베딩 응답 코드 {} : {}", response.statusCode(), response.body().take(200))
             return null
         }
 
         val root = runCatching { objectMapper.readTree(response.body()) }.getOrNull() ?: return null
-        val arr = root.path("embeddings").firstOrNull() ?: root.path("embedding")
+        val arr = if (openai) root.path("data").path(0).path("embedding")
+        else root.path("embeddings").firstOrNull() ?: root.path("embedding")
         if (!arr.isArray || arr.isEmpty) {
             log.warn("임베딩 응답에 벡터가 없습니다 : {}", response.body().take(200))
             return null
@@ -161,8 +168,9 @@ class SllmClient(
         val openai = cfg.provider == "openai"
 
         val body = if (openai) {
-            // system 을 보내면 모델 내장 지시문(근거 기반 답변·[n] 표기·단가 금지)이 통째로 대체된다.
-            // 지시문은 user 메시지 맨 앞에 넣고, 모양은 response_format 으로 강제한다. 샘플링 값은 보내지 않는다.
+            // system 은 학습 때의 문서 어시스턴트 원문(app.llm.system-prompt)이다 — vLLM LoRA 는 내장 지시문이 없다.
+            // 작업별 지시문은 user 메시지 맨 앞 [지시] 에 두고, 모양은 response_format 으로 강제한다. 샘플링은 app.llm.sampling(예전 Modelfile 값)을 보낸다.
+            val systemPrompt = appProperties.llm.systemPrompt.trim()
             mapOf(
                 "model" to cfg.model,
                 "stream" to false,
@@ -172,8 +180,9 @@ class SllmClient(
                     "type" to "json_schema",
                     "json_schema" to mapOf("name" to "answer", "schema" to schema)
                 ),
-                "messages" to listOf(mapOf("role" to "user", "content" to openAiUserMessage(system, user)))
-            )
+                "messages" to (if (systemPrompt.isEmpty()) emptyList() else listOf(mapOf("role" to "system", "content" to systemPrompt))) +
+                    listOf(mapOf("role" to "user", "content" to openAiUserMessage(system, user)))
+            ) + appProperties.llm.sampling.fields()
         } else {
             mapOf(
                 "model" to cfg.model,
@@ -198,7 +207,7 @@ class SllmClient(
         if (openai && system.length + user.length > PROMPT_CHAR_BUDGET) {
             log.warn("sLLM 입력이 깁니다 : {}자 > {}자 — 응답이 잘릴 수 있습니다", system.length + user.length, PROMPT_CHAR_BUDGET)
         }
-        val key = cacheKey(cfg.provider, cfg.model, system, user, schema)
+        val key = cacheKey(cfg.provider, cfg.model, appProperties.llm.systemPrompt, system, user, schema)
         cached(key)?.let { return SllmResult.Ok(it) }
 
         // 앞선 호출이 끝날 때까지 기다린다. 너무 오래 기다려야 하면 시작하지 않는다.
@@ -226,7 +235,7 @@ class SllmClient(
         val elapsed = System.currentTimeMillis() - started
 
         if (response.statusCode() != 200) {
-            log.warn("sLLM 응답 코드 {}", response.statusCode())
+            log.warn("sLLM 응답 코드 {} : {}", response.statusCode(), response.body().take(200))
             return SllmResult.Failed
         }
 

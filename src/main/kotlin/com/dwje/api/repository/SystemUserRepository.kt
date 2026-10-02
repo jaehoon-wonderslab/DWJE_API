@@ -84,7 +84,7 @@ class SystemUserRepository(
         val sql = StringBuilder(
             """
             SELECT
-                u.user_id, u.user_nm, u.dept_id, d.dept_nm, d.dept_abbr,
+                u.user_id, u.user_nm, u.dept_id, d.dept_nm,
                 u.position_cd, pc.code_nm AS position_nm,
                 u.user_state_cd, sc.code_nm AS state_nm,
                 u.is_switch_target, u.plant_cd, u.last_login_at, u.login_fail_cnt, u.remark,
@@ -146,7 +146,7 @@ class SystemUserRepository(
     fun findUserByEmpNo(empNo: String): Map<String, Any?>? {
         val sql = """
             SELECT
-                u.user_id, u.user_nm, u.dept_id, d.dept_nm, d.dept_abbr,
+                u.user_id, u.user_nm, u.dept_id, d.dept_nm,
                 u.position_cd, pc.code_nm AS position_nm,
                 u.user_state_cd, sc.code_nm AS state_nm,
                 u.is_switch_target, u.plant_cd, u.last_login_at, u.login_fail_cnt, u.remark,
@@ -190,7 +190,6 @@ class SystemUserRepository(
                 "name" to rs.getString("user_nm"),
                 "deptId" to rs.getInt("dept_id"),
                 "dept" to rs.getString("dept_nm"),
-                "deptAbbr" to rs.getString("dept_abbr"),
                 "pos" to rs.getString("position_cd"),
                 "posNm" to rs.getString("position_nm"),
                 "state" to rs.getString("user_state_cd"),
@@ -234,7 +233,7 @@ class SystemUserRepository(
     /**
      * 계정 목록/건수 공통 동적 조건
      *
-     * `keyword` 는 화면 표의 **전 열** 검색이다(2026-09-13 WEB 요청) — 사번·이름·부서명·부서 약칭·직급 코드/이름·상태 코드/이름·마지막 접속 시각.
+     * `keyword` 는 화면 표의 **전 열** 검색이다(2026-09-13 WEB 요청) — 사번·이름·부서명·직급 코드/이름·상태 코드/이름·마지막 접속 시각.
      */
     private fun appendUserFilters(
         sql: StringBuilder,
@@ -248,7 +247,7 @@ class SystemUserRepository(
         SqlLikeUtils.contains(keyword)?.let {
             sql.append(
                 " AND (u.user_id LIKE :keyword ESCAPE '\\' OR u.user_nm LIKE :keyword ESCAPE '\\'" +
-                    " OR d.dept_nm LIKE :keyword ESCAPE '\\' OR d.dept_abbr LIKE :keyword ESCAPE '\\'" +
+                    " OR d.dept_nm LIKE :keyword ESCAPE '\\'" +
                     " OR u.position_cd LIKE :keyword ESCAPE '\\' OR coalesce(pc.code_nm, '') LIKE :keyword ESCAPE '\\'" +
                     " OR u.user_state_cd LIKE :keyword ESCAPE '\\' OR coalesce(sc.code_nm, '') LIKE :keyword ESCAPE '\\'" +
                     " OR coalesce(to_char(u.last_login_at, 'YYYY-MM-DD HH24:MI'), '') LIKE :keyword ESCAPE '\\')"
@@ -482,7 +481,7 @@ class SystemUserRepository(
      */
     fun findDepts(): List<Map<String, Any?>> = findDepts(null, null, 0)
 
-    /** 부서 건수 — 키워드(부서명·약칭·설명) */
+    /** 부서 건수 — 키워드(부서명·설명) */
     fun countDepts(keyword: String?): Long {
         val sql = StringBuilder("SELECT count(*) FROM ax.tb_sys_dept d WHERE d.use_flg = 'Y'")
         val params = MapSqlParameterSource()
@@ -493,7 +492,7 @@ class SystemUserRepository(
     private fun appendDeptKeyword(sql: StringBuilder, params: MapSqlParameterSource, keyword: String?) {
         SqlLikeUtils.contains(keyword)?.let {
             sql.append(
-                " AND (d.dept_nm LIKE :keyword ESCAPE '\\' OR d.dept_abbr LIKE :keyword ESCAPE '\\'" +
+                " AND (d.dept_nm LIKE :keyword ESCAPE '\\'" +
                     " OR coalesce(d.dept_desc, '') LIKE :keyword ESCAPE '\\')"
             )
             params.addValue("keyword", it)
@@ -501,14 +500,13 @@ class SystemUserRepository(
     }
 
     /**
-     * 부서 목록 — `keyword`(부서명·약칭·설명) 와 쪽 나눔. `limit` 이 null 이면 전량(기존 호출).
+     * 부서 목록 — `keyword`(부서명·설명) 와 쪽 나눔. `limit` 이 null 이면 전량(기존 호출).
      */
     fun findDepts(keyword: String?, limit: Int?, offset: Int): List<Map<String, Any?>> {
         val sql = StringBuilder("""
             SELECT
                 d.dept_id,
                 d.dept_nm,
-                d.dept_abbr,
                 d.dept_desc,
                 d.plant_cd,
                 d.is_super_admin,
@@ -537,7 +535,6 @@ class SystemUserRepository(
             mapOf(
                 "deptId" to rs.getInt("dept_id"),
                 "deptNm" to rs.getString("dept_nm"),
-                "abbr" to rs.getString("dept_abbr"),
                 "desc" to rs.getString("dept_desc"),
                 "plantCd" to rs.getString("plant_cd"),
                 "superAdmin" to superAdmin,
@@ -554,16 +551,15 @@ class SystemUserRepository(
      *
      * @return 생성된 부서 ID
      */
-    fun insertDept(deptNm: String, abbr: String, desc: String?, plantCd: String?, actor: String): Int {
+    fun insertDept(deptNm: String, desc: String?, plantCd: String?, actor: String): Int {
         val sql = """
-            INSERT INTO ax.tb_sys_dept (dept_nm, dept_abbr, dept_desc, plant_cd, use_flg, ins_user, upd_user)
-            VALUES (:deptNm, :abbr, :desc, :plantCd, 'Y', :actor, :actor)
+            INSERT INTO ax.tb_sys_dept (dept_nm, dept_desc, plant_cd, use_flg, ins_user, upd_user)
+            VALUES (:deptNm, :desc, :plantCd, 'Y', :actor, :actor)
             RETURNING dept_id
         """.trimIndent()
 
         val params = MapSqlParameterSource()
             .addValue("deptNm", deptNm.take(50))
-            .addValue("abbr", abbr.take(4))
             .addValue("desc", desc?.take(200))
             .addValue("plantCd", plantCd)
             .addValue("actor", actor)
@@ -574,11 +570,10 @@ class SystemUserRepository(
     /**
      * 부서를 수정한다. (No.137)
      */
-    fun updateDept(deptId: Int, deptNm: String?, abbr: String?, desc: String?, actor: String): Int {
+    fun updateDept(deptId: Int, deptNm: String?, desc: String?, actor: String): Int {
         val sql = """
             UPDATE ax.tb_sys_dept
                SET dept_nm   = coalesce(:deptNm, dept_nm),
-                   dept_abbr = coalesce(:abbr, dept_abbr),
                    dept_desc = coalesce(:desc, dept_desc),
                    upd_date  = now(),
                    upd_user  = :actor
@@ -588,7 +583,6 @@ class SystemUserRepository(
         val params = MapSqlParameterSource()
             .addValue("deptId", deptId)
             .addValue("deptNm", deptNm?.take(50))
-            .addValue("abbr", abbr?.take(4))
             .addValue("desc", desc?.take(200))
             .addValue("actor", actor)
 
@@ -607,7 +601,7 @@ class SystemUserRepository(
     /** 부서 단건 조회 */
     fun findDept(deptId: Int): Map<String, Any?>? {
         val sql = """
-            SELECT dept_id, dept_nm, dept_abbr, dept_desc, plant_cd, is_super_admin, use_flg
+            SELECT dept_id, dept_nm, dept_desc, plant_cd, is_super_admin, use_flg
             FROM ax.tb_sys_dept
             WHERE dept_id = :deptId
         """.trimIndent()
@@ -616,7 +610,6 @@ class SystemUserRepository(
             mapOf(
                 "deptId" to rs.getInt("dept_id"),
                 "deptNm" to rs.getString("dept_nm"),
-                "abbr" to rs.getString("dept_abbr"),
                 "desc" to rs.getString("dept_desc"),
                 "plantCd" to rs.getString("plant_cd"),
                 "superAdmin" to rs.getBoolean("is_super_admin"),
@@ -675,19 +668,17 @@ class SystemUserRepository(
         return jdbcTemplate.queryForObject(sql, MapSqlParameterSource("deptId", deptId), Long::class.java) ?: 0L
     }
 
-    /** 부서명·약칭 중복 여부 확인 */
-    fun existsDeptName(deptNm: String?, abbr: String?, excludeDeptId: Int?): Boolean {
+    /** 부서명 중복 여부 확인 */
+    fun existsDeptName(deptNm: String?, excludeDeptId: Int?): Boolean {
         val sql = """
             SELECT count(*)
             FROM ax.tb_sys_dept
-            WHERE (:deptNm::varchar IS NOT NULL AND dept_nm = :deptNm
-                   OR :abbr::varchar IS NOT NULL AND dept_abbr = :abbr)
+            WHERE :deptNm::varchar IS NOT NULL AND dept_nm = :deptNm
               AND (:excludeDeptId::int IS NULL OR dept_id <> :excludeDeptId)
         """.trimIndent()
 
         val params = MapSqlParameterSource()
             .addValue("deptNm", deptNm)
-            .addValue("abbr", abbr)
             .addValue("excludeDeptId", excludeDeptId)
 
         return (jdbcTemplate.queryForObject(sql, params, Long::class.java) ?: 0L) > 0

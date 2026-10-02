@@ -30,7 +30,7 @@ class UploadDocAdminListTest {
     @Autowired lateinit var jdbc: NamedParameterJdbcTemplate
 
     @BeforeEach
-    fun login() = UserContext.set(UserPrincipal("10004", "전산", 5, "전산팀", null, null, null, false, menuPerms = setOf("sys-upload-doc")))
+    fun login() = UserContext.set(UserPrincipal("10004", "전산", 5, "전산팀", null, null, false, menuPerms = setOf("sys-upload-doc")))
 
     @AfterEach
     fun clear() = UserContext.clear()

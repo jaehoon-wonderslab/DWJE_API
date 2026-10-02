@@ -20,7 +20,7 @@ WEB 라이브 검증 `WEB-ai_concep_design/tests/system/account-grants-live.cjs`
 
 각 행에 `extraMenuIds: string[]` 가 붙는다(없으면 `[]`). 사용 중인 화면만, 메뉴 정렬 순. 부서 권한으로 이미 열린 화면과 겹칠 수 있다(UNION 이라 무해 — DB 계약 §6).
 
-`keyword` 는 **전 열 검색**: 사번 · 이름 · 부서명 · 부서 약칭 · 직급 코드/이름 · 상태 코드/이름 · 마지막 접속(`YYYY-MM-DD HH:MI`).
+`keyword` 는 **전 열 검색**: 사번 · 이름 · 부서명 · 직급 코드/이름 · 상태 코드/이름 · 마지막 접속(`YYYY-MM-DD HH:MI`).
 `page`/`size` 기존과 같다(기본 1/10). `users/pending` 에 `keyword` 가 새로 붙었다.
 
 ### 2-2. `POST /system/users` · `PUT /system/users/{empNo}` — 본문 `extraMenuIds`(선택)
@@ -51,7 +51,7 @@ WEB 라이브 검증 `WEB-ai_concep_design/tests/system/account-grants-live.cjs`
 | 파라미터 없음 또는 `size=0` | 기존과 같이 `data.items` 전량, **meta 없음** (선택지 호출 호환) |
 | `page`/`size` 전달 | `data.items` + `meta{page,size,total,totalPages}` |
 
-`keyword` 는 부서명 · 약칭 · 설명. 두 방식 모두에 적용된다.
+`keyword` 는 부서명 · 설명(부서 약칭은 2026-10-02 에 없앴다). 두 방식 모두에 적용된다.
 
 ### 2-5. `GET /system/perm-logs` — `keyword`
 

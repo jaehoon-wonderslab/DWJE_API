@@ -64,11 +64,11 @@ class DataFieldService(
          */
         val RESERVED_ATTRS: Set<String> = sortedSetOf(
             // 로그인·권한
-            "empNo", "name", "dept", "deptId", "deptNm", "deptAbbr", "pos", "superAdmin", "menuPerms", "dataPerms",
+            "empNo", "name", "dept", "deptId", "deptNm", "pos", "superAdmin", "menuPerms", "dataPerms",
             "blindFields", "dataFields", "attrs", "impersonated", "servingModelVer", "userId",
             // 권한 관리 응답
             "id", "key", "group", "groupId", "label", "screens", "depts", "matrix", "fields", "applyFlg", "category",
-            "categoryNm", "sortSeq", "abbr", "desc", "userCnt", "menuCnt", "dataCnt",
+            "categoryNm", "sortSeq", "desc", "userCnt", "menuCnt", "dataCnt",
             // 공통 응답·식별
             "items", "meta", "masked", "success", "message", "code", "ts", "title", "target", "detail", "by", "state", "status"
         )

@@ -66,12 +66,15 @@ data class UserDeptChangeRequest(
  * 부서 등록·수정 요청 — POST/PUT /api/v1/system/depts
  *
  * @param deptNm        부서명
- * @param abbr          부서 약칭 (최대 4자)
+ * @param abbr          사용 중지(2026-10-02) — 옛 WEB 번들 호환으로 받기만 하고 값은 무시한다
  * @param desc          부서 설명
  * @param initPermFrom  초기 권한을 복사해 올 부서 ID (등록 시)
  */
 data class DeptSaveRequest(
     val deptNm: String? = null,
+    /** 옛 WEB 번들 호환 — 값은 무시. 모든 WEB 배포 뒤 삭제 (FAIL_ON_UNKNOWN_PROPERTIES 라 지우면 옛 화면이 400) */
+    @Deprecated("옛 WEB 번들 호환 — 값은 무시. 모든 WEB 배포 뒤 삭제")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(부서 약칭 기능 제거, 2026-10-02)")
     val abbr: String? = null,
     val desc: String? = null,
     val plantCd: String? = null,

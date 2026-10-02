@@ -45,7 +45,7 @@ class AlertRecipientP1DbTest {
     @Autowired lateinit var alerts: com.dwje.api.service.AlertService
     @MockitoBean lateinit var audit: AuditLogService
 
-    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, null, true)
+    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, true)
 
     @BeforeEach
     fun login() = UserContext.set(admin)
@@ -139,7 +139,7 @@ class AlertRecipientP1DbTest {
 
         val condId = (byGroup.first()["condId"] as Int)
         exec("UPDATE ax.tb_alm_cond SET blind_field_key = 'price' WHERE cond_id = $condId")
-        UserContext.set(UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, null, false, menuPerms = setOf(MenuId.ALERT_COND)))
+        UserContext.set(UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, false, menuPerms = setOf(MenuId.ALERT_COND)))
         val (masked, _, keys) = service.getConditions(null, null, null, 1, 0)
         val row = masked.single { it["condId"] == condId }
         assertNull(row["thresholdVal"]); assertNull(row["threshold"])

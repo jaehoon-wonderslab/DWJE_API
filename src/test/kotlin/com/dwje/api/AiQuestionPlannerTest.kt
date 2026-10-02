@@ -44,7 +44,7 @@ class AiQuestionPlannerTest {
         assertEquals(200, selected.limit)
         assertEquals("2026-09-19T08:00", selected.period.startInclusive.toString())
         assertEquals("2026-09-22T08:00", selected.period.endExclusive.toString())
-        assertEquals(AiQuestionPlanner.Decision.Invalid, planner.plan(question, LocalDate.parse("2026-10-23")))
+        assertEquals(AiQuestionPlanner.Decision.Invalid(AiQuestionPlanner.InvalidReason.SPAN), planner.plan(question, LocalDate.parse("2026-10-23")))
     }
 
     @Test fun `LLM receives MES latest date and selects recent seven business days comparison`() {
@@ -82,7 +82,7 @@ class AiQuestionPlannerTest {
         assertEquals(1, mockingDetails(model).invocations.count { it.method.name == "chooseTool" })
     }
 
-    @Test fun `LLM controls date grouping and greeting answer path`() {
+    @Test fun `LLM controls date grouping while plain greetings skip classification`() {
         val model = mock(LlmChatProxyService::class.java, Answer<Any?> { call ->
             val prompt = call.arguments[0] as String
             if (prompt.contains("일자별")) tool("production_product_list", """{"from":"2026-09-20","to":"2026-09-22","groupByDate":true}""")
@@ -93,7 +93,21 @@ class AiQuestionPlannerTest {
             as AiQuestionPlanner.Decision.ProductList
         assertTrue(daily.groupByDate)
         assertEquals(AiBusinessPeriod(LocalDate.parse("2026-09-20"), LocalDate.parse("2026-09-22")), daily.period)
-        assertEquals(AiQuestionPlanner.Decision.Other, planner.plan("안녕", LocalDate.parse("2026-09-26")))
-        assertEquals(2, mockingDetails(model).invocations.count { it.method.name == "chooseTool" })
+        assertEquals(AiQuestionPlanner.Decision.Greeting, planner.plan("안녕", LocalDate.parse("2026-09-26")))
+        assertEquals(AiQuestionPlanner.Decision.Greeting, planner.plan("ㅎㅇ"))
+        assertEquals(1, mockingDetails(model).invocations.count { it.method.name == "chooseTool" })
     }
+    @Test fun `general knowledge uses general route and company documents keep evidence route`() {
+        val model = mock(LlmChatProxyService::class.java, Answer<Any?> { call ->
+            @Suppress("UNCHECKED_CAST")
+            val tools = call.arguments[1] as List<Map<String, Any?>>
+            assertTrue(tools.any { it["name"] == "general_chat" })
+            if ((call.arguments[0] as String).contains("RAG")) tool("general_chat", "{}")
+            else mapper.readTree("""{"content":"none"}""")
+        })
+        val planner = AiQuestionPlanner(model, mapper)
+        assertEquals(AiQuestionPlanner.Decision.General, planner.plan("RAG가 뭐야?"))
+        assertEquals(AiQuestionPlanner.Decision.Other, planner.plan("경조사 휴가 며칠이야?"))
+    }
+
 }

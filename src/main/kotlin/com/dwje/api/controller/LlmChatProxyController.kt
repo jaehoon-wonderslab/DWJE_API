@@ -78,13 +78,35 @@ class LlmChatProxyController(
             val question = request.messages.orEmpty().lastOrNull { it.role == "user" }?.content.orEmpty()
             aiChatService.ask(AiAskRequest(request.sessionId, question))
         } else null
-        val toolExchange = saved?.let(::toolExchange)
+        // 도구 파서가 없는 서버(json-schema 도구 선택)는 tool 역할 대화도 받지 못할 수 있다 — DB 결과를 [근거] 에 넣는다
+        val toolExchange = if (llmChatProxyService.toolJsonSchemaActive()) null else saved?.let(::toolExchange)
         val effectiveRequest = if (saved != null && request.context.isNullOrBlank())
             request.copy(context = evidenceContext(saved, includeFacts = toolExchange == null, appProperties.ai.glossaryBlockEnabled)) else request
-        val messages = llmChatProxyService.buildMessages(effectiveRequest)
+        val route = saved?.get("chatRoute")?.toString()
+            ?: request.messageId?.let { aiChatService.storedChatRoute(it, UserContext.current().userId) }
+            ?: "rag"
+        val general = route == "general"
+        val messages = llmChatProxyService.buildMessages(effectiveRequest, general)
         val messageId = request.messageId ?: saved?.get("messageId") as? Long
+        // 조회 0건·조건 오류는 ask 가 정한 고정 답을 보낸다 — 모델을 부르지 않는다(이력에는 ask 가 이미 적었다)
+        val fixed = (saved?.get("fixedAnswer") as? String)
+            ?: request.messageId?.let { aiChatService.storedFixedAnswer(it, UserContext.current().userId) }
+        if (fixed != null) {
+            response.status = HttpServletResponse.SC_OK
+            response.contentType = "text/event-stream;charset=UTF-8"
+            response.setHeader("Cache-Control", "no-cache, no-transform")
+            if (saved != null) {
+                response.setHeader("X-AI-Session-Id", saved["sessionId"].toString())
+                response.setHeader("X-AI-Message-Id", messageId.toString())
+            }
+            val publicAnswer = llmChatProxyService.publicAnswer(fixed)
+            response.outputStream.write(llmChatProxyService.completionEvent(publicAnswer, true).toByteArray(Charsets.UTF_8))
+            response.outputStream.flush()
+            log.info("LLM 채팅 : 고정 답(모델 호출 없음) 본문={}자", publicAnswer.length)
+            return
+        }
         val started = System.currentTimeMillis()
-        val upstream = try { llmChatProxyService.open(messages, toolExchange) } catch (e: Exception) {
+        val upstream = try { llmChatProxyService.open(messages, if (general) null else toolExchange, general) } catch (e: Exception) {
             llmChatProxyService.saveAnswer(messageId, "", System.currentTimeMillis() - started)
             throw e
         }

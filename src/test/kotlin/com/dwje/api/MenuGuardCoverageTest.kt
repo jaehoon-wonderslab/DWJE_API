@@ -109,7 +109,7 @@ class MenuGuardCoverageTest {
             .sortedBy { it.key }
 
     private fun principal(menus: Set<String>) =
-        UserPrincipal("__guard__", "권한 점검", -1, "권한 점검", null, null, null, false, menuPerms = menus)
+        UserPrincipal("__guard__", "권한 점검", -1, "권한 점검", null, null, false, menuPerms = menus)
 
     /** 대상 메서드를 롤백되는 트랜잭션 안에서 부르고, 던진 업무 예외(없으면 null)를 돌려준다 */
     private fun invoke(e: Endpoint): Throwable? {

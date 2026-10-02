@@ -29,7 +29,6 @@ class ApiContextTest {
         userName = "테스터",
         deptId = 1,
         deptName = "품질보증팀",
-        deptAbbr = "품보",
         positionCd = "STAFF",
         plantCd = "PL01",
         superAdmin = false,

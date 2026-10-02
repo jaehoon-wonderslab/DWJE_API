@@ -65,7 +65,7 @@ class DashboardAiSlotDetailsTest {
 
     private fun grant(vararg fields: String) {
         val principal = UserPrincipal(
-            "test", "test", 1, "test", "test", "STAFF", "PL01", false,
+            "test", "test", 1, "test", "STAFF", "PL01", false,
             menuPerms = setOf(MenuId.DASH_AI), dataPerms = fields.toSet()
         )
         `when`(authorization.guard(MenuId.DASH_AI)).thenReturn(principal to MaskingSupport(principal))
@@ -283,7 +283,7 @@ class DashboardAiSlotDetailsTest {
     @DisplayName("컨트롤러는 파라미터를 그대로 서비스에 넘긴다")
     fun controllerPassesThrough() {
         val svc = mock(DashboardAiService::class.java)
-        val principal = UserPrincipal("test", "test", 1, "test", "test", "STAFF", "PL01", true)
+        val principal = UserPrincipal("test", "test", 1, "test", "STAFF", "PL01", true)
         `when`(svc.getDefectTrendSlotDetails("2026-08-28", "2026-08-22", "2026-08-28", "2h", "08-28 00시", "2026-08-28 00시", "PL01"))
             .thenReturn(mapOf("slot" to "08-28 00시") to MaskingSupport(principal))
 

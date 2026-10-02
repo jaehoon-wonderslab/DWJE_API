@@ -94,6 +94,15 @@ data class AiProperties(
     val embedModel: String = "bge-m3:latest",
 
     /**
+     * 임베딩 API 형식 — `openai`(vLLM 등 `/v1/embeddings`, 응답 `data[0].embedding`) | `ollama`(`/api/embed`, 응답 `embeddings[0]`).
+     * GPU 서버 vLLM(:8001)은 openai, 로컬 Ollama 는 ollama 다.
+     */
+    @field:jakarta.validation.constraints.Pattern(
+        regexp = "openai|ollama", message = "임베딩 API 형식(app.ai.embed-api)은 openai 또는 ollama 입니다."
+    )
+    val embedApi: String = "ollama",
+
+    /**
      * 최대 생성 토큰.
      *
      * 이 모델은 추론(`thinking`)에 토큰을 먼저 쓴다. 300 으로 두면 추론에 다 쓰고

@@ -18,7 +18,7 @@ import java.math.BigDecimal
 import java.time.LocalDate
 
 class AiToolRoutingDebugTest {
-    private val admin = UserPrincipal("admin", "관리자", 1, "전산", null, null, null, true)
+    private val admin = UserPrincipal("admin", "관리자", 1, "전산", null, null, true)
 
     @Test fun `daily defect route returns table evidence and distinguishes empty from denied`() {
         val period = com.dwje.api.common.util.AiBusinessPeriod(LocalDate.parse("2026-09-20"), LocalDate.parse("2026-09-22"))
@@ -41,7 +41,7 @@ class AiToolRoutingDebugTest {
         assertEquals("OK", result.executionCode)
         assertEquals(rows, result.rawRows)
         assertTrue(result.evidence.single()["text"].toString().contains("스크래치"))
-        val denied = UserPrincipal("noqty", "사용자", 2, "생산", null, null, null, false)
+        val denied = UserPrincipal("noqty", "사용자", 2, "생산", null, null, false)
         val deniedResult = service.evidenceForDetailed(question, denied)
         assertEquals("DENIED_FIELDS", deniedResult.executionCode)
         assertTrue(deniedResult.rawRows.isEmpty())
@@ -55,7 +55,7 @@ class AiToolRoutingDebugTest {
         val service = AiDataToolService(mock(DashboardProcessRepository::class.java),
             mock(CommonMasterService::class.java), AppProperties(), facts, mock(AiQuestionPlanner::class.java), mock(AoiDimensionService::class.java))
         val args = mapOf<String, Any?>("from" to "2026-09-20", "to" to "2026-09-22", "limit" to 200)
-        val denied = UserPrincipal("noqty", "사용자", 2, "생산", null, null, null, false)
+        val denied = UserPrincipal("noqty", "사용자", 2, "생산", null, null, false)
         assertEquals("DENIED_FIELDS", service.call(AiDataToolService.DAILY_PRODUCT_DEFECT, args, denied)["executionCode"])
         assertFalse(mockingDetails(facts).invocations.any { it.method.name == "dailyProductDefects" })
         assertThrows(com.dwje.api.common.exception.InvalidParameterException::class.java) {

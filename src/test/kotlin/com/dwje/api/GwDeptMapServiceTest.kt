@@ -47,7 +47,7 @@ class GwDeptMapServiceTest {
     )
 
     private fun dept(id: Int, nm: String, superAdmin: Boolean = false): Map<String, Any?> =
-        mapOf("deptId" to id, "deptNm" to nm, "abbr" to nm.take(2), "desc" to null, "plantCd" to "PL01", "superAdmin" to superAdmin)
+        mapOf("deptId" to id, "deptNm" to nm, "desc" to null, "plantCd" to "PL01", "superAdmin" to superAdmin)
 
     /** 계정 사번 → 부서 */
     private val userDept = linkedMapOf("A1" to 59, "A2" to 59, "A3" to 59, "Q1" to 2)
@@ -128,7 +128,7 @@ class GwDeptMapServiceTest {
     private val service = GwDeptMapService(maps, users, systemUserService, authz, audit, props)
 
     private fun login(vararg menus: String, superAdmin: Boolean = false) = UserContext.set(
-        UserPrincipal(userId = "IT1", userName = "전산", deptId = 5, deptName = "전산팀", deptAbbr = null, positionCd = null,
+        UserPrincipal(userId = "IT1", userName = "전산", deptId = 5, deptName = "전산팀", positionCd = null,
                       plantCd = null, superAdmin = superAdmin, menuPerms = menus.toSet(),
                       // 이관 후 전산팀처럼 받은 화면의 쓰기 권한도 가진다(R-06). 조회 전용 시험은 loginReadOnly 를 쓴다
                       writePerms = menus.toSet())
@@ -136,7 +136,7 @@ class GwDeptMapServiceTest {
 
     /** 화면 조회만 있고 쓰기 권한이 없는 계정 (R-06) */
     private fun loginReadOnly(vararg menus: String) = UserContext.set(
-        UserPrincipal(userId = "IT2", userName = "조회", deptId = 2, deptName = "품질보증팀", deptAbbr = null, positionCd = null,
+        UserPrincipal(userId = "IT2", userName = "조회", deptId = 2, deptName = "품질보증팀", positionCd = null,
                       plantCd = null, superAdmin = false, menuPerms = menus.toSet())
     )
 

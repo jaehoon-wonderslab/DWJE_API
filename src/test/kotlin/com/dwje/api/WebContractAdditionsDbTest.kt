@@ -52,7 +52,7 @@ class WebContractAdditionsDbTest {
     private val auditLogs by lazy { AuditLogService(auditRepo, authz) }
     private val listExport by lazy { ListExportService(auditLogs, downloadLog, sync, aiAdmin, exportService) }
 
-    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, null, true)
+    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, true)
 
     @BeforeEach
     fun login() = UserContext.set(admin)

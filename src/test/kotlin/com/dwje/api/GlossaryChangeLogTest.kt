@@ -38,12 +38,12 @@ class GlossaryChangeLogTest {
     @Autowired lateinit var jdbc: NamedParameterJdbcTemplate
     @MockitoBean lateinit var audit: AuditLogService
 
-    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, null, true)
+    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, true)
     private val writer = UserPrincipal(
-        "10002", "박생산", 3, "생산팀", null, null, null, false,
+        "10002", "박생산", 3, "생산팀", null, null, false,
         menuPerms = setOf(MenuId.SYS_GLOSS), writePerms = setOf(MenuId.SYS_GLOSS)
     )
-    private val viewer = UserPrincipal("10003", "조회", 3, "생산팀", null, null, null, false, menuPerms = setOf(MenuId.GLOSS_VIEW))
+    private val viewer = UserPrincipal("10003", "조회", 3, "생산팀", null, null, false, menuPerms = setOf(MenuId.GLOSS_VIEW))
 
     @BeforeEach
     fun login() = UserContext.set(admin)
@@ -158,7 +158,7 @@ class GlossaryChangeLogTest {
         assertTrue(lrr.any { it["term"] == "LRR" })
 
         UserContext.set(admin)
-        val deptId = users.createDept(DeptSaveRequest(deptNm = "ZT부서", abbr = "ZTD"))["deptId"] as Int
+        val deptId = users.createDept(DeptSaveRequest(deptNm = "ZT부서"))["deptId"] as Int
         assertEquals(
             setOf(MenuId.GLOSS_VIEW, MenuId.CHAT_HISTORY),
             jdbc.queryForList("SELECT menu_id FROM ax.tb_sys_dept_menu_perm WHERE dept_id = $deptId AND can_read", MapSqlParameterSource(), String::class.java).toSet()

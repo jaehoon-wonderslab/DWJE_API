@@ -4,7 +4,7 @@
     실서버와 같은 조합이다. 개발 PC 에서 실서버 구성을 그대로 검증할 때 쓴다.
 
       DB  : 실서버 PostgreSQL (192.168.2.8:5432/dwjedb · dwje_local)
-      LLM : 실서버   192.168.2.8:11436
+      LLM : 실서버 GPU vLLM 192.168.2.8:8000(채팅) · :8001(임베딩)
 
     ⚠ 사내망 또는 VPN 이 있어야 한다.
       DB 와 LLM 이 모두 192.168.2.8 이라 사내망 밖에서는 라우팅조차 되지 않는다.
@@ -28,8 +28,10 @@
     <module name="dwje-api.main" />
     <option name="SPRING_BOOT_MAIN_CLASS" value="com.dwje.api.DwjeApiApplicationKt" />
     <envs>
-      <env name="DWJE_LLM_BASE_URL" value="http://192.168.2.8:11436" />
-      <env name="AX_EMBED_BASE_URL" value="http://192.168.2.8:11436" />
+      <env name="DWJE_LLM_BASE_URL" value="http://192.168.2.8:8000" />
+      <env name="AX_EMBED_BASE_URL" value="http://192.168.2.8:8001" />
+      <env name="AX_EMBED_MODEL" value="BAAI/bge-m3" />
+      <env name="AX_EMBED_API" value="openai" />
       <!--
         ⚠ 검증 전용 설정 — 실서버 배포에는 절대 쓰지 않는다.
 

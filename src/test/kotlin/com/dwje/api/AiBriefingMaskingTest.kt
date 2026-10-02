@@ -33,7 +33,6 @@ class AiBriefingMaskingTest {
         userName = "이제조",
         deptId = 4,
         deptName = "제조팀",
-        deptAbbr = null,
         positionCd = "STAFF",
         plantCd = "PL01",
         superAdmin = false,

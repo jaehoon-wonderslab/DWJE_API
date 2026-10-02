@@ -52,7 +52,7 @@ class SystemUserController(
         ApiResponse.ok(systemUserService.getAccountSummary())
 
     /** 계정 목록 조회 (No.128) */
-    @Operation(summary = "계정 목록 조회", description = "계정을 조회한다. keyword 는 전 열 검색(사번·이름·부서명·약칭·직급·상태·마지막 접속). 행마다 extraMenuIds(계정별 추가 허용 화면)를 포함한다.")
+    @Operation(summary = "계정 목록 조회", description = "계정을 조회한다. keyword 는 전 열 검색(사번·이름·부서명·직급·상태·마지막 접속). 행마다 extraMenuIds(계정별 추가 허용 화면)를 포함한다.")
     @GetMapping("/users")
     fun users(
         @RequestParam(required = false) keyword: String?,
@@ -170,7 +170,7 @@ class SystemUserController(
     /** 부서 목록 조회 (No.135) */
     @Operation(
         summary = "부서 목록 조회",
-        description = "부서 목록과 소속 계정·권한 수를 반환한다. keyword 는 부서명·약칭·설명 검색. " +
+        description = "부서 목록과 소속 계정·권한 수를 반환한다. keyword 는 부서명·설명 검색. " +
             "page/size 를 주면 meta 와 함께 쪽으로, 없거나 size=0 이면 전량(items)으로 — 기존 선택지 호출과 호환된다."
     )
     @GetMapping("/depts")

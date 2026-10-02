@@ -35,7 +35,7 @@ class AiChatHistorySessionTest {
     private val to = "2026-09-23"
 
     @BeforeEach
-    fun login() = UserContext.set(UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, null, true))
+    fun login() = UserContext.set(UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, true))
 
     @AfterEach
     fun clear() = UserContext.clear()

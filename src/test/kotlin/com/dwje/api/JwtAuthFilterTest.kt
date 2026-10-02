@@ -35,7 +35,7 @@ class JwtAuthFilterTest {
     fun downstreamBusinessExceptionIsNotConvertedToServerError() {
         val tokenProvider = JwtTokenProvider(JwtProperties(secret = "test-only-jwt-signing-secret-123456"))
         val authorizationService = Mockito.mock(AuthorizationService::class.java)
-        val principal = UserPrincipal("user", "User", 1, "Dept", null, null, null, false)
+        val principal = UserPrincipal("user", "User", 1, "Dept", null, null, false)
         Mockito.doReturn(principal).`when`(authorizationService).loadPrincipal("user", false)
 
         val request = MockHttpServletRequest("POST", "/api/ai/chat")
@@ -59,7 +59,7 @@ class JwtAuthFilterTest {
     fun upstreamRejectionReachesWebAsBadGateway() {
         val tokenProvider = JwtTokenProvider(JwtProperties(secret = "test-only-jwt-signing-secret-123456"))
         val authorizationService = Mockito.mock(AuthorizationService::class.java)
-        val principal = UserPrincipal("user", "User", 1, "Dept", null, null, null, false)
+        val principal = UserPrincipal("user", "User", 1, "Dept", null, null, false)
         Mockito.doReturn(principal).`when`(authorizationService).loadPrincipal("user", false)
         val filter = JwtAuthFilter(tokenProvider, authorizationService, ObjectMapper())
         val token = tokenProvider.createAccessToken("user", "User", 1, "Dept", false, null)

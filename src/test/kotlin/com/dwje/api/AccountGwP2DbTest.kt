@@ -44,7 +44,7 @@ class AccountGwP2DbTest {
     @Autowired lateinit var jdbc: NamedParameterJdbcTemplate
     @MockitoBean lateinit var audit: AuditLogService
 
-    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, null, true)
+    private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, true)
 
     @BeforeEach
     fun login() = UserContext.set(admin)
@@ -100,13 +100,14 @@ class AccountGwP2DbTest {
     @Test
     @DisplayName("ACC-12 길이·빈 값 400(말없이 자르지 않음) / 메인 15-6 부서 size=0 은 page 와 무관하게 전량")
     fun validationAndDepts() {
-        assertEquals("abbr", assertThrows(InvalidParameterException::class.java) { users.createDept(DeptSaveRequest(deptNm = "ZT부서", abbr = "ABCDE")) }.field)
-        assertEquals("abbr", assertThrows(InvalidParameterException::class.java) { users.createDept(DeptSaveRequest(deptNm = "ZT부서", abbr = "  ")) }.field)
-        assertEquals("deptNm", assertThrows(InvalidParameterException::class.java) { users.createDept(DeptSaveRequest(deptNm = "가".repeat(51), abbr = "Z")) }.field)
+        // 부서 약칭은 없앴다(2026-10-02) — 길이·빈 값 검사는 부서명·설명만
+        assertEquals("deptNm", assertThrows(InvalidParameterException::class.java) { users.createDept(DeptSaveRequest(deptNm = "가".repeat(51))) }.field)
+        assertEquals("deptNm", assertThrows(InvalidParameterException::class.java) { users.createDept(DeptSaveRequest(deptNm = "  ")) }.field)
+        assertEquals("desc", assertThrows(InvalidParameterException::class.java) { users.createDept(DeptSaveRequest(deptNm = "ZT부서", desc = "가".repeat(201))) }.field)
         assertEquals("name", assertThrows(InvalidParameterException::class.java) { users.createUser(UserSaveRequest(empNo = "ZT-P2V", name = " ", deptId = 2)) }.field)
         assertEquals("name", assertThrows(InvalidParameterException::class.java) { users.createUser(UserSaveRequest(empNo = "ZT-P2V", name = "가".repeat(51), deptId = 2)) }.field)
         assertEquals("name", assertThrows(InvalidParameterException::class.java) { users.updateUser("10001", UserSaveRequest(name = "")) }.field)
-        assertEquals("abbr", assertThrows(InvalidParameterException::class.java) { users.updateDept(2, DeptSaveRequest(abbr = "ABCDE")) }.field)
+        assertEquals("deptNm", assertThrows(InvalidParameterException::class.java) { users.updateDept(2, DeptSaveRequest(deptNm = " ")) }.field)
         assertEquals(0L, long("SELECT count(*) FROM ax.tb_sys_dept WHERE dept_nm LIKE 'ZT%'"))
 
         val total = long("SELECT count(*) FROM ax.tb_sys_dept WHERE use_flg = 'Y'")

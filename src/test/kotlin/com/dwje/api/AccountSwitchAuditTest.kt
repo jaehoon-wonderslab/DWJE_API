@@ -65,7 +65,7 @@ class AccountSwitchAuditTest {
         "switchable" to switchable, "userStateCd" to state, "plantCd" to null, "positionCd" to null
     )
 
-    private fun loginAdmin() = UserContext.set(UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, null, true))
+    private fun loginAdmin() = UserContext.set(UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, true))
 
     @Test
     @DisplayName("전환 성공 — ACCOUNT_SEC/ALLOW 1행, 토큰에 원래 관리자 사번")
@@ -105,16 +105,16 @@ class AccountSwitchAuditTest {
     @Test
     @DisplayName("T-G09 /auth/me — 미배정 소속이면 최상위 unassigned 와 dept.unassigned 가 true, 초기 비밀번호 경로에서도 같다")
     fun myInfoUnassigned() {
-        UserContext.set(UserPrincipal("20250311", "미배정", 59, "미배정", null, null, null, false,
+        UserContext.set(UserPrincipal("20250311", "미배정", 59, "미배정", null, null, false,
             menuPerms = setOf("dash-ai"), unassigned = true))
         val me = service().getMyInfo()
         assertEquals(true, me.unassigned); assertEquals(true, me.dept.unassigned)
 
-        UserContext.set(UserPrincipal("20250311", "미배정", 59, "미배정", null, null, null, false,
+        UserContext.set(UserPrincipal("20250311", "미배정", 59, "미배정", null, null, false,
             unassigned = true, pwdChangeRequired = true))
         assertEquals(true, service().getMyInfo().unassigned)
 
-        UserContext.set(UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, null, false))
+        UserContext.set(UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, false))
         assertEquals(false, service().getMyInfo().unassigned)
     }
 }

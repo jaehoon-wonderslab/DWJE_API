@@ -85,7 +85,7 @@ class AiChatHistoryMaskTest {
 
     private fun login(user: String, blind: Set<String>, write: Boolean = false, unassigned: Boolean = false) {
         viewerBlind = blind
-        UserContext.set(UserPrincipal(user, "열람자", 4, if (unassigned) "미배정" else "제조팀", null, null, null, false,
+        UserContext.set(UserPrincipal(user, "열람자", 4, if (unassigned) "미배정" else "제조팀", null, null, false,
             menuPerms = setOf("chat-history"), writePerms = if (write) setOf("chat-history") else emptySet(), unassigned = unassigned))
     }
 

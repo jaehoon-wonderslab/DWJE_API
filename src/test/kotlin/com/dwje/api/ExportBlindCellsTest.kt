@@ -37,7 +37,7 @@ class ExportBlindCellsTest {
     @Test
     @DisplayName("권한 없는 항목 열의 null 은 비공개로 채우고 센다, 원래 빈 다른 열은 빈칸, 안내 시트에 건수")
     fun fillsMaskedCells() {
-        UserContext.set(UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, null, false, dataPerms = setOf("price")))
+        UserContext.set(UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, false, dataPerms = setOf("price")))
         val service = exportService()
         val blind = service.blindCells()
         val rows = listOf(
@@ -59,7 +59,7 @@ class ExportBlindCellsTest {
     @Test
     @DisplayName("DTP-09 — 볼 수 없는 항목 열은 값이 있어도 비공개(운영 추가 항목은 서비스가 null 로 만들지 않는다), 통합 문서 텍스트 열도")
     fun masksValuesToo() {
-        UserContext.set(UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, null, false, dataPerms = setOf("qty")))
+        UserContext.set(UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, false, dataPerms = setOf("qty")))
         val fields = mock(DataFieldService::class.java)
         doReturn(mapOf("defectType" to "f_defect", "okQty" to "qty")).`when`(fields).attrFieldMap()
         doReturn(listOf(mapOf<String, Any?>("key" to "f_defect", "name" to "불량 유형명"))).`when`(fields).appliedFieldsCached()
@@ -91,7 +91,7 @@ class ExportBlindCellsTest {
     @Test
     @DisplayName("통합관리자·비로그인은 가리지 않는다 — 안내 시트는 0건으로 쓴다")
     fun superAdminNoMask() {
-        UserContext.set(UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, null, true))
+        UserContext.set(UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, true))
         val service = exportService()
         val blind = service.blindCells()
         val file = service.excel("t", listOf("양품"), listOf("okQty"), listOf(mapOf("okQty" to null)), blind = blind)
@@ -105,7 +105,7 @@ class ExportBlindCellsTest {
     @Test
     @DisplayName("CSV 도 비공개로 채우고 마지막 줄에 안내")
     fun csv() {
-        UserContext.set(UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, null, false))
+        UserContext.set(UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, false))
         val service = exportService()
         val text = String(service.csv("t", listOf("양품"), listOf("okQty"), listOf(mapOf("okQty" to null))).body!!.byteArray)
         assertTrue(text.contains("비공개\r\n"))

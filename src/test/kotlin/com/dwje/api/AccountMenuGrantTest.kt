@@ -65,7 +65,7 @@ class AccountMenuGrantTest {
 
     private fun principal(deptId: Int, superAdmin: Boolean = false, menuPerms: Set<String> = emptySet()) =
         com.dwje.api.common.security.UserPrincipal(
-            userId = "P$deptId", userName = "p", deptId = deptId, deptName = "d", deptAbbr = null, positionCd = null,
+            userId = "P$deptId", userName = "p", deptId = deptId, deptName = "d", positionCd = null,
             plantCd = null, superAdmin = superAdmin, menuPerms = menuPerms, dataPerms = emptySet()
         )
 

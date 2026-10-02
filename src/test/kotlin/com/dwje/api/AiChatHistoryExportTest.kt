@@ -22,7 +22,7 @@ class AiChatHistoryExportTest {
     @AfterEach fun clear() = UserContext.clear()
 
     @Test fun `history detail exposes required fields without intent agents or internal SQL`() {
-        UserContext.set(UserPrincipal("admin", "관리자", 1, "전산", null, null, null, true))
+        UserContext.set(UserPrincipal("admin", "관리자", 1, "전산", null, null, true))
         val repo = mock(AiChatRepository::class.java)
         val auth = AuthorizationService(mock(com.dwje.api.repository.AuthRepository::class.java))
         `when`(repo.findChatLog(7L)).thenReturn(mapOf(
@@ -44,14 +44,14 @@ class AiChatHistoryExportTest {
 
     @Test fun `history detail needs screen read and diagnostics need write before reading records`() {
         // 화면 권한이 없으면 상세도 읽기 전에 막힌다
-        UserContext.set(UserPrincipal("u1", "사용자", 1, "품질", null, null, null, false))
+        UserContext.set(UserPrincipal("u1", "사용자", 1, "품질", null, null, false))
         val repo = mock(AiChatRepository::class.java)
         val service = AiAdminService(repo, mock(VectorIndexRepository::class.java),
             AuthorizationService(mock(com.dwje.api.repository.AuthRepository::class.java)), ObjectMapper(), mock(AiAskDebugRecorder::class.java),
             mock(DataFieldService::class.java), mock(AuditLogService::class.java))
         assertThrows(com.dwje.api.common.exception.MenuAccessDeniedException::class.java) { service.getChatDetail(7L) }
         // 조회만 있으면 디버그 진단은 쓰기 권한 없음(E-AUTH-004) — 관리 기능이다(08 CHH-16)
-        UserContext.set(UserPrincipal("u1", "사용자", 1, "품질", null, null, null, false,
+        UserContext.set(UserPrincipal("u1", "사용자", 1, "품질", null, null, false,
             menuPerms = setOf(com.dwje.api.common.util.MenuId.CHAT_HISTORY)))
         assertThrows(com.dwje.api.common.exception.WriteAccessDeniedException::class.java) {
             service.getAskDebug(UUID.randomUUID().toString())
@@ -60,7 +60,7 @@ class AiChatHistoryExportTest {
     }
 
     @Test fun `super administrator can read stored ask diagnostics`() {
-        UserContext.set(UserPrincipal("admin", "관리자", 1, "전산", null, null, null, true))
+        UserContext.set(UserPrincipal("admin", "관리자", 1, "전산", null, null, true))
         val id = UUID.randomUUID()
         val debug = mapOf<String, Any?>("requestId" to id.toString(), "route" to "PRODUCT_LIST")
         val recorder = mock(AiAskDebugRecorder::class.java)
@@ -71,7 +71,7 @@ class AiChatHistoryExportTest {
     }
 
     @Test fun `latest session restores only signed in user's messages and hides schema`() {
-        UserContext.set(UserPrincipal("u1", "사용자", 1, "품질", null, null, null, true))
+        UserContext.set(UserPrincipal("u1", "사용자", 1, "품질", null, null, true))
         val repo = mock(AiChatRepository::class.java)
         val id = UUID.randomUUID()
         `when`(repo.findLatestSessionId("u1")).thenReturn(id)
@@ -91,7 +91,7 @@ class AiChatHistoryExportTest {
     }
 
     @Test fun `top ten export returns workbook and records existing download history`() {
-        UserContext.set(UserPrincipal("u1", "사용자", 1, "품질", null, null, null, true))
+        UserContext.set(UserPrincipal("u1", "사용자", 1, "품질", null, null, true))
         val data = mock(AiDataToolService::class.java)
         val logs = mock(DownloadLogService::class.java, Answer<Any?> { if (it.method.name == "record") 1L else null })
         val rows = listOf(mapOf<String, Any?>("rank" to 1, "from" to "2026-09-22", "to" to "2026-09-23",

@@ -68,7 +68,7 @@ class GlossaryPermissionTest {
         AuthorizationService(mock(AuthRepository::class.java)))
 
     private fun login(read: Set<String>, write: Set<String> = emptySet(), superAdmin: Boolean = false, user: String = "10002") =
-        UserContext.set(UserPrincipal(user, "사용자", 3, "생산관리팀", null, null, null, superAdmin, menuPerms = read, writePerms = write))
+        UserContext.set(UserPrincipal(user, "사용자", 3, "생산관리팀", null, null, superAdmin, menuPerms = read, writePerms = write))
 
     @Test
     @DisplayName("GLS-01 공식 용어 편집 — 쓰기 권한자도 통합관리자가 아니면 403 E-AUTH-002, 조회만이면 E-AUTH-004, 통합관리자는 통과")

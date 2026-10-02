@@ -1,31 +1,18 @@
 <component name="ProjectRunConfigurationManager">
-  <!--
-    [local+실서버LLM] — 매트릭스 (DB × LLM) 의 local/ 실서버 칸
-
-      DB  : 로컬 PostgreSQL (localhost:5432/dwjedb · dwje_local/dwje_local)
-      LLM : 실서버   192.168.2.8:11436     (사내망·VPN 필요)
-
-    [local+jetsonLLM] 과의 차이는 LLM 하나뿐이고, DB 는 둘 다 로컬이다.
-    DB 비밀번호·AOI MSSQL 계정은 config/api.env.local 에 있고, 기동 시 읽힌다.
-
-    ⚠ DB 는 로컬이라 사내망 없이도 동작하지만, LLM 이 192.168.2.8 이므로
-      사내망/VPN 이 없으면 AI 기능만 실패한다. 기동은 성공한 것처럼 보인다.
-
-    아래 값이 이긴다 — 이미 비어 있지 않은 환경변수는 EnvFileLoader 가 덮어쓰지 않는다.
-    그래서 config/api.env.local 의 DWJE_LLM_BASE_URL 을 이 값으로 바꾸고 싶다면
-    여기 값을 비우면 된다(그러면 env 파일이 채운다).
-  -->
-  <configuration default="false" name="dwje-api [local+실서버LLM]" type="SpringBootApplicationConfigurationType"
-                 factoryName="Spring Boot" nameIsGenerated="false">
+  <configuration default="false" name="dwje-api [local+실서버LLM]" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot">
     <option name="ACTIVE_PROFILES" value="local" />
+    <envs>
+      <env name="DWJE_LLM_BASE_URL" value="http://192.168.2.8:8000" />
+      <env name="AX_EMBED_BASE_URL" value="http://192.168.2.8:8001" />
+      <env name="AX_EMBED_MODEL" value="BAAI/bge-m3" />
+      <env name="AX_EMBED_API" value="openai" />
+      <env name="DWJE_LLM_PROVIDER" value="openai" />
+      <env name="DWJE_LLM_MODEL" value="dwje-ax" />
+    </envs>
     <option name="FRAME_DEACTIVATION_UPDATE_POLICY" value="UpdateClassesAndResources" />
     <option name="MAIN_CLASS_NAME" value="com.dwje.api.DwjeApiApplicationKt" />
     <module name="dwje-api.main" />
     <option name="SPRING_BOOT_MAIN_CLASS" value="com.dwje.api.DwjeApiApplicationKt" />
-    <envs>
-      <env name="DWJE_LLM_BASE_URL" value="http://192.168.2.8:11436" />
-      <env name="AX_EMBED_BASE_URL" value="http://192.168.2.8:11436" />
-    </envs>
     <method v="2">
       <option name="Make" enabled="true" />
     </method>
