@@ -1,5 +1,6 @@
 package com.dwje.api.service
 
+import com.dwje.api.common.util.AuditType
 import com.dwje.api.common.exception.ResourceNotFoundException
 import com.dwje.api.common.response.PageMeta
 import com.dwje.api.common.util.DateUtils
@@ -73,7 +74,7 @@ class AgentStatusService(
         )
 
         auditLogService.record(
-            logType = "AUTO_GEN",
+            logType = AuditType.CONFIG_CHANGE,
             menuId = MenuId.AI_AGENT,
             targetDesc = "Agent 재시작 [$agentCd ${agent["name"]}]",
             remark = "runId=$runId"
@@ -128,7 +129,7 @@ class AgentStatusService(
 
         val changed = agentRunRepository.updateUseFlg(agentCd, on)
         auditLogService.record(
-            logType = "AUTO_GEN",
+            logType = AuditType.CONFIG_CHANGE,
             menuId = MenuId.AI_AGENT,
             targetDesc = "Agent ${if (on) "사용" else "미사용"} [$agentCd ${agent["name"]}]",
             remark = "changed=$changed"

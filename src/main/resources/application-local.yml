@@ -25,10 +25,17 @@ app:
     embed-base-url: "${AX_EMBED_BASE_URL:${DWJE_LLM_BASE_URL:http://wddg.ddns.net:11435}}"
   llm:
     base-url: "${DWJE_LLM_BASE_URL:http://wddg.ddns.net:11435}"
+  # 테스트 발송 메일 본문의 알림 링크 — 로컬 WEB 주소(엔진 기본값과 같다).
+  alert:
+    web-base-url: "${AX_WEB_BASE_URL:http://localhost:8090}"
   jwt:
     secret: "local-dev-only-secret-key-dwje-ax-system-0123456789abcdef"
   security:
     email-verification:
+      # 기본은 LOG(코드를 로그로) — 자동 시험이 이 모드를 쓴다. AX_MAIL_SENDER_MODE=SMTP 로 띄우면 LOCAL_MAIL_* 로 실제 발송하고,
+      # 이때는 아래 고정 코드·발송 상한 해제가 꺼진다(LocalMailMode, R-17). 시험 메일은 발신 계정 자신에게만 보낸다.
+      sender-mode: "${AX_MAIL_SENDER_MODE:LOG}"
+      from-address: "${LOCAL_MAIL_FROM:dw_ai@derkwoo.com}"
       # 인증 코드를 고정한다 — 자동 테스트가 회원가입·가입승인 흐름을 끝까지 확인하기 위한 설정.
       # 코드가 로그로만 나오면 테스트가 코드를 알 수 없어 두 흐름을 건너뛴다.
       # local 전용이다. dev/prod 는 senderMode 가 SMTP 라 이 값을 넣으면 기동 자체가 거부된다.
@@ -41,3 +48,6 @@ app:
       # 발송 제한 동작 자체는 위 재발송 대기(10초)로 회원가입 경로에서 계속 검증된다.
       # dev/prod 는 SMTP 모드라 0 을 넣으면 기동 자체가 거부된다.
       daily-send-limit: 0
+    account-unlock:
+      # 로컬은 LOG 모드·고정 코드라 이메일 잠금 해제를 끝까지 시험할 수 있다(R-02).
+      email-enabled: true

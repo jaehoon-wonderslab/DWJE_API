@@ -76,10 +76,11 @@ class MetricStandardController(
         @RequestParam(required = false) category: String?,
         @RequestParam(required = false) applied: Boolean?,
         @Parameter(description = "판정 등급 — NORMAL|WARN|CRIT") @RequestParam(required = false) level: String?,
+        @Parameter(description = "알림에 쓰는 지표만(apply_alert)") @RequestParam(required = false) alertOnly: Boolean?,
         @RequestParam(required = false) page: Int?,
         @RequestParam(required = false) size: Int?
     ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta) = metricStandardService.getStandards(category, applied, level, page, size)
+        val (rows, meta) = metricStandardService.getStandards(category, applied, level, page, size, alertOnly)
         return ApiResponse.page(mapOf("items" to rows), meta)
     }
 

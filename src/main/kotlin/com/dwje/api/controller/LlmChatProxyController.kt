@@ -7,7 +7,10 @@ import com.dwje.api.model.request.AiAskRequest
 import com.dwje.api.model.request.LlmFollowupRequest
 import com.dwje.api.common.response.ApiResponse
 import com.dwje.api.common.security.UserContext
+import com.dwje.api.common.util.ClientIpResolver
+import com.dwje.api.common.util.MenuId
 import com.dwje.api.service.AiDataToolService
+import com.dwje.api.service.AuthorizationService
 import com.dwje.api.service.AiChatService
 import com.dwje.api.service.LlmChatProxyService
 import org.springframework.web.bind.annotation.PathVariable
@@ -42,7 +45,9 @@ class LlmChatProxyController(
     private val llmChatProxyService: LlmChatProxyService,
     private val aiChatService: AiChatService,
     private val aiDataToolService: AiDataToolService,
-    private val appProperties: AppProperties
+    private val appProperties: AppProperties,
+    private val authorizationService: AuthorizationService,
+    private val clientIpResolver: ClientIpResolver = ClientIpResolver()
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -66,6 +71,8 @@ class LlmChatProxyController(
         httpRequest: HttpServletRequest,
         response: HttpServletResponse
     ) {
+        // 덕반장 AI 화면 권한 — 로그인만으로는 부를 수 없다(D-26, 03 MNP-15). 미배정은 ai-chat 을 가져 통과한다(R-11).
+        authorizationService.requireMenu(MenuId.AI_CHAT)
         llmChatProxyService.checkRate(clientIp(httpRequest))
         val saved = if (request.messageId == null) {
             val question = request.messages.orEmpty().lastOrNull { it.role == "user" }?.content.orEmpty()
@@ -73,7 +80,7 @@ class LlmChatProxyController(
         } else null
         val toolExchange = saved?.let(::toolExchange)
         val effectiveRequest = if (saved != null && request.context.isNullOrBlank())
-            request.copy(context = evidenceContext(saved, includeFacts = toolExchange == null)) else request
+            request.copy(context = evidenceContext(saved, includeFacts = toolExchange == null, appProperties.ai.glossaryBlockEnabled)) else request
         val messages = llmChatProxyService.buildMessages(effectiveRequest)
         val messageId = request.messageId ?: saved?.get("messageId") as? Long
         val started = System.currentTimeMillis()
@@ -134,8 +141,10 @@ class LlmChatProxyController(
     /** 후속 질의 — 답을 본 사내 LLM 이 2~3개를 쓴다. `{ questions[], reason }` */
     @Operation(summary = "후속 질의 만들기", description = "방금 받은 답을 보고 이어서 물을 만한 질문을 사내 LLM 이 만든다.")
     @PostMapping("/followups")
-    fun followups(@Valid @RequestBody request: LlmFollowupRequest): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(llmChatProxyService.followups(request.question!!, request.answer!!))
+    fun followups(@Valid @RequestBody request: LlmFollowupRequest): ApiResponse<Map<String, Any?>> {
+        authorizationService.requireMenu(MenuId.AI_CHAT)
+        return ApiResponse.ok(llmChatProxyService.followups(request.question!!, request.answer!!))
+    }
 
     /**
      * 헬스체크 — LLM 서버 `/v1/models` 에 모델이 올라와 있는지. `{ ok, model }`
@@ -153,12 +162,16 @@ class LlmChatProxyController(
      */
     @Operation(summary = "AI 데이터 도구 목록", description = "채팅 근거로 쓰는 DB 집계 도구(MCP tools/list 모양)")
     @GetMapping("/tools")
-    fun tools(): ApiResponse<Map<String, Any?>> = ApiResponse.ok(mapOf("tools" to aiDataToolService.listTools()))
+    fun tools(): ApiResponse<Map<String, Any?>> {
+        authorizationService.requireMenu(MenuId.AI_CHAT)
+        return ApiResponse.ok(mapOf("tools" to aiDataToolService.listTools()))
+    }
 
     /** AI 데이터 도구 실행 — MCP `tools/call` 모양. 조회자의 데이터 권한으로 값을 가린다 */
     @Operation(summary = "AI 데이터 도구 실행", description = "DB 집계 도구를 실행해 구조화된 결과를 낸다(MCP tools/call 모양)")
     @PostMapping("/tools/{name}")
     fun callTool(@PathVariable name: String, @RequestBody(required = false) args: AiToolCallRequest?): ApiResponse<Map<String, Any?>> {
+        authorizationService.requireMenu(MenuId.AI_CHAT)
         val a = args ?: AiToolCallRequest()
         return ApiResponse.ok(aiDataToolService.call(
             name,
@@ -172,26 +185,38 @@ class LlmChatProxyController(
     }
 
     /**
-     * 요청 수 제한에 쓸 IP.
-     *
-     * `X-Forwarded-For` 의 첫 값은 브라우저가 마음대로 적을 수 있어 제한을 우회당한다.
-     * 같은 서버의 nginx(루프백)가 넘긴 요청일 때만 nginx 가 채운 `X-Real-IP` 를 믿는다.
+     * 요청 수 제한의 기준 IP — 판정 규칙은 [ClientIpResolver] 한 곳에 있다(AUD-03).
+     * `X-Forwarded-For` 의 첫 값은 브라우저가 마음대로 적을 수 있어 제한을 우회당하므로 믿지 않는다.
      */
-    private fun clientIp(request: HttpServletRequest): String {
-        val remote = request.remoteAddr ?: "-"
-        val fromProxy = remote == "127.0.0.1" || remote == "0:0:0:0:0:0:0:1" || remote == "::1"
-        val real = request.getHeader("X-Real-IP")
-        return if (fromProxy && !real.isNullOrBlank()) real.trim() else remote
-    }
+    private fun clientIp(request: HttpServletRequest): String = clientIpResolver.resolve(request) ?: "-"
 
-    private fun evidenceContext(ask: Map<String, Any?>, includeFacts: Boolean): String {
-        @Suppress("UNCHECKED_CAST")
-        val facts = (ask["dataEvidence"] as? List<Map<String, Any?>>).orEmpty()
-        @Suppress("UNCHECKED_CAST")
-        val sources = (ask["sources"] as? List<Map<String, Any?>>).orEmpty()
-        return ((if (includeFacts) facts.mapNotNull { it["text"]?.toString() } else emptyList()) + sources.mapNotNull { source ->
-            source["snippet"]?.toString()?.takeIf { it.isNotBlank() }
-        }).joinToString("\n").take(12_000)
+    companion object {
+        /** [용어] 블록 최대 줄 수 (07 GLS-04) */
+        const val GLOSSARY_BLOCK_MAX = 10
+
+        /**
+         * LLM 근거 문자열 — 치환이 있으면 앞에 `[용어]` 블록(현장 표현 → 공식 용어 : 뜻, 중복 제거 최대 10줄),
+         * 그 뒤에 데이터 근거·문서 발췌. 전체 12,000자.
+         */
+        internal fun evidenceContext(ask: Map<String, Any?>, includeFacts: Boolean, glossaryBlock: Boolean = true): String {
+            @Suppress("UNCHECKED_CAST")
+            val facts = (ask["dataEvidence"] as? List<Map<String, Any?>>).orEmpty()
+            @Suppress("UNCHECKED_CAST")
+            val sources = (ask["sources"] as? List<Map<String, Any?>>).orEmpty()
+            val evidence = ((if (includeFacts) facts.mapNotNull { it["text"]?.toString() } else emptyList()) + sources.mapNotNull { source ->
+                source["snippet"]?.toString()?.takeIf { it.isNotBlank() }
+            }).joinToString("\n")
+            @Suppress("UNCHECKED_CAST")
+            val lines = if (!glossaryBlock) emptyList() else (ask["termReplacements"] as? List<Map<String, Any?>>).orEmpty()
+                .mapNotNull { r ->
+                    val from = r["from"]?.toString() ?: return@mapNotNull null
+                    val to = r["to"]?.toString() ?: return@mapNotNull null
+                    "$from → $to" + (r["definition"]?.toString()?.takeIf { it.isNotBlank() }?.let { " : $it" } ?: "")
+                }
+                .distinct().take(GLOSSARY_BLOCK_MAX)
+            val block = if (lines.isEmpty()) "" else "[용어]\n" + lines.joinToString("\n")
+            return listOf(block, evidence).filter { it.isNotEmpty() }.joinToString("\n\n").take(12_000)
+        }
     }
 
     private fun toolExchange(ask: Map<String, Any?>): LlmChatProxyService.ToolExchange? {

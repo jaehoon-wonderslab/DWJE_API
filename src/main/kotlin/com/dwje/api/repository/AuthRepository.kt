@@ -39,6 +39,8 @@ class AuthRepository(
                 u.pwd_hash,
                 u.login_fail_cnt,
                 u.last_login_at,
+                u.email,
+                u.pwd_change_req_yn,
                 d.dept_nm,
                 d.dept_abbr,
                 d.is_super_admin
@@ -61,6 +63,9 @@ class AuthRepository(
                 "pwdHash" to rs.getString("pwd_hash"),
                 "loginFailCnt" to rs.getInt("login_fail_cnt"),
                 "lastLoginAt" to Rs.dateTime(rs, "last_login_at"),
+                "email" to rs.getString("email"),
+                // 초기 비밀번호 변경 요구 (R-04, 01 ACC-03). 컬럼 기본값이 'Y' 다.
+                "pwdChangeRequired" to (rs.getString("pwd_change_req_yn") == "Y"),
                 "deptName" to rs.getString("dept_nm"),
                 "deptAbbr" to rs.getString("dept_abbr"),
                 "superAdmin" to rs.getBoolean("is_super_admin")
@@ -85,11 +90,26 @@ class AuthRepository(
         return jdbcTemplate.query(sql, MapSqlParameterSource("userId", userId)) { rs, _ -> rs.getString("menu_id") }.toSet()
     }
 
+    /**
+     * 계정의 유효 화면 권한과 쓰기 여부 — 화면 ID → 쓰기 가능 여부 (R-06, 03 MNP-16).
+     *
+     * 뷰가 이미 `bool_or(can_write)` 로 「부서 can_write OR 계정 추가 허용 can_write」 를 계산한다.
+     * 조회 권한 행만 뷰에 들어오므로 쓰기만 있고 조회가 없는 화면은 생기지 않는다.
+     */
+    fun findEffectiveMenuPermissionsWithWrite(userId: String): Map<String, Boolean> {
+        val sql = "SELECT menu_id, can_write FROM ax.vw_sys_user_menu_perm WHERE user_id = :userId"
+        return jdbcTemplate.query(sql, MapSqlParameterSource("userId", userId)) { rs, _ ->
+            rs.getString("menu_id") to rs.getBoolean("can_write")
+        }.toMap()
+    }
+
     fun findMenuPermissions(deptId: Int): Set<String> {
+        // 판정 뷰(vw_sys_user_menu_perm, V64)와 같은 기준 — 화면과 메뉴 그룹이 모두 사용 중이어야 한다 (03 MNP-14)
         val sql = """
             SELECT p.menu_id
             FROM ax.tb_sys_dept_menu_perm p
             INNER JOIN ax.tb_sys_menu m ON m.menu_id = p.menu_id
+            INNER JOIN ax.tb_sys_menu_group mg ON mg.group_id = m.group_id AND mg.use_flg = 'Y'
             WHERE p.dept_id  = :deptId
               AND p.can_read = true
               AND m.use_flg  = 'Y'
@@ -134,11 +154,13 @@ class AuthRepository(
         resultCd: String,
         failReason: String?,
         ipAddr: String?,
-        userAgent: String?
+        userAgent: String?,
+        deptNm: String? = null
     ): Long {
+        // dept_nm — 시도 당시 부서 스냅샷. 부서를 옮겨도 감사 목록의 로그인 행 부서가 바뀌지 않는다 (09 AUD-14, V58)
         val sql = """
-            INSERT INTO ax.tb_sys_login_hist (user_id, login_at, result_cd, fail_reason, ip_addr, user_agent)
-            VALUES (:userId, now(), :resultCd, :failReason, CAST(:ipAddr AS inet), :userAgent)
+            INSERT INTO ax.tb_sys_login_hist (user_id, login_at, result_cd, fail_reason, ip_addr, user_agent, dept_nm)
+            VALUES (:userId, now(), :resultCd, :failReason, CAST(:ipAddr AS inet), :userAgent, :deptNm)
             RETURNING login_id
         """.trimIndent()
 
@@ -146,6 +168,7 @@ class AuthRepository(
             .addValue("userId", userId)
             .addValue("resultCd", resultCd)
             .addValue("failReason", failReason)
+            .addValue("deptNm", deptNm?.take(50))
             .addValue("ipAddr", ipAddr)
             .addValue("userAgent", userAgent?.take(300))
 
@@ -222,6 +245,89 @@ class AuthRepository(
             .addValue("stateCd", stateCd)
             .addValue("actor", actor)
 
+        return jdbcTemplate.update(sql, params)
+    }
+
+    /**
+     * 연속 실패 계정을 잠근다 — ACTIVE 인 계정만 LOCKED 로 바꾼다 (R-02, 09 AUD-16).
+     *
+     * 조건부 UPDATE 라 동시에 두 요청이 5회째를 받아도 한 번만 바뀐다. 잠금은 시스템만 건다(관리자 경로 없음).
+     *
+     * @return 실제로 잠근 건수 (0 이면 이미 잠겼거나 다른 상태)
+     */
+    fun lockUser(userId: String): Int {
+        val sql = """
+            UPDATE ax.tb_sys_user
+               SET user_state_cd = 'LOCKED',
+                   upd_date      = now(),
+                   upd_user      = 'SYSTEM'
+             WHERE user_id = :userId
+               AND user_state_cd = 'ACTIVE'
+        """.trimIndent()
+        return jdbcTemplate.update(sql, MapSqlParameterSource("userId", userId))
+    }
+
+    /**
+     * 잠긴 계정을 푼다 — LOCKED 인 계정만 ACTIVE 로 바꾸고 실패 횟수를 0 으로 둔다.
+     *
+     * 이메일 해제·비밀번호 찾기·관리자 해제가 동시에 와도 조건부 UPDATE 라 한 쪽만 성공한다.
+     *
+     * @param pwdChangeReq 함께 저장할 비밀번호 변경 요구(Y/N). null 이면 그대로 둔다
+     * @return 실제로 푼 건수 (0 이면 이미 풀렸거나 정지 등 다른 상태)
+     */
+    fun unlockUser(userId: String, actor: String, pwdChangeReq: String?): Int {
+        val sql = """
+            UPDATE ax.tb_sys_user
+               SET user_state_cd     = 'ACTIVE',
+                   login_fail_cnt    = 0,
+                   pwd_change_req_yn = coalesce(CAST(:pwdChangeReq AS varchar), pwd_change_req_yn),
+                   upd_date          = now(),
+                   upd_user          = :actor
+             WHERE user_id = :userId
+               AND user_state_cd = 'LOCKED'
+        """.trimIndent()
+        val params = MapSqlParameterSource()
+            .addValue("userId", userId)
+            .addValue("actor", actor)
+            .addValue("pwdChangeReq", pwdChangeReq)
+        return jdbcTemplate.update(sql, params)
+    }
+
+    /**
+     * 잠긴 시각 — 로그인 이력의 「연속 실패 N회 잠금」 최신 1건 (잠금 응답·계정 목록의 lockedAt).
+     * 백필로 잠긴 계정처럼 그런 행이 없으면 null 이다.
+     */
+    fun findLockedAt(userId: String): String? {
+        val sql = """
+            SELECT login_at
+              FROM ax.tb_sys_login_hist
+             WHERE user_id = :userId
+               AND result_cd = 'LOCKED'
+               AND fail_reason LIKE '연속 실패%'
+             ORDER BY login_at DESC
+             LIMIT 1
+        """.trimIndent()
+        return jdbcTemplate.query(sql, MapSqlParameterSource("userId", userId)) { rs, _ ->
+            Rs.dateTime(rs, "login_at")
+        }.firstOrNull()
+    }
+
+    /**
+     * 초기 비밀번호 변경 요구(`pwd_change_req_yn`)를 저장한다 (R-04, 01 ACC-03).
+     * 본인 변경·재설정·잠금 해제는 'N', 관리자 등록·관리자 비밀번호 변경·관리자 잠금 해제는 'Y'.
+     */
+    fun updatePwdChangeRequired(userId: String, required: Boolean, actor: String): Int {
+        val sql = """
+            UPDATE ax.tb_sys_user
+               SET pwd_change_req_yn = :yn,
+                   upd_date          = now(),
+                   upd_user          = :actor
+             WHERE user_id = :userId
+        """.trimIndent()
+        val params = MapSqlParameterSource()
+            .addValue("userId", userId)
+            .addValue("yn", if (required) "Y" else "N")
+            .addValue("actor", actor)
         return jdbcTemplate.update(sql, params)
     }
 
@@ -398,10 +504,10 @@ class AuthRepository(
         val sql = """
             INSERT INTO ax.tb_sys_user (
                 user_id, user_nm, dept_id, plant_cd, position_cd, user_state_cd,
-                is_switch_target, pwd_hash, pwd_upd_at, remark, ins_user, upd_user
+                is_switch_target, pwd_hash, pwd_upd_at, pwd_change_req_yn, remark, ins_user, upd_user
             ) VALUES (
                 :userId, :userNm, :deptId, :plantCd, :positionCd, 'PENDING',
-                false, :pwdHash, now(), '회원가입 신청 — 관리자 승인 대기', :userId, :userId
+                false, :pwdHash, now(), 'N', '회원가입 신청 — 관리자 승인 대기', :userId, :userId
             )
         """.trimIndent()
 
@@ -429,17 +535,19 @@ class AuthRepository(
     /**
      * 가입 신청 시 선택 가능한 부서 목록을 조회한다.
      *
-     * 통합관리자 부서는 스스로 신청할 수 없도록 제외한다.
+     * 통합관리자 부서와 미배정 부서(시스템 부서)는 스스로 신청할 수 없도록 제외한다 (CMN-01, 01 ACC-02).
+     *
+     * @param unassignedDeptName 미배정 부서 이름 (`app.unassigned-dept-name`)
      */
-    fun findSignupDepts(): List<Map<String, Any?>> {
+    fun findSignupDepts(unassignedDeptName: String): List<Map<String, Any?>> {
         val sql = """
             SELECT dept_id, dept_nm, dept_abbr, dept_desc
             FROM ax.tb_sys_dept
-            WHERE use_flg = 'Y' AND is_super_admin = false
+            WHERE use_flg = 'Y' AND is_super_admin = false AND dept_nm <> :unassignedDeptName
             ORDER BY sort_seq, dept_nm
         """.trimIndent()
 
-        return jdbcTemplate.query(sql, MapSqlParameterSource()) { rs, _ ->
+        return jdbcTemplate.query(sql, MapSqlParameterSource("unassignedDeptName", unassignedDeptName)) { rs, _ ->
             mapOf(
                 "deptId" to rs.getInt("dept_id"),
                 "deptNm" to rs.getString("dept_nm"),
@@ -447,6 +555,18 @@ class AuthRepository(
                 "desc" to rs.getString("dept_desc")
             )
         }
+    }
+
+    /** 부서 단건 — 가입 신청의 시스템 부서 판정용 (deptId · deptNm · superAdmin). 사용 중지 부서는 없음으로 본다 */
+    fun findActiveDept(deptId: Int): Map<String, Any?>? {
+        val sql = "SELECT dept_id, dept_nm, is_super_admin FROM ax.tb_sys_dept WHERE dept_id = :deptId AND use_flg = 'Y'"
+        return jdbcTemplate.query(sql, MapSqlParameterSource("deptId", deptId)) { rs, _ ->
+            mapOf(
+                "deptId" to rs.getInt("dept_id"),
+                "deptNm" to rs.getString("dept_nm"),
+                "superAdmin" to rs.getBoolean("is_super_admin")
+            )
+        }.firstOrNull()
     }
 
     /** 부서 존재 여부 확인 (가입 신청 검증용) */

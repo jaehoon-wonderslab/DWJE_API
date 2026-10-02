@@ -48,8 +48,38 @@ app:
   masking-enabled: true
   # 보고서 다운로드 이력 보존 연수
   download-retention-years: 3
+  # 감사 로그(감사·권한 변경·로그인) 보존 연수(09 AUD-11)
+  audit-retention-years: 3
+  # 감사·다운로드 기록 아카이브 배치 — D-08 결정(R-20)으로 켠다. 3년 지난 행을 아카이브 표로 옮긴다(지우지 않음)
+  audit-archive-enabled: true
+  # 아카이브 주기(매월 1일 03:00)·시간대·한 트랜잭션 최대 행 수
+  audit-archive-cron: "0 0 3 1 * *"
+  audit-archive-zone: Asia/Seoul
+  audit-archive-batch-size: 50000
   # 그룹웨어 자동 가입의 미배정 부서 이름 — MES 이관 엔진 migration.groupware.ax-join.default-dept-name 과 같게
   unassigned-dept-name: 미배정
+  # 접속 IP 판정에서 믿는 앞단 프록시 — 이 주소가 넘긴 요청만 X-Real-IP / X-Forwarded-For 를 본다(AUD-03).
+  # 그 밖의 요청은 헤더를 무시하고 접속 주소(remoteAddr)를 쓴다. 기본은 같은 서버의 프록시(루프백)뿐이다.
+  trusted-proxies:
+    - 127.0.0.1
+    - "::1"
+    - "0:0:0:0:0:0:0:1"
+  # 브라우저 내려받기 신고(POST /download-logs)에 화면 ID·범위 코드를 필수로 받을지(DLG-05).
+  # 새 WEB 이 모든 화면에서 menuId 를 보내는 것을 확인한 뒤 true 로 바꾼다. menuId 가 오면 존재·조회 권한은 늘 확인한다.
+  download-log:
+    require-menu-id: false
+  # 알림 테스트 발송(ALC-03·RCP-03)과 수신 대상 판정(RCP-04). 엔진 설정과 같은 값을 쓴다.
+  alert:
+    web-base-url: ${AX_WEB_BASE_URL:}   # 메일 본문 알림 링크. 비우면 링크 줄을 넣지 않는다
+    night-from: "22:00"                 # 야간 시작(포함)
+    night-to: "06:00"                   # 야간 끝(제외)
+    receivable-user-states: ACTIVE,LOCKED  # 수신 가능한 계정 상태. 잠금은 로그인만 막는 일시 조치라 알림은 받는다(3단계 결정). 정지·승인 대기는 받지 않는다
+    stale-factor: 3                     # 지표 수집 중단 판정 배수 — 엔진 alert.stale-factor 와 같은 값이어야 한다(05 ALC-08)
+  # 데이터 연동 상태 줄(SYN-03) 판정 기준 — 실서버 정기 배치 주기를 확인한 뒤 조정한다.
+  sync:
+    stale-warn-min: 30     # 마지막 정상 이관 후 이 분 이상이면 주의(WARN)
+    stale-down-min: 120    # 이 분 이상이면 중단(DOWN)
+    stale-pending-min: 10  # 예약 시각이 이 분 넘게 지난 PENDING 을 오래된 예약으로 센다
   # 프레스 작업장 코드 — 일일 생산현황 보고에서 공정 미지정 시 이 범위만 집계한다.
   # tb_md_workcenter 에 공정 구분 컬럼이 없어 코드로 못 박는다. (W110/W150/W120 = A/B/C-프레스)
   press-workcenters:
@@ -61,6 +91,13 @@ app:
   ai:
     # 끄면 두 AI 엔드포인트가 MODEL_NOT_READY 를 낸다.
     enabled: true
+    # 질의 이력 보존 일수(08 CHH-08) — 지난 질의·검색 기록·진단 기록을 매일 03:10 에 지운다(되돌릴 수 없음, 건수는 AUTO_GEN 감사).
+    # D-08 결정(R-20)으로 3년(1,095일). 0 = 지우지 않음
+    chat-retention-days: 1095
+    # LLM 근거 앞 [용어] 블록(07 GLS-04) — 질문에서 치환한 현장 표현 → 공식 용어 : 뜻. 모델 지시문과 충돌하면 false
+    glossary-block-enabled: true
+    # 목표 답변율(%) — 질의 이력 요약의 비교 기준(08 CHH-11). 정해지면 값을 넣는다
+    # target-answer-rate: 90
     # 2026-09-23 사내 LLM 서버(dwje-ax, OpenAI 호환)로 옮겼다 — 채팅 프록시(app.llm)와 같은 서버·환경변수.
     # openai 형식은 system 을 보내지 않고 지시문을 user 메시지 [지시] 에 넣는다. 예전 로컬 Ollama 는 provider: ollama.
     provider: "${DWJE_LLM_PROVIDER:openai}"
@@ -192,13 +229,20 @@ app:
     email-verification:
       # 발송 방식 — LOG(로컬: 코드를 로그로 출력) | SMTP(실제 메일 발송)
       sender-mode: LOG
-      from-address: no-reply@dwje.co.kr
+      # 발신 주소·표시명(R-17) — 프로파일마다 *_MAIL_FROM 으로 덮어쓴다. 주소는 SMTP 인증 계정과 같아야 한다
+      from-address: dw_ai@derkwoo.com
+      from-name: 덕우전자 AX
       code-length: 6
       expire-minutes: 5          # 인증 코드 유효 시간
       max-attempts: 5            # 코드 검증 시도 상한
       resend-wait-sec: 60        # 재발송 대기
       daily-send-limit: 10       # 이메일당 일일 발송 상한
       token-expire-minutes: 10   # 검증 후 발급되는 1회용 토큰 유효 시간
+    account-unlock:
+      # 로그인 5회 실패로 잠긴 계정을 본인이 이메일 인증으로 풀 수 있는지(R-02).
+      # 끄면 잠금 응답 mailEnabled=false, /auth/unlock/* 는 503 E-AUTH-007 이고 관리자 잠금 해제만 남는다.
+      # 기본은 끔 — SMTP 접속 정보를 받아 발송을 확인한 프로파일에서만 켠다(local 은 LOG 모드라 켬).
+      email-enabled: false
   jwt:
     issuer: dwje-api
     access-token-validity-sec: 3600      # 1시간

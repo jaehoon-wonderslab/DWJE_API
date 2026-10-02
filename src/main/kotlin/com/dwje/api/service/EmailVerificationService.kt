@@ -7,6 +7,7 @@ import com.dwje.api.common.security.PasswordEncoderService
 import com.dwje.api.config.EmailVerificationProperties
 import com.dwje.api.repository.EmailVerificationRepository
 import jakarta.servlet.http.HttpServletRequest
+import com.dwje.api.common.util.ClientIpResolver
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
@@ -30,14 +31,18 @@ import java.util.Base64
  * - 코드는 해시로만 저장한다. 평문은 메일 발송 시점에만 존재한다.
  * - 만료(기본 5분) · 시도 상한(기본 5회) · 재발송 대기(60초) · 일일 발송 상한(10회)
  * - 새 코드를 보내면 이전 코드를 즉시 폐기해 동시 시도를 막는다.
- * - 토큰은 1회용이며 목적(SIGNUP/PASSWORD_RESET)이 다르면 통하지 않는다.
+ * - 토큰은 1회용이며 목적(SIGNUP/PASSWORD_RESET/ACCOUNT_UNLOCK)이 다르면 통하지 않는다.
+ * - 계정 잠금 해제(ACCOUNT_UNLOCK)는 대상 계정이 묶인 요청만 만든다. 그래서 공개 경로
+ *   (`/auth/email/send-code`·`/verify-code`)로는 받지 않고 잠금 해제 경로만 쓴다(09 AUD-16).
  */
 @Service
 class EmailVerificationService(
     private val repository: EmailVerificationRepository,
     private val mailSender: VerificationMailSender,
     private val passwordEncoderService: PasswordEncoderService,
-    private val props: EmailVerificationProperties
+    private val props: EmailVerificationProperties,
+    private val clientIpResolver: ClientIpResolver = ClientIpResolver(),
+    private val mailSendStats: com.dwje.api.common.mail.MailSendStats = com.dwje.api.common.mail.MailSendStats()
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -58,8 +63,29 @@ class EmailVerificationService(
     companion object {
         const val PURPOSE_SIGNUP = "SIGNUP"
         const val PURPOSE_PASSWORD_RESET = "PASSWORD_RESET"
+        /** 계정 잠금 해제 — 잠긴 계정의 본인 확인. 대상 계정(target_user_id) 필수 (R-02) */
+        const val PURPOSE_ACCOUNT_UNLOCK = "ACCOUNT_UNLOCK"
 
-        private val ALLOWED_PURPOSES = setOf(PURPOSE_SIGNUP, PURPOSE_PASSWORD_RESET)
+        private val ALLOWED_PURPOSES = setOf(PURPOSE_SIGNUP, PURPOSE_PASSWORD_RESET, PURPOSE_ACCOUNT_UNLOCK)
+
+        /** 공개 경로(`/auth/email/send-code`·`/verify-code`)가 받는 목적 — 대상 계정이 묶이지 않은 잠금 해제 코드를 만들지 않는다 */
+        private val PUBLIC_PURPOSES = setOf(PURPOSE_SIGNUP, PURPOSE_PASSWORD_RESET)
+
+        /**
+         * 이메일 가림 규칙 — 인증 응답·잠금 응답·계정 목록이 같은 규칙을 쓴다.
+         *
+         * `hong@dwje.co.kr` → `ho**@dwje.co.kr`
+         */
+        fun maskEmailOf(email: String): String {
+            val at = email.indexOf('@')
+            if (at <= 0) return "***"
+            val local = email.substring(0, at)
+            val masked = when {
+                local.length <= 2 -> local.first() + "*"
+                else -> local.take(2) + "*".repeat(minOf(local.length - 2, 4))
+            }
+            return masked + email.substring(at)
+        }
 
         /** 이메일 형식 최소 검증 — 실제 도달 가능 여부는 코드 수신으로 확인한다. */
         private val EMAIL_PATTERN = Regex("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
@@ -124,6 +150,7 @@ class EmailVerificationService(
         runCatching { mailSender.sendVerificationCode(normalizedEmail, normalizedPurpose, code, props.expireMinutes) }
             .onFailure {
                 repository.updateSendResult(verifyId, "FAIL", it.message)
+                mailSendStats.recordFailure()
                 log.error("인증 메일 발송 실패: to={} purpose={}", normalizedEmail, normalizedPurpose, it)
                 throw BusinessRuleException("인증 메일 발송에 실패했습니다. 잠시 후 다시 시도해 주세요.")
             }
@@ -142,7 +169,8 @@ class EmailVerificationService(
      *
      * @return verificationToken 과 유효 시간
      */
-    @Transactional
+    // 실패 응답(400·409)에서도 시도 횟수 증가는 남아야 한다 — 롤백되면 대입 시도 상한이 걸리지 않는다.
+    @Transactional(noRollbackFor = [InvalidParameterException::class, BusinessRuleException::class])
     fun verifyCode(email: String, purpose: String, code: String): Map<String, Any?> {
         val normalizedEmail = normalizeEmail(email)
         val normalizedPurpose = normalizePurpose(purpose)
@@ -152,6 +180,36 @@ class EmailVerificationService(
         val request = repository.findLatestPending(normalizedEmail, normalizedPurpose, props.maxAttempts)
             ?: throw BusinessRuleException("유효한 인증 요청이 없습니다. 인증 코드를 다시 요청해 주세요.")
 
+        return verifyRequest(request, code, maskEmail(normalizedEmail), normalizedPurpose) {}
+    }
+
+    /**
+     * 대상 계정(사번) 기준으로 인증 코드를 검증한다 — 계정 잠금 해제 2단계 (09 AUD-16).
+     *
+     * 화면은 이메일 원문을 모르므로 사번으로 최신 요청을 찾는다. 요청이 없을 때의 문구는
+     * 없는 사번·잠기지 않은 계정과 같아야 한다(계정 열거 방지).
+     *
+     * @param onAttemptsExceeded 시도 상한을 넘긴 순간 한 번 부른다(감사 기록용)
+     */
+    @Transactional(noRollbackFor = [InvalidParameterException::class, BusinessRuleException::class])
+    fun verifyCodeForTarget(targetUserId: String, purpose: String, code: String, onAttemptsExceeded: () -> Unit = {}): Map<String, Any?> {
+        val normalizedPurpose = normalizePurpose(purpose)
+        if (code.isBlank()) throw InvalidParameterException("인증 코드를 입력해 주세요.", "code")
+
+        val request = repository.findLatestPendingByTarget(targetUserId, normalizedPurpose, props.maxAttempts)
+            ?: throw BusinessRuleException("유효한 인증 요청이 없습니다. 인증 코드를 다시 요청해 주세요.")
+
+        return verifyRequest(request, code, "target=$targetUserId", normalizedPurpose, onAttemptsExceeded)
+    }
+
+    /** 찾은 인증 요청의 만료·코드를 확인하고 1회용 토큰을 발급한다 — 이메일 기준·대상 기준 검증이 같이 쓴다 */
+    private fun verifyRequest(
+        request: Map<String, Any?>,
+        code: String,
+        logLabel: String,
+        normalizedPurpose: String,
+        onAttemptsExceeded: () -> Unit
+    ): Map<String, Any?> {
         // 1. 만료 확인 — 잔여 시간은 DB 시계로 계산된 값이다.
         val expiresInSec = request["expiresInSec"] as? Long ?: 0L
         if (expiresInSec <= 0L) {
@@ -163,6 +221,7 @@ class EmailVerificationService(
         if (!passwordEncoderService.matches(code.trim(), request["codeHash"] as String?)) {
             val attempts = repository.increaseAttempt(verifyId)
             val remain = props.maxAttempts - attempts
+            if (remain <= 0) onAttemptsExceeded()
             throw if (remain <= 0) {
                 BusinessRuleException("인증 시도 횟수를 초과했습니다. 인증 코드를 다시 요청해 주세요.")
             } else {
@@ -174,7 +233,7 @@ class EmailVerificationService(
         val token = generateToken()
         repository.markVerified(verifyId, token)
 
-        log.info("이메일 인증 성공: email={} purpose={}", maskEmail(normalizedEmail), normalizedPurpose)
+        log.info("이메일 인증 성공: {} purpose={}", logLabel, normalizedPurpose)
 
         return mapOf(
             "verificationToken" to token,
@@ -255,12 +314,24 @@ class EmailVerificationService(
         return value
     }
 
+    /**
+     * 공개 경로(`/auth/email/send-code`·`/verify-code`)에서 받는 목적인지 확인한다.
+     * 잠금 해제(ACCOUNT_UNLOCK)는 대상 계정이 묶인 요청만 만들므로 이 경로로는 받지 않는다(400, field=purpose).
+     */
+    fun requirePublicPurpose(purpose: String?) {
+        val value = purpose?.trim()?.uppercase()
+        if (value != null && value in ALLOWED_PURPOSES && value !in PUBLIC_PURPOSES) {
+            throw InvalidParameterException("이 경로로는 요청할 수 없는 인증 목적입니다.", "purpose")
+        }
+    }
+
     /** 인증 목적을 화이트리스트로 검증한다. */
     private fun normalizePurpose(purpose: String?): String {
         val value = purpose?.trim()?.uppercase()
             ?: throw InvalidParameterException("인증 목적을 지정해 주세요.", "purpose")
         if (value !in ALLOWED_PURPOSES) {
             throw InvalidParameterException("인증 목적은 SIGNUP 또는 PASSWORD_RESET 만 허용합니다.", "purpose")
+            // ACCOUNT_UNLOCK 은 잠금 해제 경로 전용이라 안내 문구에 넣지 않는다.
         }
         return value
     }
@@ -270,26 +341,8 @@ class EmailVerificationService(
      *
      * `hong@dwje.co.kr` → `ho**@dwje.co.kr`
      */
-    fun maskEmail(email: String): String {
-        val at = email.indexOf('@')
-        if (at <= 0) return "***"
-        val local = email.substring(0, at)
-        val masked = when {
-            local.length <= 2 -> local.first() + "*"
-            else -> local.take(2) + "*".repeat(minOf(local.length - 2, 4))
-        }
-        return masked + email.substring(at)
-    }
+    fun maskEmail(email: String): String = maskEmailOf(email)
 
-    /** 현재 요청의 클라이언트 IP */
-    private fun currentIp(): String? {
-        val attrs = RequestContextHolder.getRequestAttributes() as? ServletRequestAttributes ?: return null
-        return clientIp(attrs.request)
-    }
-
-    private fun clientIp(request: HttpServletRequest): String? {
-        val forwarded = request.getHeader("X-Forwarded-For")
-        if (!forwarded.isNullOrBlank()) return forwarded.split(",").first().trim()
-        return request.remoteAddr
-    }
+    /** 현재 요청의 클라이언트 IP — 판정 규칙은 [ClientIpResolver] 한 곳에 있다(AUD-03) */
+    private fun currentIp(): String? = clientIpResolver.currentRequestIp()
 }

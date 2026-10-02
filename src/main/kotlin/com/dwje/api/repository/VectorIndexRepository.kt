@@ -22,7 +22,7 @@ class VectorIndexRepository(
     /**
      * 색인 작업을 등록한다. (No.178 용어 재색인)
      *
-     * job_id 는 "JOB-yyyyMMddHHmmss-seq" 형식으로 채번한다.
+     * job_id 는 "JOB-yyyyMMddHHmmssSSS[-n]" 형식으로 채번한다.
      *
      * @param jobTypeCd 작업 유형 — FULL / INCR / TERM_EMBED
      * @return 생성된 job_id
@@ -33,9 +33,12 @@ class VectorIndexRepository(
         docCnt: Int,
         chunkCnt: Int,
         triggeredBy: String,
-        remark: String?
+        remark: String?,
+        stateCd: String = "RUNNING"
     ): String {
-        val jobId = "JOB-${LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMddHHmmss"))}"
+        // 밀리초까지 채번하고(21자), 같은 밀리초에 겹치면 -1…-9 를 붙여 다시 넣는다(job_id varchar(24)).
+        // 끝내 못 넣으면 예외 — 행 없이 성공을 돌려주지 않는다 (07 GLS-05)
+        val base = "JOB-${LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS"))}"
 
         val sql = """
             INSERT INTO vec.tb_ingest_job (
@@ -45,22 +48,26 @@ class VectorIndexRepository(
             ) VALUES (
                 :jobId, :jobTypeCd, :embedModelId, now(),
                 :docCnt, :chunkCnt, 0, 0, 0, 0,
-                'RUNNING', 'MANUAL', :triggeredBy, :remark
+                :stateCd, 'MANUAL', :triggeredBy, :remark
             )
             ON CONFLICT (job_id) DO NOTHING
             RETURNING job_id
         """.trimIndent()
 
-        val params = MapSqlParameterSource()
-            .addValue("jobId", jobId)
-            .addValue("jobTypeCd", jobTypeCd)
-            .addValue("embedModelId", embedModelId)
-            .addValue("docCnt", docCnt)
-            .addValue("chunkCnt", chunkCnt)
-            .addValue("triggeredBy", triggeredBy)
-            .addValue("remark", remark?.take(500))
-
-        return jdbcTemplate.query(sql, params) { rs, _ -> rs.getString("job_id") }.firstOrNull() ?: jobId
+        for (seq in 0..9) {
+            val jobId = if (seq == 0) base else "$base-$seq"
+            val params = MapSqlParameterSource()
+                .addValue("jobId", jobId)
+                .addValue("jobTypeCd", jobTypeCd)
+                .addValue("embedModelId", embedModelId)
+                .addValue("docCnt", docCnt)
+                .addValue("chunkCnt", chunkCnt)
+                .addValue("stateCd", stateCd)
+                .addValue("triggeredBy", triggeredBy)
+                .addValue("remark", remark?.take(500))
+            jdbcTemplate.query(sql, params) { rs, _ -> rs.getString("job_id") }.firstOrNull()?.let { return it }
+        }
+        throw IllegalStateException("색인 작업 번호를 만들지 못했습니다. [$base]")
     }
 
     /**

@@ -41,9 +41,12 @@ class AlertController(
         @Parameter(description = "조회 기간 — today|7d|30d") @RequestParam(required = false) period: String?,
         @Parameter(description = "확인 상태 — OPEN|ACKED|CLOSED") @RequestParam(required = false) ackState: String?,
         @RequestParam(required = false) page: Int?,
-        @RequestParam(required = false) size: Int?
+        @RequestParam(required = false) size: Int?,
+        @Parameter(description = "테스트 발송 알림 포함 여부(기본 false)") @RequestParam(required = false) includeTest: Boolean?,
+        @Parameter(description = "발송 조건 ID — 조건 화면의 「최근 알림」 링크") @RequestParam(required = false) condId: Int?,
+        @Parameter(description = "알림 ID — 지정하면 기간·테스트 여부와 무관하게 그 한 건") @RequestParam(required = false) alertId: Long?
     ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta) = alertService.getAlerts(type, eqptCd, period, ackState, page, size)
+        val (rows, meta) = alertService.getAlerts(type, eqptCd, period, ackState, page, size, includeTest ?: false, condId, alertId)
         return ApiResponse.page(mapOf("items" to rows), meta)
     }
 

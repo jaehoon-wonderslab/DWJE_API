@@ -3,6 +3,7 @@ package com.dwje.api.repository
 import com.dwje.api.common.exception.InvalidParameterException
 import com.dwje.api.common.util.Rs
 import com.dwje.api.common.util.SqlLikeUtils
+import com.dwje.api.service.EmailVerificationService
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Repository
@@ -14,6 +15,13 @@ import org.springframework.stereotype.Repository
  *              ax.tb_sys_menu, ax.tb_sys_menu_group, ax.tb_sys_dept_menu_perm,
  *              ax.tb_sys_data_field, ax.tb_sys_data_field_column, ax.tb_sys_dept_data_perm
  */
+/**
+ * 가입 경로 계산식 (01 ACC-08) — 컬럼이 아니라 등록자·비고로 판정한다.
+ * 회원가입은 본인 사번으로 등록된다(AuthRepository 가입 INSERT) — 문서의 `ins_user IS NULL` 만 보면 가입 계정이 모두 ADMIN 이 된다.
+ */
+private const val JOIN_SRC_SQL = "CASE WHEN u.ins_user = 'SYSTEM' AND u.remark LIKE '그룹웨어 자동 가입%' THEN 'GROUPWARE' " +
+    "WHEN u.ins_user IS NULL OR u.ins_user = u.user_id THEN 'SIGNUP' ELSE 'ADMIN' END"
+
 @Repository
 class SystemUserRepository(
     private val jdbcTemplate: NamedParameterJdbcTemplate
@@ -32,6 +40,8 @@ class SystemUserRepository(
                 count(*) FILTER (WHERE u.user_state_cd = 'ACTIVE')    AS active_cnt,
                 count(*) FILTER (WHERE u.user_state_cd = 'SUSPENDED') AS suspended_cnt,
                 count(*) FILTER (WHERE u.user_state_cd = 'PENDING')   AS pending_cnt,
+                count(*) FILTER (WHERE u.user_state_cd = 'LOCKED')    AS locked_cnt,
+                count(*) FILTER (WHERE u.pwd_change_req_yn = 'Y')     AS pwd_change_req_cnt,
                 count(*) FILTER (WHERE u.is_switch_target)            AS switchable_cnt,
                 (SELECT count(*) FROM ax.tb_sys_dept WHERE use_flg = 'Y') AS dept_cnt
             FROM ax.tb_sys_user u
@@ -43,8 +53,12 @@ class SystemUserRepository(
                     "active" to rs.getLong("active_cnt"),
                     "suspended" to rs.getLong("suspended_cnt"),
                     // 승인 대기 전체 건수 — 화면 상단 표기. 검색 결과의 meta.total 과 분리해 검색 중에도 바뀌지 않는다.
-                    "pending" to rs.getLong("pending_cnt")
+                    "pending" to rs.getLong("pending_cnt"),
+                    // 로그인 연속 실패로 잠긴 계정 (R-02, 01 ACC-05)
+                    "locked" to rs.getLong("locked_cnt")
                 ),
+                // 초기 비밀번호를 아직 바꾸지 않은 계정 (R-04, 01 ACC-03)
+                "pwdChangeRequiredCnt" to rs.getLong("pwd_change_req_cnt"),
                 "deptCnt" to rs.getLong("dept_cnt"),
                 "switchableCnt" to rs.getLong("switchable_cnt")
             )
@@ -64,7 +78,8 @@ class SystemUserRepository(
         state: String?,
         switchable: Boolean?,
         limit: Int?,
-        offset: Int
+        offset: Int,
+        joinSrc: String? = null
     ): List<Map<String, Any?>> {
         val sql = StringBuilder(
             """
@@ -72,7 +87,16 @@ class SystemUserRepository(
                 u.user_id, u.user_nm, u.dept_id, d.dept_nm, d.dept_abbr,
                 u.position_cd, pc.code_nm AS position_nm,
                 u.user_state_cd, sc.code_nm AS state_nm,
-                u.is_switch_target, u.plant_cd, u.last_login_at, u.login_fail_cnt, u.remark
+                u.is_switch_target, u.plant_cd, u.last_login_at, u.login_fail_cnt, u.remark,
+                u.email, u.pwd_change_req_yn,
+                $JOIN_SRC_SQL AS join_src,
+                to_char(u.ins_date AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD HH24:MI') AS requested_at,
+                -- 잠긴 시각 = 로그인 이력의 「연속 실패 N회 잠금」 최신 1건 (09 AUD-16, 01 ACC-05)
+                CASE WHEN u.user_state_cd = 'LOCKED' THEN (
+                    SELECT max(h.login_at) FROM ax.tb_sys_login_hist h
+                     WHERE h.user_id = u.user_id AND h.result_cd = 'LOCKED' AND h.fail_reason LIKE '연속 실패%'
+                ) END AS locked_at,
+                ${stateReasonSql()} AS state_reason
             FROM ax.tb_sys_user u
             INNER JOIN ax.tb_sys_dept d  ON d.dept_id  = u.dept_id
             LEFT  JOIN ax.tb_sys_code pc ON pc.group_cd = 'SYS_POSITION'   AND pc.code = u.position_cd
@@ -82,7 +106,7 @@ class SystemUserRepository(
         )
 
         val params = MapSqlParameterSource()
-        appendUserFilters(sql, params, keyword, deptId, state, switchable)
+        appendUserFilters(sql, params, keyword, deptId, state, switchable, joinSrc)
 
         sql.append("\nORDER BY d.sort_seq, u.user_nm")
         // limit 이 null 이면 전량(size=0) — 화면이 Tabulator 열 필터를 전체 결과에 걸 때 쓴다.
@@ -91,7 +115,76 @@ class SystemUserRepository(
             params.addValue("limit", limit).addValue("offset", offset)
         }
 
-        return jdbcTemplate.query(sql.toString(), params) { rs, _ ->
+        return jdbcTemplate.query(sql.toString(), params) { rs, _ -> userRow(rs) }
+    }
+
+    /**
+     * 정지 사유(계산값, 01 ACC-05) — SUSPENDED 일 때만. 우선순위 RETIRED > REJECTED > ADMIN.
+     * RETIRED 는 그룹웨어 인사 원천 표가 있을 때만 본다(없는 환경에서 SQL 이 깨지지 않게 조건부로 조립한다).
+     */
+    private fun stateReasonSql(): String {
+        val retired = if (groupwareSourceExists()) {
+            """WHEN (SELECT l.is_retired FROM groupware_user.tb_user_list l
+                         WHERE l.empno = u.user_id ORDER BY l.is_retired, l.id LIMIT 1) THEN 'RETIRED'"""
+        } else ""
+        return """
+            CASE WHEN u.user_state_cd <> 'SUSPENDED' THEN NULL
+                 $retired
+                 WHEN (SELECT pl.detail FROM ax.tb_sys_perm_log pl WHERE pl.target_user_id = u.user_id
+                        ORDER BY pl.log_at DESC LIMIT 1) LIKE '회원가입 반려%' THEN 'REJECTED'
+                 ELSE 'ADMIN' END
+        """.trimIndent()
+    }
+
+    /** 그룹웨어 인사 원천 표(groupware_user.tb_user_list)가 있는지 */
+    fun groupwareSourceExists(): Boolean =
+        jdbcTemplate.queryForObject(
+            "SELECT to_regclass('groupware_user.tb_user_list') IS NOT NULL", MapSqlParameterSource(), Boolean::class.java
+        ) ?: false
+
+    /** 사번 정확 일치 1건 — 승인·반려 대상 찾기(목록 검색은 부분 일치라 `1001` 이 `11001` 을 집을 수 있다, 01 ACC-01) */
+    fun findUserByEmpNo(empNo: String): Map<String, Any?>? {
+        val sql = """
+            SELECT
+                u.user_id, u.user_nm, u.dept_id, d.dept_nm, d.dept_abbr,
+                u.position_cd, pc.code_nm AS position_nm,
+                u.user_state_cd, sc.code_nm AS state_nm,
+                u.is_switch_target, u.plant_cd, u.last_login_at, u.login_fail_cnt, u.remark,
+                u.email, u.pwd_change_req_yn, NULL::timestamptz AS locked_at,
+                $JOIN_SRC_SQL AS join_src,
+                to_char(u.ins_date AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD HH24:MI') AS requested_at,
+                ${stateReasonSql()} AS state_reason
+            FROM ax.tb_sys_user u
+            INNER JOIN ax.tb_sys_dept d  ON d.dept_id  = u.dept_id
+            LEFT  JOIN ax.tb_sys_code pc ON pc.group_cd = 'SYS_POSITION'   AND pc.code = u.position_cd
+            LEFT  JOIN ax.tb_sys_code sc ON sc.group_cd = 'SYS_USER_STATE' AND sc.code = u.user_state_cd
+            WHERE u.user_id = :empNo
+        """.trimIndent()
+        return jdbcTemplate.query(sql, MapSqlParameterSource("empNo", empNo)) { rs, _ -> userRow(rs) }.firstOrNull()
+    }
+
+    /** 승인 대기 → 새 상태. 조건부라 두 관리자가 동시에 처리하면 한 쪽만 1행이다 */
+    fun approvePending(empNo: String, newState: String, actor: String): Int =
+        jdbcTemplate.update(
+            """
+            UPDATE ax.tb_sys_user SET user_state_cd = :state, upd_date = now(), upd_user = :actor
+             WHERE user_id = :empNo AND user_state_cd = 'PENDING'
+            """.trimIndent(),
+            MapSqlParameterSource().addValue("empNo", empNo).addValue("state", newState).addValue("actor", actor)
+        )
+
+    /** 비고(remark)에 한 줄 덧붙인다 — 컬럼 길이(500)를 넘으면 앞쪽(오래된 줄)을 잘라 낸다 */
+    fun appendRemark(empNo: String, line: String, actor: String): Int =
+        jdbcTemplate.update(
+            """
+            UPDATE ax.tb_sys_user
+               SET remark = right(concat_ws(E'\n', nullif(remark, ''), :line), 500), upd_date = now(), upd_user = :actor
+             WHERE user_id = :empNo
+            """.trimIndent(),
+            MapSqlParameterSource().addValue("empNo", empNo).addValue("line", line).addValue("actor", actor)
+        )
+
+    private fun userRow(rs: java.sql.ResultSet): Map<String, Any?> =
             mapOf(
                 "empNo" to rs.getString("user_id"),
                 "name" to rs.getString("user_nm"),
@@ -106,13 +199,21 @@ class SystemUserRepository(
                 "plantCd" to rs.getString("plant_cd"),
                 "lastLoginAt" to Rs.dateTime(rs, "last_login_at"),
                 "loginFailCnt" to rs.getInt("login_fail_cnt"),
-                "remark" to rs.getString("remark")
+                "remark" to rs.getString("remark"),
+                "pwdChangeRequired" to (rs.getString("pwd_change_req_yn") == "Y"),
+                "lockedAt" to Rs.dateTime(rs, "locked_at"),
+                // 원본 이메일은 응답에 넣지 않는다 — 잠금 해제 메일이 갈 주소를 가린 값만
+                "emailMasked" to rs.getString("email")?.takeIf { it.isNotBlank() }?.let { EmailVerificationService.maskEmailOf(it) },
+                // 정지 사유 — RETIRED(그룹웨어 퇴직) · REJECTED(가입 반려) · ADMIN(관리자 정지). 정지가 아니면 null
+                "stateReason" to rs.getString("state_reason"),
+                // 가입 경로 — GROUPWARE(그룹웨어 자동 가입) · SIGNUP(본인 가입 신청) · ADMIN(관리자 등록) (01 ACC-08)
+                "joinSrc" to rs.getString("join_src"),
+                // 등록 시각 — 승인 대기 목록의 「신청 시각」 (01 ACC-07)
+                "requestedAt" to rs.getString("requested_at")
             )
-        }
-    }
 
     /** 계정 목록 전체 건수 */
-    fun countUsers(keyword: String?, deptId: Int?, state: String?, switchable: Boolean?): Long {
+    fun countUsers(keyword: String?, deptId: Int?, state: String?, switchable: Boolean?, joinSrc: String? = null): Long {
         val sql = StringBuilder(
             """
             SELECT count(*)
@@ -125,7 +226,7 @@ class SystemUserRepository(
         )
 
         val params = MapSqlParameterSource()
-        appendUserFilters(sql, params, keyword, deptId, state, switchable)
+        appendUserFilters(sql, params, keyword, deptId, state, switchable, joinSrc)
 
         return jdbcTemplate.queryForObject(sql.toString(), params, Long::class.java) ?: 0L
     }
@@ -141,7 +242,8 @@ class SystemUserRepository(
         keyword: String?,
         deptId: Int?,
         state: String?,
-        switchable: Boolean?
+        switchable: Boolean?,
+        joinSrc: String? = null
     ) {
         SqlLikeUtils.contains(keyword)?.let {
             sql.append(
@@ -157,9 +259,15 @@ class SystemUserRepository(
             sql.append(" AND u.dept_id = :deptId")
             params.addValue("deptId", deptId)
         }
-        if (!state.isNullOrBlank()) {
-            sql.append(" AND u.user_state_cd = :state")
-            params.addValue("state", normalizeUserState(state))
+        // 상태는 쉼표로 여러 개 — LOCKED,SUSPENDED (01 ACC-08). 모르는 값이 하나라도 있으면 400
+        val states = state?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }?.map { normalizeUserState(it) }?.distinct()
+        if (!states.isNullOrEmpty()) {
+            sql.append(" AND u.user_state_cd = ANY(:states)")
+            params.addValue("states", states.toTypedArray())
+        }
+        if (joinSrc != null) {
+            sql.append(" AND ($JOIN_SRC_SQL) = :joinSrc")
+            params.addValue("joinSrc", joinSrc)
         }
         if (switchable != null) {
             sql.append(" AND u.is_switch_target = :switchable")
@@ -169,6 +277,8 @@ class SystemUserRepository(
 
     /**
      * 계정을 등록한다. (No.129)
+     *
+     * 관리자가 만든 계정은 첫 로그인 때 비밀번호를 바꿔야 한다 — `pwd_change_req_yn='Y'` (R-04, 01 ACC-03).
      */
     fun insertUser(
         empNo: String,
@@ -184,10 +294,10 @@ class SystemUserRepository(
         val sql = """
             INSERT INTO ax.tb_sys_user (
                 user_id, user_nm, dept_id, plant_cd, position_cd, user_state_cd,
-                is_switch_target, pwd_hash, pwd_upd_at, ins_user, upd_user
+                is_switch_target, pwd_hash, pwd_upd_at, pwd_change_req_yn, ins_user, upd_user
             ) VALUES (
                 :empNo, :name, :deptId, :plantCd, :positionCd, :stateCd,
-                :switchable, :pwdHash, now(), :actor, :actor
+                :switchable, :pwdHash, now(), 'Y', :actor, :actor
             )
         """.trimIndent()
 
@@ -244,6 +354,35 @@ class SystemUserRepository(
     /**
      * 계정을 삭제한다. (No.131)
      */
+    /**
+     * 계정 삭제 전 참조 건수 (01 ACC-11) — 막는 참조(서빙 프로필 활성화자·문서 작성자, FK RESTRICT)와
+     * 함께 지워지는 참조(알림 수신자·추가 허용 화면·화면 사용 횟수, FK CASCADE). 가입 경로도 함께.
+     */
+    fun findUserDeleteRefs(empNo: String): Map<String, Any?> =
+        jdbcTemplate.queryForObject(
+            """
+            SELECT (SELECT count(*) FROM ax.tb_ai_serving_profile p WHERE p.activated_by = :empNo) AS serving_cnt,
+                   (SELECT count(*) FROM vec.tb_doc d WHERE d.author_user_id = :empNo)            AS doc_cnt,
+                   (SELECT count(*) FROM ax.tb_alm_recipient r WHERE r.user_id = :empNo)          AS recipient_cnt,
+                   (SELECT count(*) FROM ax.tb_sys_user_menu_grant g WHERE g.user_id = :empNo)    AS grant_cnt,
+                   (SELECT count(*) FROM ax.tb_rpt_usage x WHERE x.user_id = :empNo)              AS usage_cnt,
+                   (SELECT $JOIN_SRC_SQL FROM ax.tb_sys_user u WHERE u.user_id = :empNo)          AS join_src
+            """.trimIndent(),
+            MapSqlParameterSource("empNo", empNo)
+        ) { rs, _ ->
+            mapOf(
+                "servingProfiles" to rs.getLong("serving_cnt"), "docs" to rs.getLong("doc_cnt"),
+                "recipients" to rs.getLong("recipient_cnt"), "menuGrants" to rs.getLong("grant_cnt"),
+                "usage" to rs.getLong("usage_cnt"), "joinSrc" to rs.getString("join_src")
+            )
+        } ?: emptyMap()
+
+    /** 인증 메일 마지막 발송 실패 시각 (R-17) — 없으면 null */
+    fun findMailLastFailAt(): String? =
+        jdbcTemplate.query(
+            "SELECT max(ins_date) AS at FROM ax.tb_sys_email_verify WHERE send_result_cd = 'FAIL'", MapSqlParameterSource()
+        ) { rs, _ -> Rs.dateTime(rs, "at") }.firstOrNull()
+
     fun deleteUser(empNo: String): Int =
         jdbcTemplate.update(
             "DELETE FROM ax.tb_sys_user WHERE user_id = :empNo",
@@ -284,6 +423,46 @@ class SystemUserRepository(
             "SELECT dept_id FROM ax.tb_sys_user WHERE user_id = :empNo",
             MapSqlParameterSource("empNo", empNo)
         ) { rs, _ -> rs.getInt("dept_id") }.firstOrNull()
+
+    /** 계정의 현재 상태 코드 (없는 계정이면 null) */
+    fun findUserStateCd(empNo: String): String? =
+        jdbcTemplate.query(
+            "SELECT user_state_cd FROM ax.tb_sys_user WHERE user_id = :empNo",
+            MapSqlParameterSource("empNo", empNo)
+        ) { rs, _ -> rs.getString("user_state_cd") }.firstOrNull()
+
+    /**
+     * 관리자 잠금 해제 — LOCKED 인 계정만 ACTIVE 로 바꾸고 실패 횟수를 0, 비밀번호 변경 요구를 Y 로 둔다 (01 ACC-05).
+     * 5회 실패는 대입 시도일 수 있으므로 해제 후 첫 로그인에서 비밀번호를 바꾸게 한다.
+     *
+     * @return 실제로 푼 건수 (0 이면 그사이 본인 해제 등으로 이미 풀림)
+     */
+    fun unlockUserByAdmin(empNo: String, actor: String): Int =
+        jdbcTemplate.update(
+            """
+            UPDATE ax.tb_sys_user
+               SET user_state_cd = 'ACTIVE', login_fail_cnt = 0, pwd_change_req_yn = 'Y',
+                   upd_date = now(), upd_user = :actor
+             WHERE user_id = :empNo AND user_state_cd = 'LOCKED'
+            """.trimIndent(),
+            MapSqlParameterSource().addValue("empNo", empNo).addValue("actor", actor)
+        )
+
+    /** 로그인 실패 횟수를 0 으로 — 정지 해제(SUSPENDED → ACTIVE) 때 정지 중 쌓인 값을 정리한다 (01 ACC-05) */
+    fun resetLoginFailCount(empNo: String, actor: String): Int =
+        jdbcTemplate.update(
+            "UPDATE ax.tb_sys_user SET login_fail_cnt = 0, upd_date = now(), upd_user = :actor WHERE user_id = :empNo",
+            MapSqlParameterSource().addValue("empNo", empNo).addValue("actor", actor)
+        )
+
+    /**
+     * 초기 비밀번호 변경 요구(`pwd_change_req_yn`) — 관리자가 비밀번호를 바꿔 주면 Y (R-04, 01 ACC-03).
+     */
+    fun updatePwdChangeRequired(empNo: String, required: Boolean, actor: String): Int =
+        jdbcTemplate.update(
+            "UPDATE ax.tb_sys_user SET pwd_change_req_yn = :yn, upd_date = now(), upd_user = :actor WHERE user_id = :empNo",
+            MapSqlParameterSource().addValue("empNo", empNo).addValue("yn", if (required) "Y" else "N").addValue("actor", actor)
+        )
 
     /** 이름으로 부서 ID 를 찾는다 (그룹웨어 자동 가입의 미배정 부서) */
     fun findDeptIdByName(deptNm: String): Int? =
@@ -337,6 +516,8 @@ class SystemUserRepository(
                 (SELECT count(*) FROM ax.tb_sys_user u
                   WHERE u.dept_id = d.dept_id)                                        AS user_cnt,
                 (SELECT count(*) FROM ax.tb_sys_dept_menu_perm p
+                   JOIN ax.tb_sys_menu m ON m.menu_id = p.menu_id AND m.use_flg = 'Y'
+                   JOIN ax.tb_sys_menu_group g ON g.group_id = m.group_id AND g.use_flg = 'Y'
                   WHERE p.dept_id = d.dept_id AND p.can_read)                         AS menu_cnt,
                 (SELECT count(*) FROM ax.tb_sys_dept_data_perm p
                   WHERE p.dept_id = d.dept_id AND p.is_allowed)                       AS data_cnt
@@ -426,7 +607,7 @@ class SystemUserRepository(
     /** 부서 단건 조회 */
     fun findDept(deptId: Int): Map<String, Any?>? {
         val sql = """
-            SELECT dept_id, dept_nm, dept_abbr, dept_desc, plant_cd, is_super_admin
+            SELECT dept_id, dept_nm, dept_abbr, dept_desc, plant_cd, is_super_admin, use_flg
             FROM ax.tb_sys_dept
             WHERE dept_id = :deptId
         """.trimIndent()
@@ -438,10 +619,55 @@ class SystemUserRepository(
                 "abbr" to rs.getString("dept_abbr"),
                 "desc" to rs.getString("dept_desc"),
                 "plantCd" to rs.getString("plant_cd"),
-                "superAdmin" to rs.getBoolean("is_super_admin")
+                "superAdmin" to rs.getBoolean("is_super_admin"),
+                "useFlg" to rs.getString("use_flg")
             )
         }.firstOrNull()
     }
+
+    /**
+     * 부서를 참조하는 행 수 — 삭제 전 확인(01 ACC-04). 이 표들은 FK 가 CASCADE 가 아니라 남아 있으면 삭제가 500 으로 깨진다.
+     */
+    fun countDeptRefs(deptId: Int): Map<String, Long> {
+        val sql = """
+            SELECT
+              (SELECT count(*) FROM ax.tb_sys_user        WHERE dept_id       = :d) AS users,
+              (SELECT count(*) FROM ax.tb_sys_dept_gw_map WHERE dept_id       = :d) AS gw_dept_maps,
+              (SELECT count(*) FROM ax.tb_alm_recip_group WHERE dept_id       = :d) AS alert_recip_groups,
+              (SELECT count(*) FROM vec.tb_doc            WHERE owner_dept_id = :d) AS docs,
+              (SELECT count(*) FROM ax.tb_met_metric_std  WHERE owner_dept_id = :d) AS metric_stds
+        """.trimIndent()
+        return jdbcTemplate.queryForObject(sql, MapSqlParameterSource("d", deptId)) { rs, _ ->
+            linkedMapOf(
+                "users" to rs.getLong("users"),
+                "gwDeptMaps" to rs.getLong("gw_dept_maps"),
+                "alertRecipGroups" to rs.getLong("alert_recip_groups"),
+                "docs" to rs.getLong("docs"),
+                "metricStds" to rs.getLong("metric_stds")
+            )
+        } ?: emptyMap()
+    }
+
+    /** 부서의 사용 중 화면 조회 권한 수 — 메뉴 권한 매트릭스와 같은 조인 (01 ACC-06) */
+    fun countMenuPerm(deptId: Int): Int =
+        jdbcTemplate.queryForObject(
+            """
+            SELECT count(*) FROM ax.tb_sys_dept_menu_perm p
+              JOIN ax.tb_sys_menu m ON m.menu_id = p.menu_id AND m.use_flg = 'Y'
+              JOIN ax.tb_sys_menu_group g ON g.group_id = m.group_id AND g.use_flg = 'Y'
+             WHERE p.dept_id = :deptId AND p.can_read
+            """.trimIndent(), MapSqlParameterSource("deptId", deptId), Int::class.java
+        ) ?: 0
+
+    /** 부서의 사용 중 데이터 항목 허용 수 */
+    fun countDataPerm(deptId: Int): Int =
+        jdbcTemplate.queryForObject(
+            """
+            SELECT count(*) FROM ax.tb_sys_dept_data_perm p
+              JOIN ax.tb_sys_data_field f ON f.field_key = p.field_key AND f.use_flg = 'Y'
+             WHERE p.dept_id = :deptId AND p.is_allowed
+            """.trimIndent(), MapSqlParameterSource("deptId", deptId), Int::class.java
+        ) ?: 0
 
     /** 부서 소속 계정 수 */
     fun countUsersInDept(deptId: Int): Long {
@@ -476,7 +702,8 @@ class SystemUserRepository(
      */
     fun findAllMenus(): List<Map<String, Any?>> {
         val sql = """
-            SELECT m.menu_id, m.menu_nm, m.group_id, g.group_nm, m.is_sub_page, m.sort_seq, g.sort_seq AS group_seq
+            SELECT m.menu_id, m.menu_nm, m.group_id, g.group_nm, m.is_sub_page, m.sort_seq, g.sort_seq AS group_seq,
+                   m.parent_menu_id, m.route_path
             FROM ax.tb_sys_menu m
             INNER JOIN ax.tb_sys_menu_group g ON g.group_id = m.group_id
             WHERE m.use_flg = 'Y' AND g.use_flg = 'Y'
@@ -489,10 +716,134 @@ class SystemUserRepository(
                 "name" to rs.getString("menu_nm"),
                 "groupId" to rs.getString("group_id"),
                 "group" to rs.getString("group_nm"),
-                "sub" to rs.getBoolean("is_sub_page")
+                "sub" to rs.getBoolean("is_sub_page"),
+                "kind" to menuKind(rs.getBoolean("is_sub_page"), rs.getString("route_path")),
+                "parentId" to rs.getString("parent_menu_id")
             )
         }
     }
+
+    /** 화면 종류 — ACTION(하위 페이지이면서 경로에 `#`, 예: 업로드 리포트 업로드) · SUB(하위 페이지) · MENU */
+    private fun menuKind(sub: Boolean, routePath: String?): String = when {
+        sub && routePath?.contains('#') == true -> "ACTION"
+        sub -> "SUB"
+        else -> "MENU"
+    }
+
+    /** 사용 중 화면의 권한 행 전부(조회 칸이 꺼진 행 포함) — 매트릭스 version·복사 해시 계산용 */
+    fun findActiveMenuPermRows(): List<MenuPermRow> {
+        val sql = """
+            SELECT p.dept_id, p.menu_id, p.can_read, p.can_write
+            FROM ax.tb_sys_dept_menu_perm p
+            INNER JOIN ax.tb_sys_menu m ON m.menu_id = p.menu_id AND m.use_flg = 'Y'
+            INNER JOIN ax.tb_sys_menu_group g ON g.group_id = m.group_id AND g.use_flg = 'Y'
+        """.trimIndent()
+        return jdbcTemplate.query(sql, MapSqlParameterSource()) { rs, _ ->
+            MenuPermRow(rs.getInt("dept_id"), rs.getString("menu_id"), rs.getBoolean("can_read"), rs.getBoolean("can_write"))
+        }
+    }
+
+    /** 부서·화면 한 칸의 현재 값 (행 없으면 null) */
+    fun findMenuPerm(deptId: Int, menuId: String): MenuPermRow? =
+        jdbcTemplate.query(
+            "SELECT dept_id, menu_id, can_read, can_write FROM ax.tb_sys_dept_menu_perm WHERE dept_id = :deptId AND menu_id = :menuId",
+            MapSqlParameterSource().addValue("deptId", deptId).addValue("menuId", menuId)
+        ) { rs, _ -> MenuPermRow(rs.getInt("dept_id"), rs.getString("menu_id"), rs.getBoolean("can_read"), rs.getBoolean("can_write")) }
+            .firstOrNull()
+
+    /**
+     * 메뉴 권한 한 칸을 바꾼다 (03 MNP-16).
+     *
+     * | perm  | allowed | 처리 |
+     * | READ  | true    | 조회 켬(기존 쓰기 칸 유지. 동작 화면은 조회=쓰기라 쓰기도 켬) |
+     * | READ  | false   | 행 삭제(쓰기도 함께 회수) |
+     * | WRITE | true    | 조회·쓰기 켬 |
+     * | WRITE | false   | 쓰기만 끔(행 유지) |
+     */
+    fun applyMenuPerm(deptId: Int, menuId: String, allowed: Boolean, perm: String, isAction: Boolean, actor: String): Int {
+        val params = MapSqlParameterSource().addValue("deptId", deptId).addValue("menuId", menuId)
+            .addValue("actor", actor).addValue("isAction", isAction)
+        return when {
+            perm == "READ" && !allowed ->
+                jdbcTemplate.update("DELETE FROM ax.tb_sys_dept_menu_perm WHERE dept_id = :deptId AND menu_id = :menuId", params)
+            perm == "WRITE" && !allowed ->
+                jdbcTemplate.update(
+                    "UPDATE ax.tb_sys_dept_menu_perm SET can_write = false, upd_date = now(), upd_user = :actor WHERE dept_id = :deptId AND menu_id = :menuId",
+                    params
+                )
+            perm == "WRITE" ->
+                jdbcTemplate.update(
+                    """
+                    INSERT INTO ax.tb_sys_dept_menu_perm (dept_id, menu_id, can_read, can_write, ins_user, upd_user)
+                    VALUES (:deptId, :menuId, true, true, :actor, :actor)
+                    ON CONFLICT (dept_id, menu_id) DO UPDATE SET can_read = true, can_write = true, upd_date = now(), upd_user = :actor
+                    """.trimIndent(), params
+                )
+            else ->
+                jdbcTemplate.update(
+                    """
+                    INSERT INTO ax.tb_sys_dept_menu_perm (dept_id, menu_id, can_read, can_write, ins_user, upd_user)
+                    VALUES (:deptId, :menuId, true, :isAction, :actor, :actor)
+                    ON CONFLICT (dept_id, menu_id) DO UPDATE SET can_read = true,
+                        can_write = ax.tb_sys_dept_menu_perm.can_write OR :isAction, upd_date = now(), upd_user = :actor
+                    """.trimIndent(), params
+                )
+        }
+    }
+
+    /** 이름으로 메뉴 그룹 ID 찾기(옛 groupNm 본문 호환) */
+    fun findMenuGroupId(groupIdOrNm: String): String? =
+        jdbcTemplate.query(
+            "SELECT group_id FROM ax.tb_sys_menu_group WHERE group_id = :v OR group_nm = :v ORDER BY (group_id = :v) DESC LIMIT 1",
+            MapSqlParameterSource("v", groupIdOrNm)
+        ) { rs, _ -> rs.getString("group_id") }.firstOrNull()
+
+    /**
+     * 메뉴 권한 복사 저장 (03 MNP-01) — 대상 부서의 **사용 중 화면** 행만 지우고 원본 집합을 넣는다.
+     * 사용 중지 화면의 보존 행은 남긴다(화면을 되살리면 그대로 돌아오게).
+     *
+     * @param rows 화면 ID → 쓰기 여부
+     * @return 넣은 행 수
+     */
+    fun replaceMenuPerms(toDeptId: Int, rows: Map<String, Boolean>, actor: String): Int {
+        jdbcTemplate.update(
+            """
+            DELETE FROM ax.tb_sys_dept_menu_perm p USING ax.tb_sys_menu m
+             WHERE p.dept_id = :toDeptId AND m.menu_id = p.menu_id AND m.use_flg = 'Y'
+            """.trimIndent(),
+            MapSqlParameterSource("toDeptId", toDeptId)
+        )
+        if (rows.isEmpty()) return 0
+        val sql = """
+            INSERT INTO ax.tb_sys_dept_menu_perm (dept_id, menu_id, can_read, can_write, ins_user, upd_user)
+            VALUES (:toDeptId, :menuId, true, :canWrite, :actor, :actor)
+            ON CONFLICT (dept_id, menu_id) DO UPDATE SET can_read = true, can_write = EXCLUDED.can_write, upd_date = now(), upd_user = :actor
+        """.trimIndent()
+        rows.forEach { (menuId, write) ->
+            jdbcTemplate.update(sql, MapSqlParameterSource().addValue("toDeptId", toDeptId).addValue("menuId", menuId)
+                .addValue("canWrite", write).addValue("actor", actor))
+        }
+        return rows.size
+    }
+
+    /** 화면별 계정 추가 허용 (사용 중 화면만) — 매트릭스 grants·grantCounts */
+    fun findGrantsByMenu(): Map<String, List<Map<String, Any?>>> =
+        jdbcTemplate.query(
+            """
+            SELECT g.menu_id, g.user_id, u.user_nm, u.dept_id, g.can_write
+              FROM ax.tb_sys_user_menu_grant g
+              JOIN ax.tb_sys_user u ON u.user_id = g.user_id
+              JOIN ax.tb_sys_menu m ON m.menu_id = g.menu_id AND m.use_flg = 'Y'
+              JOIN ax.tb_sys_menu_group mg ON mg.group_id = m.group_id AND mg.use_flg = 'Y'
+             ORDER BY g.menu_id, u.user_nm, g.user_id
+            """.trimIndent(),
+            MapSqlParameterSource()
+        ) { rs, _ ->
+            rs.getString("menu_id") to mapOf<String, Any?>(
+                "empNo" to rs.getString("user_id"), "name" to rs.getString("user_nm"),
+                "deptId" to rs.getInt("dept_id"), "write" to rs.getBoolean("can_write")
+            )
+        }.groupBy({ it.first }, { it.second })
 
     /**
      * 부서 × 화면 메뉴 권한 매트릭스를 조회한다. (No.140)
@@ -549,71 +900,6 @@ class SystemUserRepository(
         return jdbcTemplate.update(sql, params)
     }
 
-    /**
-     * 메뉴 그룹 단위로 권한을 일괄 변경한다. (No.142)
-     *
-     * @return 변경된 건수
-     */
-    fun updateMenuPermByGroup(deptId: Int, groupId: String, allowed: Boolean, actor: String): Int {
-        if (!allowed) {
-            val sql = """
-                DELETE FROM ax.tb_sys_dept_menu_perm p
-                 WHERE p.dept_id = :deptId
-                   AND EXISTS (
-                       SELECT 1 FROM ax.tb_sys_menu m
-                        WHERE m.menu_id = p.menu_id AND m.group_id = :groupId
-                   )
-            """.trimIndent()
-            return jdbcTemplate.update(
-                sql,
-                MapSqlParameterSource().addValue("deptId", deptId).addValue("groupId", groupId)
-            )
-        }
-
-        val sql = """
-            INSERT INTO ax.tb_sys_dept_menu_perm (dept_id, menu_id, can_read, can_write, ins_user, upd_user)
-            SELECT :deptId, m.menu_id, true, false, :actor, :actor
-            FROM ax.tb_sys_menu m
-            WHERE m.group_id = :groupId AND m.use_flg = 'Y'
-            ON CONFLICT (dept_id, menu_id)
-            DO UPDATE SET can_read = true, upd_date = now(), upd_user = :actor
-        """.trimIndent()
-
-        val params = MapSqlParameterSource()
-            .addValue("deptId", deptId)
-            .addValue("groupId", groupId)
-            .addValue("actor", actor)
-
-        return jdbcTemplate.update(sql, params)
-    }
-
-    /**
-     * 부서 간 메뉴 권한을 복사한다. (No.143)
-     *
-     * @return 복사된 건수
-     */
-    fun copyMenuPerms(fromDeptId: Int, toDeptId: Int, actor: String): Int {
-        // 대상 부서의 기존 권한을 제거한 뒤 원본 부서 권한을 그대로 복사한다.
-        jdbcTemplate.update(
-            "DELETE FROM ax.tb_sys_dept_menu_perm WHERE dept_id = :toDeptId",
-            MapSqlParameterSource("toDeptId", toDeptId)
-        )
-
-        val sql = """
-            INSERT INTO ax.tb_sys_dept_menu_perm (dept_id, menu_id, can_read, can_write, ins_user, upd_user)
-            SELECT :toDeptId, p.menu_id, p.can_read, p.can_write, :actor, :actor
-            FROM ax.tb_sys_dept_menu_perm p
-            WHERE p.dept_id = :fromDeptId
-        """.trimIndent()
-
-        val params = MapSqlParameterSource()
-            .addValue("fromDeptId", fromDeptId)
-            .addValue("toDeptId", toDeptId)
-            .addValue("actor", actor)
-
-        return jdbcTemplate.update(sql, params)
-    }
-
     // =================================================================================
     // SY-03. 데이터 접근 권한
     // =================================================================================
@@ -655,6 +941,15 @@ class SystemUserRepository(
         }
     }
 
+    /** 항목별 응답 필드명과 메모 (항목 key → [{attrName, remark}]) — 메모는 자유 글(200자), 매핑 화면은 「{화면명} · {열 이름}」 으로 쓴다 */
+    fun findAttrDetails(): Map<String, List<Map<String, Any?>>> =
+        jdbcTemplate.query(
+            "SELECT field_key, attr_name, remark FROM ax.tb_sys_data_field_attr ORDER BY field_key, attr_name",
+            MapSqlParameterSource()
+        ) { rs, _ ->
+            rs.getString("field_key") to mapOf<String, Any?>("attrName" to rs.getString("attr_name"), "remark" to rs.getString("remark"))
+        }.groupBy({ it.first }, { it.second })
+
     /**
      * 부서 × 데이터 항목 권한 매트릭스를 조회한다. (No.146)
      */
@@ -662,6 +957,7 @@ class SystemUserRepository(
         val sql = """
             SELECT p.dept_id, p.field_key, p.is_allowed
             FROM ax.tb_sys_dept_data_perm p
+            INNER JOIN ax.tb_sys_data_field f ON f.field_key = p.field_key AND f.use_flg = 'Y'
             WHERE p.is_allowed = true
         """.trimIndent()
 
@@ -727,18 +1023,24 @@ class SystemUserRepository(
     fun countUsersAll(): Long =
         jdbcTemplate.queryForObject("SELECT count(*) FROM ax.tb_sys_user", MapSqlParameterSource(), Long::class.java) ?: 0L
 
-    /** 계정 상태 표기값(사용/정지)을 코드로 정규화한다. */
+    /**
+     * 계정 상태 표기값(사용/정지)을 코드로 정규화한다.
+     *
+     * `LOCKED`(잠김)는 읽기(목록 필터)에만 쓴다 — 잠금은 로그인 실패로만 생기므로
+     * 관리자가 LOCKED 로 바꾸는 요청은 서비스가 400 으로 막는다(09 AUD-16, 01 ACC-05).
+     */
     fun normalizeUserState(state: String): String = when (state.trim()) {
         "사용", "ACTIVE", "active" -> "ACTIVE"
         "정지", "SUSPENDED", "suspended" -> "SUSPENDED"
         "승인대기", "승인 대기", "PENDING", "pending" -> "PENDING"
+        "잠김", "LOCKED", "locked" -> "LOCKED"
         // 정의되지 않은 값을 그대로 저장하면 안 된다. 예전에는 uppercase() 해서 통과시켰는데,
         // 그러면 코드 매핑에서 빠져 stateNm 이 null 이 되고(화면에 빈칸), 로그인 판정은
         // 'ACTIVE 가 아님' 으로 걸려 계정이 조용히 잠긴다.
         // 본인 계정 정지 금지 검사도 'SUSPENDED' 만 보므로 우회된다.
         else -> throw InvalidParameterException(
             "계정 상태 값이 올바르지 않습니다. [$state] " +
-                "허용 값은 ACTIVE(사용) · SUSPENDED(정지) · PENDING(승인 대기) 입니다.",
+                "허용 값은 ACTIVE(사용) · SUSPENDED(정지) · PENDING(승인 대기) · LOCKED(잠김, 조회 전용) 입니다.",
             "state"
         )
     }
@@ -754,7 +1056,7 @@ class SystemUserRepository(
             SELECT g.user_id, g.menu_id
             FROM ax.tb_sys_user_menu_grant g
             INNER JOIN ax.tb_sys_menu m ON m.menu_id = g.menu_id AND m.use_flg = 'Y'
-            INNER JOIN ax.tb_sys_menu_group mg ON mg.group_id = m.group_id
+            INNER JOIN ax.tb_sys_menu_group mg ON mg.group_id = m.group_id AND mg.use_flg = 'Y'
             WHERE g.user_id = ANY(:ids)
             ORDER BY g.user_id, mg.sort_seq, m.sort_seq
         """.trimIndent()
@@ -791,6 +1093,43 @@ class SystemUserRepository(
         return jdbcTemplate.batchUpdate(sql, batch.toTypedArray()).sum()
     }
 
+    /** 추가 허용 사유 저장 — 이미 부여된 행만 바꾼다. 빈 값은 사유 지우기 (01 ACC-10) */
+    fun updateGrantReasons(empNo: String, reasons: Map<String, String?>, actor: String): Int {
+        if (reasons.isEmpty()) return 0
+        val batch = reasons.map { (menuId, reason) ->
+            MapSqlParameterSource().addValue("empNo", empNo).addValue("menuId", menuId)
+                .addValue("reason", reason?.trim()?.takeIf { it.isNotEmpty() }).addValue("actor", actor)
+        }
+        return jdbcTemplate.batchUpdate(
+            """
+            UPDATE ax.tb_sys_user_menu_grant SET grant_reason = :reason, upd_user = :actor, upd_date = now()
+             WHERE user_id = :empNo AND menu_id = :menuId AND grant_reason IS DISTINCT FROM :reason
+            """.trimIndent(), batch.toTypedArray()
+        ).sum()
+    }
+
+    /** 계정별 추가 허용 상세 — 사유·부여 시각·부여자 이름 (01 ACC-10, 사용 중 화면만, 메뉴 순) */
+    fun findUserGrantDetails(empNos: Collection<String>): Map<String, List<Map<String, Any?>>> {
+        if (empNos.isEmpty()) return emptyMap()
+        return jdbcTemplate.query(
+            """
+            SELECT g.user_id, g.menu_id, m.menu_nm, g.grant_reason, g.ins_date, g.ins_user, u.user_nm AS granted_by_nm
+            FROM ax.tb_sys_user_menu_grant g
+            INNER JOIN ax.tb_sys_menu m ON m.menu_id = g.menu_id AND m.use_flg = 'Y'
+            INNER JOIN ax.tb_sys_menu_group mg ON mg.group_id = m.group_id AND mg.use_flg = 'Y'
+            LEFT JOIN ax.tb_sys_user u ON u.user_id = g.ins_user
+            WHERE g.user_id = ANY(:ids)
+            ORDER BY g.user_id, mg.sort_seq, m.sort_seq
+            """.trimIndent(),
+            MapSqlParameterSource("ids", empNos.toTypedArray())
+        ) { rs, _ ->
+            rs.getString("user_id") to mapOf<String, Any?>(
+                "id" to rs.getString("menu_id"), "name" to rs.getString("menu_nm"), "reason" to rs.getString("grant_reason"),
+                "grantedAt" to Rs.dateTime(rs, "ins_date"), "grantedBy" to (rs.getString("granted_by_nm") ?: rs.getString("ins_user"))
+            )
+        }.groupBy({ it.first }, { it.second })
+    }
+
     /** 추가 허용 회수 = 삭제 */
     fun deleteUserGrants(empNo: String, menuIds: Collection<String>): Int {
         if (menuIds.isEmpty()) return 0
@@ -811,6 +1150,7 @@ class SystemUserRepository(
             """
             SELECT count(*) FROM ax.tb_sys_dept_menu_perm p
             INNER JOIN ax.tb_sys_menu m ON m.menu_id = p.menu_id AND m.use_flg = 'Y'
+            INNER JOIN ax.tb_sys_menu_group g ON g.group_id = m.group_id AND g.use_flg = 'Y'
             WHERE p.dept_id = :deptId AND p.menu_id = :menuId AND p.can_read = true
             """.trimIndent(),
             MapSqlParameterSource().addValue("deptId", deptId).addValue("menuId", menuId), Long::class.java
@@ -828,3 +1168,6 @@ class SystemUserRepository(
         )
 
 }
+
+/** 부서 × 화면 권한 행 */
+data class MenuPermRow(val deptId: Int, val menuId: String, val read: Boolean, val write: Boolean)

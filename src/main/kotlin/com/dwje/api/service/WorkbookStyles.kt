@@ -17,9 +17,10 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook
  * 스타일은 워크북 소속이라 문서마다 한 번 만든다. 실적 집계·불량 현황 내려받기가 같은 모양을 쓰도록
  * 여기 한 곳에 둔다 — 머리글 회색, 트리 1단계(부모) 굵은 회색, 2단계 연노랑, 그 아래 무늬 없음.
  *
- * null 은 **빈 셀**로 쓴다. `""` 도 `0` 도 쓰지 않는다 — 미측정·권한 마스킹을 값으로 만들지 않기 위해서다.
+ * null 은 **빈 셀**로 쓴다. `""` 도 `0` 도 쓰지 않는다 — 미측정을 값으로 만들지 않기 위해서다.
+ * 단, 조회자가 볼 수 없는 데이터 항목 열([blind])의 null 은 `비공개` 로 쓴다(R-10) — 쓰기 도우미에 열 key 를 넘긴다.
  */
-class WorkbookStyles(private val wb: XSSFWorkbook) {
+class WorkbookStyles(private val wb: XSSFWorkbook, val blind: BlindCells = BlindCells()) {
 
     companion object {
         const val FMT_QTY = "#,##0"
@@ -67,16 +68,32 @@ class WorkbookStyles(private val wb: XSSFWorkbook) {
         headers.forEachIndexed { i, h -> row.createCell(i).apply { setCellValue(h); cellStyle = header } }
     }
 
-    /** 문자열 셀 — null 이면 스타일만 입힌 빈 셀 */
-    fun text(row: Row, col: Int, value: String?, style: CellStyle = text) {
+    /**
+     * 문자열 셀 — null 이면 스타일만 입힌 빈 셀
+     *
+     * @param key 응답 필드명(열 key). 조회자가 볼 수 없는 항목 열이면 값 대신 `비공개` (04 DTP-09)
+     */
+    fun text(row: Row, col: Int, value: String?, style: CellStyle = text, key: String? = null) {
         val cell = row.createCell(col)
         cell.cellStyle = style
-        if (value != null) cell.setCellValue(value)
+        val v = blind.fill(key, value)
+        if (v != null) cell.setCellValue(v.toString())
     }
 
-    /** 숫자만 숫자 셀로 쓴다. null 은 빈 셀 — 스타일만 입혀 테두리를 맞춘다. */
-    fun number(cell: Cell, value: Any?, style: CellStyle) {
+    /**
+     * 숫자만 숫자 셀로 쓴다. null 은 빈 셀 — 스타일만 입혀 테두리를 맞춘다.
+     *
+     * @param key 응답 필드명(열 key). 조회자가 볼 수 없는 항목 열이면 null 대신 `비공개`
+     */
+    fun number(cell: Cell, value: Any?, style: CellStyle, key: String? = null) {
         cell.cellStyle = style
+        when (val v = blind.fill(key, value)) {
+            BlindCells.MASK -> { cell.cellStyle = text; cell.setCellValue(BlindCells.MASK) }
+            else -> numberValue(cell, v)
+        }
+    }
+
+    private fun numberValue(cell: Cell, value: Any?) {
         when (value) {
             null -> Unit
             is Number -> cell.setCellValue(value.toDouble())

@@ -73,11 +73,11 @@ class ProductionResultScreenExportTest {
     private fun Sheet.isBlank(r: Int, c: Int): Boolean = getRow(r)?.getCell(c).let { it == null || it.cellType == CellType.BLANK }
 
     @Test
-    @DisplayName("시트 3장 — 조회 요약 · 일별 추이 · 집계 결과 순서이고, 집계 결과 열은 요청한 12개다")
+    @DisplayName("시트 4장 — 조회 요약 · 일별 추이 · 집계 결과 · 안내(0건 포함) 순서이고, 집계 결과 열은 요청한 12개다")
     fun sheetsAndHeaders() {
         open(workbook.build(fixture())).use { wb ->
             assertEquals(
-                listOf(ProductionResultScreenWorkbook.SHEET_SUMMARY, ProductionResultScreenWorkbook.SHEET_TREND, ProductionResultScreenWorkbook.SHEET_TREE),
+                listOf(ProductionResultScreenWorkbook.SHEET_SUMMARY, ProductionResultScreenWorkbook.SHEET_TREND, ProductionResultScreenWorkbook.SHEET_TREE, "안내"),
                 (0 until wb.numberOfSheets).map { wb.getSheetName(it) }
             )
             val tree = wb.getSheet(ProductionResultScreenWorkbook.SHEET_TREE)

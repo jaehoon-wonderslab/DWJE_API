@@ -61,14 +61,14 @@ class QualityDefectWorkbook {
     }
 
     /** 불량 유형별 분포 — `GET /quality/defects/by-type` 의 items 그대로 */
-    fun byType(cond: DefectExportConditions, items: List<Map<String, Any?>>): ByteArray = XSSFWorkbook().use { wb ->
-        val st = WorkbookStyles(wb)
+    fun byType(cond: DefectExportConditions, items: List<Map<String, Any?>>, blind: BlindCells = BlindCells()): ByteArray = XSSFWorkbook().use { wb ->
+        val st = WorkbookStyles(wb, blind)
         writeConditions(
             wb.createSheet(SHEET_CONDITIONS), cond, st,
             title = "불량 유형별 분포",
             extra = listOf(
                 "유형 수" to items.count { it["defectCd"] != null },
-                "불량 수량 합계" to items.sumOrNull("cnt"),
+                "불량 수량 합계" to st.blind.fill("ngQty", items.sumOrNull("cnt")),
                 "비중 기준" to "라벨 원장 불량 총량 대비 %. 유형이 붙지 않은 몫은 '유형 미상' 행으로 표시 — 비중 합 = 100%"
             )
         )
@@ -76,12 +76,13 @@ class QualityDefectWorkbook {
         st.header(sheet, BY_TYPE_HEADERS)
         items.forEachIndexed { i, it ->
             val row = sheet.createRow(i + 1)
-            st.text(row, 0, it["defectCd"] as? String)
-            st.text(row, 1, it["defectType"] as? String)
-            st.number(row.createCell(2), it["cnt"], st.qty)
+            st.text(row, 0, it["defectCd"] as? String, key = "defectCd")
+            st.text(row, 1, it["defectType"] as? String, key = "defectType")
+            st.number(row.createCell(2), it["cnt"], st.qty, "ngQty") // 유형별 불량 수량 — 수량 항목(qty)
             st.number(row.createCell(3), it["ratio"], st.rate)
         }
         finish(sheet, items.size, listOf(16, 28, 14, 10))
+        st.blind.writeNoticeSheet(wb)
         wb.bytes()
     }
 
@@ -97,9 +98,10 @@ class QualityDefectWorkbook {
         cond: DefectExportConditions,
         items: List<Map<String, Any?>>,
         levels: List<DefectTreeLevel> = DefectTreeLevel.DEFAULT,
-        tree: List<Map<String, Any?>>? = null
+        tree: List<Map<String, Any?>>? = null,
+        blind: BlindCells = BlindCells()
     ): ByteArray = XSSFWorkbook().use { wb ->
-        val st = WorkbookStyles(wb)
+        val st = WorkbookStyles(wb, blind)
         val childrenOf = { it: Map<String, Any?> -> (it["children"] as? List<Map<String, Any?>>).orEmpty() }
         val typeRows = items.sumOf { childrenOf(it).size }
         writeConditions(
@@ -107,8 +109,8 @@ class QualityDefectWorkbook {
             title = "설비별 불량률",
             extra = listOf(
                 "설비 수" to items.size,
-                "불량 수량 합계" to items.sumOrNull("ngQty"),
-                "정상 수량 합계" to items.sumOrNull("okQty"),
+                "불량 수량 합계" to st.blind.fill("ngQty", items.sumOrNull("ngQty")),
+                "정상 수량 합계" to st.blind.fill("okQty", items.sumOrNull("okQty")),
                 "유형 상세 행 수" to typeRows,
                 "주 유형 기준" to "그 설비에서 안분 수량이 가장 큰 불량 유형. 유형이 없는 설비는 빈 칸",
                 "유형 비중 기준" to "그 설비의 불량 수량 대비 %. 유형이 붙지 않은 몫은 '유형 미상' — 설비별 비중 합 = 100%"
@@ -126,12 +128,12 @@ class QualityDefectWorkbook {
         st.header(line, BY_LINE_HEADERS)
         items.forEachIndexed { i, it ->
             val row = line.createRow(i + 1)
-            st.text(row, 0, it["eqptCd"] as? String)
-            st.text(row, 1, it["eqptNm"] as? String ?: it["model"] as? String)
-            st.number(row.createCell(2), it["okQty"], st.qty)
-            st.number(row.createCell(3), it["ngQty"], st.qty)
-            st.number(row.createCell(4), it["defectRate"], st.rate)
-            st.text(row, 5, it["mainType"] as? String)
+            st.text(row, 0, it["eqptCd"] as? String, key = "eqptCd")
+            st.text(row, 1, it["eqptNm"] as? String ?: it["model"] as? String, key = "eqptNm")
+            st.number(row.createCell(2), it["okQty"], st.qty, "okQty")
+            st.number(row.createCell(3), it["ngQty"], st.qty, "ngQty")
+            st.number(row.createCell(4), it["defectRate"], st.rate, "defectRate")
+            st.text(row, 5, it["mainType"] as? String, key = "mainType")
         }
         finish(line, items.size, listOf(12, 30, 14, 14, 10, 18))
 
@@ -141,17 +143,18 @@ class QualityDefectWorkbook {
         items.forEach { item ->
             childrenOf(item).forEach { c ->
                 val row = detail.createRow(r++)
-                st.text(row, 0, item["eqptCd"] as? String)
-                st.text(row, 1, item["eqptNm"] as? String ?: item["model"] as? String)
-                st.text(row, 2, c["defectCd"] as? String)
-                st.text(row, 3, c["defectType"] as? String)
-                st.number(row.createCell(4), c["ngQty"], st.qty)
+                st.text(row, 0, item["eqptCd"] as? String, key = "eqptCd")
+                st.text(row, 1, item["eqptNm"] as? String ?: item["model"] as? String, key = "eqptNm")
+                st.text(row, 2, c["defectCd"] as? String, key = "defectCd")
+                st.text(row, 3, c["defectType"] as? String, key = "defectType")
+                st.number(row.createCell(4), c["ngQty"], st.qty, "ngQty")
                 st.number(row.createCell(5), c["ratio"], st.rate)
             }
         }
         finish(detail, r - 1, listOf(12, 30, 16, 28, 14, 10))
 
         if (tree != null) writeTree(wb.createSheet(SHEET_TREE), levels, tree, st)
+        st.blind.writeNoticeSheet(wb)
         wb.bytes()
     }
 
@@ -168,18 +171,18 @@ class QualityDefectWorkbook {
             val row = sheet.createRow(i + 1)
             val text = st.textOf(depth)
             st.text(row, 0, labelOf[n["level"] as? String] ?: n["level"] as? String, text)
-            st.text(row, 1, n["wcCd"] as? String, text)
-            st.text(row, 2, n["wcNm"] as? String, text)
-            st.text(row, 3, n["plantNm"] as? String, text)
-            st.text(row, 4, n["itemCd"] as? String, text)
-            st.text(row, 5, n["itemNm"] as? String, text)
-            st.text(row, 6, n["eqptCd"] as? String, text)
-            st.text(row, 7, n["eqptNm"] as? String, text)
-            st.text(row, 8, n["defectCd"] as? String, text)
-            st.text(row, 9, n["defectNm"] as? String, text)
-            st.number(row.createCell(10), n["okQty"], st.qtyOf(depth))
-            st.number(row.createCell(11), n["ngQty"], st.qtyOf(depth))
-            st.number(row.createCell(12), n["defectRate"], st.rateOf(depth))
+            st.text(row, 1, n["wcCd"] as? String, text, "wcCd")
+            st.text(row, 2, n["wcNm"] as? String, text, "wcNm")
+            st.text(row, 3, n["plantNm"] as? String, text, "plantNm")
+            st.text(row, 4, n["itemCd"] as? String, text, "itemCd")
+            st.text(row, 5, n["itemNm"] as? String, text, "itemNm")
+            st.text(row, 6, n["eqptCd"] as? String, text, "eqptCd")
+            st.text(row, 7, n["eqptNm"] as? String, text, "eqptNm")
+            st.text(row, 8, n["defectCd"] as? String, text, "defectCd")
+            st.text(row, 9, n["defectNm"] as? String, text, "defectNm")
+            st.number(row.createCell(10), n["okQty"], st.qtyOf(depth), "okQty")
+            st.number(row.createCell(11), n["ngQty"], st.qtyOf(depth), "ngQty")
+            st.number(row.createCell(12), n["defectRate"], st.rateOf(depth), "defectRate")
             st.number(row.createCell(13), n["ratio"], st.rateOf(depth))
         }
         // 깊이 d 의 행 아래에 이어지는 더 깊은 행들을 한 그룹으로. 깊이 1..(최대-1) 순서로 묶으면 단계가 쌓인다.

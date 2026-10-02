@@ -1,20 +1,28 @@
 package com.dwje.api.service
 
+import com.dwje.api.common.util.AuditType
+import com.dwje.api.common.exception.AccountLockedException
+import com.dwje.api.common.exception.BusinessException
 import com.dwje.api.common.exception.BusinessRuleException
 import com.dwje.api.common.exception.DuplicatedValueException
 import com.dwje.api.common.exception.InvalidParameterException
 import com.dwje.api.common.exception.ResourceNotFoundException
 import com.dwje.api.common.exception.UnauthenticatedException
+import com.dwje.api.common.exception.UnlockUnavailableException
 import com.dwje.api.common.security.JwtTokenProvider
 import com.dwje.api.common.security.PasswordEncoderService
 import com.dwje.api.common.security.UserContext
+import com.dwje.api.config.AccountUnlockProperties
 import com.dwje.api.config.AppProperties
+import com.dwje.api.config.EmailVerificationProperties
 import com.dwje.api.model.request.LoginRequest
 import com.dwje.api.model.request.PasswordChangeRequest
 import com.dwje.api.model.request.PasswordForgotRequest
 import com.dwje.api.model.request.PasswordResetRequest
 import com.dwje.api.model.request.SignupRequest
 import com.dwje.api.model.request.SwitchAccountRequest
+import com.dwje.api.model.request.UnlockCompleteRequest
+import com.dwje.api.model.request.UnlockVerifyRequest
 import com.dwje.api.model.response.DataFieldInfo
 import com.dwje.api.model.response.DeptInfo
 import com.dwje.api.model.response.LoginResponse
@@ -36,6 +44,11 @@ import org.springframework.transaction.annotation.Transactional
  *
  * 로그인·로그아웃·토큰 갱신·내 정보 조회·계정 전환을 처리하며,
  * 로그인 성공/실패를 모두 `ax.tb_sys_login_hist` 에 기록한다.
+ *
+ * 계정 상태(SYS_USER_STATE)
+ * - ACTIVE 사용 · PENDING 승인 대기 · SUSPENDED 정지(관리자·퇴사)
+ * - LOCKED 잠김 — 비밀번호 연속 실패로 **시스템만** 건다. 본인 이메일 인증(잠금 해제·비밀번호 찾기) 또는
+ *   관리자 잠금 해제로 ACTIVE 가 된다 (결정 R-02, 09 기획서 AUD-16)
  */
 @Service
 class AuthService(
@@ -47,26 +60,42 @@ class AuthService(
     private val auditLogService: AuditLogService,
     private val emailVerificationService: EmailVerificationService,
     private val emailVerificationRepository: EmailVerificationRepository,
-    private val dataFieldRepository: DataFieldRepository
+    private val dataFieldRepository: DataFieldRepository,
+    private val systemDeptGuard: SystemDeptGuard = SystemDeptGuard(appProperties),
+    private val accountUnlockProperties: AccountUnlockProperties = AccountUnlockProperties(),
+    private val emailVerificationProperties: EmailVerificationProperties = EmailVerificationProperties()
 ) {
+
+    companion object {
+        /** 잠금 응답의 해제 화면 경로 — 비밀번호 찾기 화면의 「잠금 해제」 모드 (새 라우트를 만들지 않는다) */
+        const val UNLOCK_PATH = "/forgot-password?mode=unlock"
+
+        /** 로그인 실패 문구 — 계정 없음과 비밀번호 불일치(1~4회)가 같아야 계정 유무가 드러나지 않는다 */
+        private const val MSG_LOGIN_FAILED = "사번 또는 비밀번호가 올바르지 않습니다."
+    }
 
     private val log = LoggerFactory.getLogger(javaClass)
 
     /**
      * 사번/비밀번호 기반 로그인을 처리한다.
      *
-     * 처리 절차
-     * 1. 계정 존재 여부 확인 (없으면 실패 이력 기록 후 인증 오류)
-     * 2. 계정 상태 확인 (정지 계정 차단)
-     * 3. 비밀번호 대조 — 실패 시 실패 횟수 증가, 임계 초과 시 계정 정지
-     * 4. 성공 시 최종 접속일시 갱신 및 토큰 발급
+     * 판정 순서 (09 기획서 AUD-16 (3))
+     * 1. 계정 없음 → FAIL 이력, 401 E-AUTH-001
+     * 2. 잠김(LOCKED) → LOCKED 이력, 401 E-AUTH-005. **비밀번호를 대조하지 않는다**(잠긴 동안 맞았는지 알려 주지 않는다)
+     * 3. 승인 대기 · 4. 정지 → LOCKED 이력, 401 E-AUTH-001 (현행 문구)
+     * 5. 비밀번호 불일치(상한 미만) → 실패 횟수 +1, FAIL 이력, 401 E-AUTH-001 (1단계와 같은 문구)
+     * 6. 비밀번호 불일치(상한 도달) → LOCKED 로 잠금, LOCKED 이력·감사·권한 이력, 401 E-AUTH-005
+     * 7. 성공 → 실패 횟수 0, 최근 접속, 토큰 발급
+     *
+     * 실패 경로의 쓰기(실패 횟수·잠금·이력)는 예외로 끝나도 **커밋된다**(noRollbackFor, AUD-01).
+     * 예전에는 이 쓰기가 함께 롤백되어 실패 이력이 하나도 남지 않고 5회 잠금도 걸리지 않았다.
      *
      * @param request   로그인 요청 (사번, 비밀번호)
      * @param ipAddr    접속 IP
      * @param userAgent User-Agent
      * @return 접근/갱신 토큰 및 사용자 기본 정보
      */
-    @Transactional
+    @Transactional(noRollbackFor = [UnauthenticatedException::class, AccountLockedException::class])
     fun processLogin(request: LoginRequest, ipAddr: String?, userAgent: String?): LoginResponse {
         val loginId = request.loginId.trim()
 
@@ -74,42 +103,62 @@ class AuthService(
         val user = authRepository.findUserWithDept(loginId)
         if (user == null) {
             authRepository.insertLoginHistory(loginId, "FAIL", "존재하지 않는 계정", ipAddr, userAgent)
-            throw UnauthenticatedException("사번 또는 비밀번호가 올바르지 않습니다.")
+            throw UnauthenticatedException(MSG_LOGIN_FAILED)
         }
 
-        // 2. 계정 상태 확인 — 승인 대기와 정지를 구분해 안내한다.
+        // 2~4. 계정 상태 확인 — 잠김은 비밀번호를 보기 전에 끝낸다. 승인 대기와 정지는 구분해 안내한다.
         val stateCd = user["userStateCd"] as String?
+        if (stateCd == "LOCKED") {
+            authRepository.insertLoginHistory(loginId, "LOCKED", "잠긴 계정 로그인 시도", ipAddr, userAgent, user["deptName"] as String?)
+            throw lockedException(user)
+        }
         if (stateCd != "ACTIVE") {
             val (reason, message) = when (stateCd) {
                 "PENDING" -> "승인 대기 계정" to "가입 승인 대기 중인 계정입니다. 전산팀 승인 후 로그인할 수 있습니다."
                 else -> "정지 계정" to "사용이 정지된 계정입니다. 관리자에게 문의하세요."
             }
-            authRepository.insertLoginHistory(loginId, "LOCKED", reason, ipAddr, userAgent)
+            authRepository.insertLoginHistory(loginId, "LOCKED", reason, ipAddr, userAgent, user["deptName"] as String?)
             throw UnauthenticatedException(message)
         }
 
-        // 3. 비밀번호 대조
+        // 5~6. 비밀번호 대조
         val pwdHash = user["pwdHash"] as String?
         if (!passwordEncoderService.matches(request.password, pwdHash)) {
+            // 원자 증가(RETURNING) — 동시에 두 요청이 와도 한 요청만 정확히 상한 값을 받는다.
             val failCnt = authRepository.increaseLoginFailCount(loginId)
+            val limit = appProperties.loginFailLimit
 
-            // 연속 실패가 임계값에 도달하면 계정을 정지시킨다.
-            if (failCnt >= appProperties.loginFailLimit) {
-                authRepository.updateUserState(loginId, "SUSPENDED", "SYSTEM")
-                authRepository.insertLoginHistory(loginId, "LOCKED", "연속 실패 ${failCnt}회 잠금", ipAddr, userAgent)
-                throw UnauthenticatedException("비밀번호를 ${failCnt}회 잘못 입력하여 계정이 정지되었습니다.")
+            if (failCnt >= limit) {
+                // 잠금 기록은 조건부 UPDATE(ACTIVE → LOCKED)가 성공한 요청 하나만 남긴다.
+                // 동시에 들어온 다른 요청은 행 잠금을 기다린 뒤 0 건을 받아 잠금 응답만 준다.
+                if (authRepository.lockUser(loginId) > 0) {
+                    authRepository.insertLoginHistory(loginId, "LOCKED", "연속 실패 ${failCnt}회 잠금", ipAddr, userAgent, user["deptName"] as String?)
+                    val permAuditId = auditLogService.record(
+                        logType = AuditType.ACCOUNT_SEC, menuId = null,
+                        targetDesc = "계정 잠금 [$loginId]", resultCd = "REJECT", remark = "연속 실패 ${failCnt}회"
+                    )
+                    auditLogService.recordPermChangeAs(
+                        actorUserId = "SYSTEM", actCd = "ACCOUNT", targetKindCd = "USER",
+                        targetNm = "${user["userName"]}($loginId)",
+                        detail = "계정 상태 변경 ACTIVE → LOCKED (시스템: 연속 실패 ${failCnt}회)",
+                        targetUserId = loginId,
+                        auditId = permAuditId
+                    )
+                    log.info("로그인 연속 실패로 계정 잠금: userId={} failCnt={}", loginId, failCnt)
+                }
+                throw lockedException(user)
             }
 
-            authRepository.insertLoginHistory(loginId, "FAIL", "비밀번호 불일치(${failCnt}회)", ipAddr, userAgent)
-            throw UnauthenticatedException("사번 또는 비밀번호가 올바르지 않습니다.")
+            authRepository.insertLoginHistory(loginId, "FAIL", "비밀번호 불일치(${failCnt}회)", ipAddr, userAgent, user["deptName"] as String?)
+            throw UnauthenticatedException(MSG_LOGIN_FAILED)
         }
 
-        // 4. 로그인 성공 처리
+        // 7. 로그인 성공 처리
         authRepository.markLoginSuccess(loginId)
-        authRepository.insertLoginHistory(loginId, "SUCCESS", null, ipAddr, userAgent)
+        authRepository.insertLoginHistory(loginId, "SUCCESS", null, ipAddr, userAgent, user["deptName"] as String?)
 
-        // 5. 예전 방식(BCrypt 등)으로 저장된 해시는 이 시점에 최신 포맷으로 조용히 올린다.
-        //    사용자는 아무것도 하지 않아도 다음 로그인부터 새 해시로 검증된다.
+        // 예전 방식(BCrypt 등)으로 저장된 해시는 이 시점에 최신 포맷으로 조용히 올린다.
+        // 사용자는 아무것도 하지 않아도 다음 로그인부터 새 해시로 검증된다.
         if (passwordEncoderService.needsRehash(pwdHash)) {
             runCatching { authRepository.updatePasswordHash(loginId, passwordEncoderService.encode(request.password), loginId) }
                 .onSuccess { log.info("비밀번호 해시를 최신 포맷으로 갱신했습니다: userId={}", loginId) }
@@ -117,6 +166,29 @@ class AuthService(
         }
 
         return buildLoginResponse(user, impersonated = false)
+    }
+
+    /**
+     * 잠금 응답(E-AUTH-005)을 만든다 — `data` 에 화면이 해제 안내를 그릴 값을 싣는다.
+     *
+     * 이메일 잠금 해제를 쓸 수 없으면(설정 꺼짐·등록 이메일 없음) 관리자 해제를 안내하고 가린 이메일도 주지 않는다.
+     */
+    private fun lockedException(user: Map<String, Any?>): AccountLockedException {
+        val email = (user["email"] as String?)?.takeIf { it.isNotBlank() }
+        val mailEnabled = accountUnlockProperties.emailEnabled && email != null
+        val limit = appProperties.loginFailLimit
+        val message = if (mailEnabled) {
+            "비밀번호를 ${limit}회 잘못 입력해 계정이 잠겼습니다. 등록된 이메일로 인증하면 잠금을 해제할 수 있습니다."
+        } else {
+            "비밀번호를 ${limit}회 잘못 입력해 계정이 잠겼습니다. 전산팀에 잠금 해제를 요청해 주세요."
+        }
+        val data = linkedMapOf<String, Any?>(
+            "lockedAt" to authRepository.findLockedAt(user["userId"] as String),
+            "mailEnabled" to mailEnabled,
+            "unlockPath" to UNLOCK_PATH
+        )
+        if (mailEnabled) data["emailMasked"] = emailVerificationService.maskEmail(email!!)
+        return AccountLockedException(message, data)
     }
 
     /**
@@ -164,13 +236,43 @@ class AuthService(
      * 내 정보 및 권한 전체를 조회한다.
      *
      * 메뉴 권한과 데이터 권한을 한 번에 반환하여 프론트 전 화면의 권한 판정 기준으로 사용한다.
+     * 초기 비밀번호 변경 전(R-04)이면 사용자 기본 정보와 `pwdChangeRequired=true` 만 주고 권한 목록은 모두 비운다.
      */
     @Transactional(readOnly = true)
     fun getMyInfo(): MyInfoResponse {
         val principal = UserContext.current()
 
+        val user = LoginUser(
+            empNo = principal.userId,
+            name = principal.userName,
+            dept = principal.deptName,
+            pos = principal.positionCd,
+            deptId = principal.deptId,
+            superAdmin = principal.superAdmin
+        )
+
+        // 초기 비밀번호 변경 전 — 최소 정보만. 화면은 이 값을 보고 비밀번호 변경 화면으로만 보낸다.
+        if (principal.pwdChangeRequired) {
+            return MyInfoResponse(
+                user = user,
+                dept = DeptInfo(
+                    deptId = principal.deptId, deptNm = principal.deptName, deptAbbr = null,
+                    superAdmin = principal.superAdmin, plantCd = null, unassigned = principal.unassigned
+                ),
+                menuPerms = emptyList(),
+                dataPerms = emptyList(),
+                blindFields = emptyList(),
+                dataFields = emptyList(),
+                servingModelVer = null,
+                impersonated = principal.impersonated,
+                writePerms = emptyList(),
+                pwdChangeRequired = true,
+                unassigned = principal.unassigned
+            )
+        }
+
         // 항목은 운영 중에 늘어난다(V33) — 코드 상수가 아니라 사용 중 항목 표를 기준으로 한다.
-        // 통합관리자는 전 항목을 열람하므로 허용 목록을 전체로 채운다.
+        // 통합관리자는 전 항목을 열람하므로 허용 목록을 전체로 채운다. 미배정은 principal 단계에서 이미 0건이다(R-11).
         val allKeys = dataFieldRepository.findActiveKeys()
         val dataPerms = if (principal.superAdmin) allKeys else allKeys.filter { it in principal.dataPerms }
         val blindFields = allKeys.filterNot { it in dataPerms }
@@ -192,34 +294,30 @@ class AuthService(
         // 메뉴 트리 쿼리를 쓰면 하위 화면(is_sub_page)이 빠져 들어갈 수 없게 되므로
         // 통합관리자에게는 사용 중인 전 화면을 준다. (system/menu-perms 의 matrix 와 같은 기준)
         // 하위 화면을 메뉴에 그릴지는 클라이언트가 screens[].sub 로 판단한다.
-        val menuPerms = if (principal.superAdmin) {
-            authRepository.findAllMenuIds()
-        } else {
-            principal.menuPerms.sorted()
-        }
+        // 쓰기 권한도 같은 기준이다 — 통합관리자는 전 화면, 그 밖에는 조회 권한이 있는 화면 중 can_write 인 것(R-06).
+        val allMenuIds = if (principal.superAdmin) authRepository.findAllMenuIds() else emptyList()
+        val menuPerms = if (principal.superAdmin) allMenuIds else principal.menuPerms.sorted()
+        val writePerms = if (principal.superAdmin) allMenuIds else principal.writePerms.filter { it in principal.menuPerms }.sorted()
 
         return MyInfoResponse(
-            user = LoginUser(
-                empNo = principal.userId,
-                name = principal.userName,
-                dept = principal.deptName,
-                pos = principal.positionCd,
-                deptId = principal.deptId,
-                superAdmin = principal.superAdmin
-            ),
+            user = user,
             dept = DeptInfo(
                 deptId = principal.deptId,
                 deptNm = principal.deptName,
                 deptAbbr = principal.deptAbbr,
                 superAdmin = principal.superAdmin,
-                plantCd = principal.plantCd
+                plantCd = principal.plantCd,
+                unassigned = principal.unassigned
             ),
             menuPerms = menuPerms,
             dataPerms = dataPerms,
             blindFields = blindFields,
             dataFields = dataFields,
             servingModelVer = authRepository.findServingModelVersion(),
-            impersonated = principal.impersonated
+            impersonated = principal.impersonated,
+            writePerms = writePerms,
+            pwdChangeRequired = false,
+            unassigned = principal.unassigned
         )
     }
 
@@ -234,19 +332,36 @@ class AuthService(
     fun switchAccount(request: SwitchAccountRequest): LoginResponse {
         val actor = authorizationService.requireSuperAdmin()
 
-        val target = authRepository.findUserWithDept(request.empNo.trim())
-            ?: throw ResourceNotFoundException("전환할 계정을 찾을 수 없습니다. [${request.empNo}]")
+        val empNo = request.empNo.trim()
+        // 전환 성공·거부를 모두 감사 로그에 남긴다 (09 AUD-02). 행위자는 요청한 통합관리자다.
+        fun reject(reason: String): Nothing {
+            auditLogService.record(
+                logType = AuditType.ACCOUNT_SEC, menuId = null,
+                targetDesc = "계정 전환 [${actor.userId} → $empNo]", resultCd = "REJECT", remark = reason
+            )
+            throw BusinessRuleException("$reason [$empNo]")
+        }
+
+        val target = authRepository.findUserWithDept(empNo)
+        if (target == null) {
+            auditLogService.record(
+                logType = AuditType.ACCOUNT_SEC, menuId = null,
+                targetDesc = "계정 전환 [${actor.userId} → $empNo]", resultCd = "REJECT", remark = "대상 계정 없음"
+            )
+            throw ResourceNotFoundException("전환할 계정을 찾을 수 없습니다. [$empNo]")
+        }
 
         // 전환 허용 대상인지 확인한다.
-        if (target["switchable"] != true) {
-            throw BusinessRuleException("계정 전환이 허용되지 않은 계정입니다. [${request.empNo}]")
-        }
-        if (target["userStateCd"] != "ACTIVE") {
-            throw BusinessRuleException("정지된 계정으로는 전환할 수 없습니다. [${request.empNo}]")
-        }
+        if (target["switchable"] != true) reject("계정 전환이 허용되지 않은 계정입니다.")
+        if (target["userStateCd"] != "ACTIVE") reject("정지된 계정으로는 전환할 수 없습니다.")
 
-        log.info("계정 전환 : actor={} → target={}", actor.userId, request.empNo)
-        return buildLoginResponse(target, impersonated = true)
+        auditLogService.record(
+            logType = AuditType.ACCOUNT_SEC, menuId = null,
+            targetDesc = "계정 전환 [${actor.userId} → $empNo]", remark = "대행 로그인(통합관리자)"
+        )
+        log.info("계정 전환 : actor={} → target={}", actor.userId, empNo)
+        // 전환 토큰에 원래 관리자 사번을 담아, 전환 상태에서 한 행위의 감사 기록에 [대행:사번] 을 붙인다.
+        return buildLoginResponse(target, impersonated = true, impersonatedBy = actor.userId)
     }
 
     /**
@@ -295,7 +410,7 @@ class AuthService(
     /**
      * 조회된 계정 정보로 토큰을 발급하고 로그인 응답을 조립한다.
      */
-    private fun buildLoginResponse(user: Map<String, Any?>, impersonated: Boolean): LoginResponse {
+    private fun buildLoginResponse(user: Map<String, Any?>, impersonated: Boolean, impersonatedBy: String? = null): LoginResponse {
         val userId = user["userId"] as String
         val userName = user["userName"] as String
         val deptId = user["deptId"] as Int
@@ -309,7 +424,8 @@ class AuthService(
             deptName = deptName,
             superAdmin = superAdmin,
             plantCd = user["plantCd"] as String?,
-            impersonated = impersonated
+            impersonated = impersonated,
+            impersonatedBy = impersonatedBy
         )
 
         return LoginResponse(
@@ -323,7 +439,9 @@ class AuthService(
                 pos = user["positionCd"] as String?,
                 deptId = deptId,
                 superAdmin = superAdmin
-            )
+            ),
+            // 초기 비밀번호 변경 전이면 화면이 곧바로 비밀번호 변경 화면으로 간다(R-04)
+            pwdChangeRequired = user["pwdChangeRequired"] == true
         )
     }
 
@@ -379,11 +497,13 @@ class AuthService(
             throw DuplicatedValueException("이미 사용 중인 이메일입니다.", "email")
         }
 
-        // 6. 부서 확인
+        // 6. 부서 확인 — 시스템 부서(통합관리자·미배정)는 스스로 고를 수 없다 (CMN-01, 01 ACC-02)
         val deptId = request.deptId
             ?: throw InvalidParameterException("소속 부서를 선택해 주세요.", "deptId")
-        if (!authRepository.existsDept(deptId)) {
-            throw InvalidParameterException("존재하지 않는 부서입니다. [deptId=$deptId]", "deptId")
+        val dept = authRepository.findActiveDept(deptId)
+            ?: throw InvalidParameterException("존재하지 않는 부서입니다. [deptId=$deptId]", "deptId")
+        if (systemDeptGuard.systemRoleOf(dept) != null) {
+            throw InvalidParameterException("선택할 수 없는 부서입니다. [deptId=$deptId]", "deptId")
         }
 
         authRepository.insertSignupUser(
@@ -398,7 +518,7 @@ class AuthService(
 
         // 가입 신청은 계정 생성 행위이므로 감사 로그에 남긴다.
         auditLogService.record(
-            logType = "AUTO_GEN",
+            logType = AuditType.ACCOUNT_SEC,
             menuId = null,
             targetDesc = "회원가입 신청 [$empNo ${request.name}]",
             remark = "부서=$deptId, 상태=PENDING, 이메일=${emailVerificationService.maskEmail(verified.email)}"
@@ -427,6 +547,8 @@ class AuthService(
         }
 
         val used = authRepository.existsUserId(trimmed)
+        // 로그인 전 API 라 계정의 가입 경로(그룹웨어 자동 가입 등)는 알리지 않는다 — 초기 비밀번호 대상 계정을 골라 주게 된다
+        // (01 ACC-13, 4단계 메인 결정). 자동 가입 안내는 로그인 뒤·관리자 화면에서만 한다.
         return mapOf(
             "empNo" to trimmed,
             "available" to !used,
@@ -435,11 +557,11 @@ class AuthService(
     }
 
     /**
-     * 가입 시 선택할 수 있는 부서 목록을 조회한다. (통합관리자 부서 제외)
+     * 가입 시 선택할 수 있는 부서 목록을 조회한다. (통합관리자·미배정 부서 제외)
      */
     @Transactional(readOnly = true)
     fun getSignupDepts(): Map<String, Any?> =
-        mapOf("depts" to authRepository.findSignupDepts())
+        mapOf("depts" to authRepository.findSignupDepts(appProperties.unassignedDeptName))
 
     /**
      * 로그인한 사용자가 자기 비밀번호를 변경한다.
@@ -475,9 +597,11 @@ class AuthService(
         authRepository.updatePasswordHash(
             principal.userId, passwordEncoderService.encode(request.newPassword), principal.userId
         )
+        // 본인이 바꿨으므로 초기 비밀번호 변경 요구를 내린다 — 다음 요청부터 차단이 풀린다(R-04, 매 요청 DB 판정)
+        authRepository.updatePwdChangeRequired(principal.userId, false, principal.userId)
 
         auditLogService.record(
-            logType = "AUTO_GEN",
+            logType = AuditType.ACCOUNT_SEC,
             menuId = null,
             targetDesc = "비밀번호 변경 [${principal.userId}]",
             remark = "본인 변경"
@@ -509,8 +633,8 @@ class AuthService(
 
         val user = emailVerificationRepository.findUserByEmpNoAndEmail(empNo, email)
 
-        // 일치하는 계정이 있을 때만 실제로 발송한다.
-        if (user != null && user["stateCd"] == "ACTIVE") {
+        // 일치하는 계정이 있을 때만 실제로 발송한다. 잠긴 계정도 비밀번호 찾기로 풀 수 있다(09 AUD-16).
+        if (user != null && (user["stateCd"] == "ACTIVE" || user["stateCd"] == "LOCKED")) {
             // 독립 트랜잭션으로 보낸다. 같은 트랜잭션에서 발송이 실패하면 예외를 삼켜도
             // 트랜잭션이 rollback-only 로 남아 커밋에서 500 이 된다.
             runCatching {
@@ -530,7 +654,7 @@ class AuthService(
             // 존재하지 않거나 사용 불가 계정 — 시도 자체는 감사 로그에 남긴다.
             log.info("비밀번호 찾기 대상 없음: empNo={} email={}", empNo, emailVerificationService.maskEmail(email))
             auditLogService.record(
-                logType = "AUTO_GEN",
+                logType = AuditType.ACCOUNT_SEC,
                 menuId = null,
                 targetDesc = "비밀번호 찾기 실패 시도 [$empNo]",
                 resultCd = "REJECT",
@@ -579,22 +703,178 @@ class AuthService(
         }
 
         authRepository.updatePasswordHash(empNo, passwordEncoderService.encode(request.newPassword), empNo)
+        // 본인이 새 비밀번호를 정했으므로 초기 비밀번호 변경 요구를 내린다(R-04)
+        authRepository.updatePwdChangeRequired(empNo, false, empNo)
 
-        // 4. 잠금 해제 — 실패 횟수로 정지된 계정을 다시 쓸 수 있게 한다.
-        if (user["userStateCd"] == "SUSPENDED" && (user["loginFailCnt"] as? Int ?: 0) >= appProperties.loginFailLimit) {
-            authRepository.updateUserState(empNo, "ACTIVE", "SYSTEM")
-            log.info("비밀번호 재설정으로 계정 잠금 해제: empNo={}", empNo)
-        }
+        // 4. 잠금 해제 — 잠긴(LOCKED) 계정이면 함께 푼다. 정지(SUSPENDED)는 관리자 조치라 풀지 않는다.
+        val unlocked = user["userStateCd"] == "LOCKED" && authRepository.unlockUser(empNo, empNo, "N") > 0
         authRepository.markLoginSuccess(empNo)
 
-        auditLogService.record(
-            logType = "AUTO_GEN",
-            menuId = null,
-            targetDesc = "비밀번호 재설정 [$empNo]",
-            remark = "이메일 인증 기반 재설정"
-        )
+        if (unlocked) {
+            val permAuditId = auditLogService.record(
+                logType = AuditType.ACCOUNT_SEC, menuId = null,
+                targetDesc = "비밀번호 재설정 [$empNo]", remark = "잠금 해제 포함(이메일 인증 기반 재설정)"
+            )
+            auditLogService.recordPermChangeAs(
+                actorUserId = empNo, actCd = "ACCOUNT", targetKindCd = "USER",
+                targetNm = "${user["userName"]}($empNo)",
+                detail = "계정 상태 변경 LOCKED → ACTIVE (본인 이메일 인증 — 비밀번호 찾기)", targetUserId = empNo,
+                auditId = permAuditId
+            )
+            log.info("비밀번호 재설정으로 계정 잠금 해제: empNo={}", empNo)
+        } else {
+            auditLogService.record(
+                logType = AuditType.ACCOUNT_SEC,
+                menuId = null,
+                targetDesc = "비밀번호 재설정 [$empNo]",
+                remark = "이메일 인증 기반 재설정"
+            )
+        }
 
         log.info("비밀번호 재설정 완료: empNo={}", empNo)
         return mapOf("success" to true, "empNo" to empNo, "message" to "비밀번호가 재설정되었습니다. 새 비밀번호로 로그인해 주세요.")
+    }
+
+    // =================================================================================
+    // 계정 잠금 해제 — 이메일 인증 (결정 R-02, 09 기획서 AUD-16 (4)·(5))
+    // =================================================================================
+
+    /**
+     * 잠금 해제 1단계 — 잠긴 계정이면 등록 이메일로 인증 코드를 보낸다.
+     *
+     * **대상 여부와 무관하게 같은 200 응답**을 준다(없는 사번·잠기지 않은 계정·이메일 없음·발송 제한·발송 실패).
+     * 원인은 서버 로그와 감사 기록에만 남긴다. 발송은 독립 트랜잭션이라 실패를 삼켜도 이 요청은 정상 종료된다.
+     *
+     * @throws UnlockUnavailableException 이메일 잠금 해제가 꺼진 경우(503 E-AUTH-007)
+     */
+    fun requestUnlock(empNoRaw: String): Map<String, Any?> {
+        requireUnlockEnabled()
+        val empNo = empNoRaw.trim().takeIf { it.isNotEmpty() }
+            ?: throw InvalidParameterException("사번을 입력해 주세요.", "empNo")
+
+        val user = authRepository.findUserWithDept(empNo)
+        val email = (user?.get("email") as String?)?.takeIf { it.isNotBlank() }
+        val rejectReason = when {
+            user == null -> "없는 계정"
+            user["userStateCd"] != "LOCKED" -> "잠기지 않음"
+            email == null -> "이메일 없음"
+            else -> null
+        }
+
+        if (rejectReason == null) {
+            runCatching {
+                emailVerificationService.sendCodeInNewTransaction(email!!, EmailVerificationService.PURPOSE_ACCOUNT_UNLOCK, empNo)
+            }.onSuccess {
+                auditLogService.record(
+                    logType = AuditType.ACCOUNT_SEC, menuId = null,
+                    targetDesc = "잠금 해제 요청 [$empNo]", remark = emailVerificationService.maskEmail(email!!)
+                )
+            }.onFailure {
+                val reason = if (it is BusinessException) "발송 제한" else "발송 실패"
+                if (it is BusinessException) {
+                    log.info("잠금 해제 코드 발송 제한: empNo={} reason={}", empNo, it.message)
+                } else {
+                    log.error("잠금 해제 코드 발송 실패: empNo={}", empNo, it)
+                }
+                auditLogService.record(
+                    logType = AuditType.ACCOUNT_SEC, menuId = null,
+                    targetDesc = "잠금 해제 요청 [$empNo]", resultCd = "REJECT", remark = reason
+                )
+            }
+        } else {
+            log.info("잠금 해제 요청 대상 아님: empNo={} reason={}", empNo, rejectReason)
+            auditLogService.record(
+                logType = AuditType.ACCOUNT_SEC, menuId = null,
+                targetDesc = "잠금 해제 요청 [$empNo]", resultCd = "REJECT", remark = rejectReason
+            )
+        }
+
+        return mapOf(
+            "message" to "잠긴 계정이면 등록된 이메일로 인증 코드를 보냈습니다. 메일함을 확인해 주세요.",
+            "expireMinutes" to emailVerificationProperties.expireMinutes,
+            "resendAvailableInSec" to emailVerificationProperties.resendWaitSec
+        )
+    }
+
+    /**
+     * 잠금 해제 2단계 — 사번 기준으로 인증 코드를 확인하고 1회용 토큰을 준다.
+     *
+     * 트랜잭션을 걸지 않는다. 검증의 시도 횟수 증가는 실패 응답에서도 남아야 하는데,
+     * 여기서 트랜잭션을 열면 예외가 이 경계를 지나며 그 증가까지 롤백한다.
+     */
+    fun verifyUnlock(request: UnlockVerifyRequest): Map<String, Any?> {
+        requireUnlockEnabled()
+        val empNo = request.empNo.trim()
+        val result = emailVerificationService.verifyCodeForTarget(
+            empNo, EmailVerificationService.PURPOSE_ACCOUNT_UNLOCK, request.code
+        ) {
+            auditLogService.record(
+                logType = AuditType.ACCOUNT_SEC, menuId = null,
+                targetDesc = "잠금 해제 인증 실패 [$empNo]", resultCd = "REJECT",
+                remark = "시도 ${emailVerificationProperties.maxAttempts}회 초과"
+            )
+        }
+        return mapOf(
+            "verificationToken" to result["verificationToken"],
+            "expireMinutes" to result["expireMinutes"]
+        )
+    }
+
+    /**
+     * 잠금 해제 3단계 — 새 비밀번호를 정하고 계정을 ACTIVE 로 되돌린다. 새 비밀번호는 필수다(D-21).
+     *
+     * 검사는 비밀번호 재설정과 같다(정책·사번 포함 금지·직전 비밀번호 재사용 금지). 검사에 걸리면
+     * 트랜잭션 전체가 롤백되어 토큰도 소모되지 않는다. 대상이 이미 잠금이 풀렸거나 정지되었으면 409 이고,
+     * 문구로 정지 여부를 드러내지 않는다.
+     */
+    @Transactional
+    fun completeUnlock(request: UnlockCompleteRequest): Map<String, Any?> {
+        requireUnlockEnabled()
+        val verified = emailVerificationService.consumeToken(
+            request.verificationToken, EmailVerificationService.PURPOSE_ACCOUNT_UNLOCK
+        )
+        val empNo = verified.targetUserId
+            ?: throw InvalidParameterException("인증 정보에 대상 계정이 없습니다. 처음부터 다시 진행해 주세요.", "verificationToken")
+
+        val user = authRepository.findUserWithDept(empNo)
+        if (user == null || user["userStateCd"] != "LOCKED") {
+            throw BusinessRuleException("이미 잠금이 해제된 계정입니다. 로그인해 주세요.")
+        }
+
+        if (request.newPassword != request.newPasswordConfirm) {
+            throw InvalidParameterException("새 비밀번호와 확인이 일치하지 않습니다.", "newPasswordConfirm")
+        }
+        passwordEncoderService.validatePolicy(request.newPassword, "newPassword")
+        if (request.newPassword.contains(empNo, ignoreCase = true)) {
+            throw InvalidParameterException("비밀번호에 사번을 포함할 수 없습니다.", "newPassword")
+        }
+        if (passwordEncoderService.matches(request.newPassword, user["pwdHash"] as String?)) {
+            throw InvalidParameterException("이전 비밀번호와 다른 값으로 설정해 주세요.", "newPassword")
+        }
+
+        authRepository.updatePasswordHash(empNo, passwordEncoderService.encode(request.newPassword), empNo)
+        // 조건부 UPDATE — 관리자 해제·비밀번호 찾기와 동시에 끝나면 한 쪽만 성공한다.
+        if (authRepository.unlockUser(empNo, empNo, "N") == 0) {
+            throw BusinessRuleException("이미 잠금이 해제된 계정입니다. 로그인해 주세요.")
+        }
+
+        val permAuditId = auditLogService.record(
+            logType = AuditType.ACCOUNT_SEC, menuId = null,
+            targetDesc = "잠금 해제 [$empNo]", remark = "이메일 인증 + 비밀번호 변경"
+        )
+        auditLogService.recordPermChangeAs(
+            actorUserId = empNo, actCd = "ACCOUNT", targetKindCd = "USER",
+            targetNm = "${user["userName"]}($empNo)",
+            detail = "계정 상태 변경 LOCKED → ACTIVE (본인 이메일 인증)", targetUserId = empNo,
+            auditId = permAuditId
+        )
+        log.info("이메일 인증으로 계정 잠금 해제: empNo={}", empNo)
+
+        return mapOf("empNo" to empNo, "message" to "잠금이 해제되었습니다. 새 비밀번호로 로그인해 주세요.")
+    }
+
+    /** 이메일 잠금 해제를 쓸 수 있는지 — SMTP 를 받기 전(dev·prod 기본)에는 503 E-AUTH-007 */
+    private fun requireUnlockEnabled() {
+        if (!accountUnlockProperties.emailEnabled) throw UnlockUnavailableException()
     }
 }

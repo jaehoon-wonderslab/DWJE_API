@@ -43,7 +43,7 @@ class AgentRunAndModelAdminTest {
         .also { `when`(it.requireMenu(menuId)).thenReturn(admin) }
 
     private val audit = object : AuditLogService(mock(com.dwje.api.repository.AuditLogRepository::class.java), mock(AuthorizationService::class.java)) {
-        override fun record(logType: String, menuId: String?, fieldKey: String?, targetDesc: String?, resultCd: String, maskedCnt: Int, remark: String?) {}
+        override fun record(logType: String, menuId: String?, fieldKey: String?, targetDesc: String?, resultCd: String, maskedCnt: Int, remark: String?): Long? = null
     }
 
     // ── 기록기 ──────────────────────────────────────────────────────────────

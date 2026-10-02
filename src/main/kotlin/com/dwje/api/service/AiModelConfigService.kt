@@ -1,5 +1,6 @@
 package com.dwje.api.service
 
+import com.dwje.api.common.util.AuditType
 import com.dwje.api.common.exception.ConflictingValueException
 import com.dwje.api.common.exception.InvalidParameterException
 import com.dwje.api.common.exception.ResourceNotFoundException
@@ -257,7 +258,7 @@ class AiModelConfigService(
 
     private fun audit(targetDesc: String, remark: String?) {
         auditLogService.record(
-            logType = "AUTO_GEN",
+            logType = AuditType.CONFIG_CHANGE,
             menuId = MenuId.BASE_MODEL,
             targetDesc = targetDesc,
             remark = remark

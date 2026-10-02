@@ -85,7 +85,7 @@ class QualityDefectExportTest {
     @DisplayName("by-type — 조회 조건 + 유형별 분포(코드·유형·불량 수량·비중)")
     fun byType() {
         open(workbook.byType(cond, typeItems)).use { wb ->
-            assertEquals(listOf(QualityDefectWorkbook.SHEET_CONDITIONS, QualityDefectWorkbook.SHEET_BY_TYPE), (0 until wb.numberOfSheets).map { wb.getSheetName(it) })
+            assertEquals(listOf(QualityDefectWorkbook.SHEET_CONDITIONS, QualityDefectWorkbook.SHEET_BY_TYPE, "안내"), (0 until wb.numberOfSheets).map { wb.getSheetName(it) })
             val s = wb.getSheet(QualityDefectWorkbook.SHEET_BY_TYPE)
             assertEquals(listOf("불량 유형 코드", "불량 유형", "불량 수량", "비중(%)"), (0 until 4).map { s.text(0, it) })
             assertEquals(3, s.lastRowNum)
@@ -110,7 +110,7 @@ class QualityDefectExportTest {
     fun byLine() {
         open(workbook.byLine(cond.copy(defectTypeCd = null), lineItems)).use { wb ->
             assertEquals(
-                listOf(QualityDefectWorkbook.SHEET_CONDITIONS, QualityDefectWorkbook.SHEET_BY_LINE, QualityDefectWorkbook.SHEET_LINE_TYPES),
+                listOf(QualityDefectWorkbook.SHEET_CONDITIONS, QualityDefectWorkbook.SHEET_BY_LINE, QualityDefectWorkbook.SHEET_LINE_TYPES, "안내"),
                 (0 until wb.numberOfSheets).map { wb.getSheetName(it) }
             )
             val line = wb.getSheet(QualityDefectWorkbook.SHEET_BY_LINE)
@@ -160,7 +160,8 @@ class QualityDefectExportTest {
         val calls = mutableListOf<Call>()
         override fun record(
             reportId: String?, reportNm: String, menuId: String?, format: String, scope: String?, rowCnt: Int, blindCnt: Int,
-            blindCells: Map<String, Int>, fileNm: String?, params: Map<String, Any?>?, fileSize: Long?
+            blindCells: Map<String, Int>, fileNm: String?, params: Map<String, Any?>?, fileSize: Long?,
+            scopeCd: String, condSummary: String?
         ): Long { calls += Call(reportNm, menuId, format, scope, rowCnt, blindCnt, fileNm, params, fileSize); return calls.size.toLong() }
     }
 
@@ -200,10 +201,10 @@ class QualityDefectExportTest {
         assertEquals(200, res.statusCode.value())
         assertEquals("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", res.headers.contentType.toString())
         assertEquals("불량_유형별_분포_2026-09-01_2026-09-11.xlsx", filenameOf(res.headers.getFirst("Content-Disposition")!!))
-        open(res.body!!.byteArray).use { wb -> assertEquals(2, wb.numberOfSheets) }
+        open(res.body!!.byteArray).use { wb -> assertEquals(3, wb.numberOfSheets, "안내 시트는 0건이어도 있다") }
 
         val call = downloadLog.calls.single()
-        assertEquals("불량 유형별 분포", call.reportNm); assertEquals(MenuId.QC_DEFECT, call.menuId); assertEquals("xlsx", call.format)
+        assertEquals("불량 유형별 분포", call.reportNm); assertEquals(MenuId.QC_DEFECT, call.menuId); assertEquals("XLSX", call.format)
         assertEquals(3, call.rowCnt); assertEquals(0, call.blindCnt)
         assertEquals("불량_유형별_분포_2026-09-01_2026-09-11.xlsx", call.fileNm)
         assertEquals(res.body!!.byteArray.size.toLong(), call.fileSize)
@@ -220,7 +221,7 @@ class QualityDefectExportTest {
         assertEquals("wc,item,eqpt", defects.treeLevels, "본문 levels 가 트리 조회로 전달된다")
         assertEquals("설비별_불량률_2026-09-01_2026-09-11.xlsx", filenameOf(res.headers.getFirst("Content-Disposition")!!))
         open(res.body!!.byteArray).use { wb ->
-            assertEquals(4, wb.numberOfSheets)
+            assertEquals(5, wb.numberOfSheets, "안내 시트는 0건이어도 있다")
             assertEquals(QualityDefectWorkbook.SHEET_TREE, wb.getSheetName(3))
             assertEquals(3, wb.getSheetAt(3).lastRowNum, "트리 3단계 = 3행")
         }

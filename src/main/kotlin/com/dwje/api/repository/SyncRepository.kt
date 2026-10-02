@@ -1,6 +1,7 @@
 package com.dwje.api.repository
 
 import com.dwje.api.common.util.Rs
+import com.dwje.api.common.util.SensitiveText
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Repository
@@ -13,6 +14,16 @@ import java.time.LocalDateTime
  * 참조 테이블 : ax.tb_sync_map, ax.tb_sync_job, ax.tb_sync_job_error,
  *               ax.tb_sync_schema_drift, ax.tb_alm_cond
  */
+/** 이관 실패 알림 지표 코드(V61) — 실패 알림 조건 판정 (12 SYN-04) */
+private const val SYNC_ALERT_METRICS = "'SYNC_FAIL_RATE', 'SYNC_STALE_MIN'"
+
+/** 실행 구분 — MES(그룹웨어 외 전부) · GROUPWARE (12 SYN-09) */
+private const val SOURCE_SQL = "(:source::varchar IS NULL OR (:source = 'GROUPWARE' AND r.mode_cd = 'GROUPWARE') OR (:source = 'MES' AND r.mode_cd <> 'GROUPWARE'))"
+
+/** 작업 기간 조건 — 대기 작업은 includePending 이면 기간과 무관하게 넣는다 (12 SYN-08) */
+private const val JOB_PERIOD_SQL = "WHERE ((coalesce(j.started_at, j.scheduled_at) >= :from AND coalesce(j.started_at, j.scheduled_at) < :toExclusive)" +
+    " OR (:includePending AND j.state_cd = 'PENDING'))"
+
 @Repository
 class SyncRepository(
     private val jdbcTemplate: NamedParameterJdbcTemplate
@@ -64,6 +75,81 @@ class SyncRepository(
     }
 
     /**
+     * 연동 상태 판정 재료 (SYN-03) — 기준일과 무관하게 **지금** 기준이다.
+     * MES 이관 실행만 본다(그룹웨어 인사정보·모의 실행 제외). 읽기만 한다.
+     *
+     * @param stalePendingMin 예약 시각이 이 분 넘게 지난 PENDING 을 오래된 예약으로 센다
+     */
+    fun findHealthStats(stalePendingMin: Long): SyncHealthStats {
+        val p = MapSqlParameterSource("stalePendingMin", stalePendingMin)
+        val lastRun = jdbcTemplate.query(
+            """
+            SELECT r.run_id, r.mode_cd, coalesce(mc.code_nm, r.mode_cd) AS mode_nm,
+                   r.state_cd, coalesce(sc.code_nm, r.state_cd) AS state_nm, r.started_at, r.message
+              FROM ax.tb_sync_run r
+              LEFT JOIN ax.tb_sys_code mc ON mc.group_cd = 'SYNC_RUN_MODE'  AND mc.code = r.mode_cd
+              LEFT JOIN ax.tb_sys_code sc ON sc.group_cd = 'SYNC_RUN_STATE' AND sc.code = r.state_cd
+             WHERE r.mode_cd <> 'GROUPWARE' AND NOT r.is_dry_run
+             ORDER BY r.started_at DESC LIMIT 1
+            """.trimIndent(), p
+        ) { rs, _ ->
+            mapOf<String, Any?>(
+                "runId" to rs.getString("run_id"), "mode" to rs.getString("mode_cd"), "modeNm" to rs.getString("mode_nm"),
+                "state" to rs.getString("state_cd"), "stateNm" to rs.getString("state_nm"),
+                "startedAt" to Rs.dateTime(rs, "started_at"), "message" to SensitiveText.mask(rs.getString("message"))
+            )
+        }.firstOrNull()
+
+        // 최근부터 실패가 끊길 때까지의 실행 상태 — 진행 중·건너뜀은 성공도 실패도 아니라 뺀다(7일 창은 성능용)
+        val recentStates = jdbcTemplate.query(
+            """
+            SELECT state_cd FROM ax.tb_sync_run
+             WHERE mode_cd <> 'GROUPWARE' AND NOT is_dry_run AND state_cd NOT IN ('RUNNING','SKIPPED')
+               AND started_at >= now() - interval '7 days'
+             ORDER BY started_at DESC LIMIT 50
+            """.trimIndent(), p
+        ) { rs, _ -> rs.getString("state_cd") }
+
+        return jdbcTemplate.queryForObject(
+            """
+            SELECT
+              (SELECT count(*) FROM ax.tb_sync_run
+                WHERE mode_cd <> 'GROUPWARE' AND NOT is_dry_run
+                  AND state_cd IN ('FAIL','PARTIAL','PREFLIGHT_FAIL')
+                  AND started_at >= ((now() AT TIME ZONE 'Asia/Seoul')::date)::timestamp AT TIME ZONE 'Asia/Seoul') AS today_fail_run_cnt,
+              (SELECT max(ended_at) FROM ax.tb_sync_job WHERE state_cd IN ('DONE','RETRY_DONE'))           AS last_success_at,
+              (SELECT floor(extract(epoch FROM now() - max(ended_at)) / 60)::bigint
+                 FROM ax.tb_sync_job WHERE state_cd IN ('DONE','RETRY_DONE'))                              AS stale_min,
+              open_fail.cnt AS open_fail_job_cnt, open_fail.oldest AS oldest_open_fail_at,
+              (SELECT count(*) FROM ax.tb_sync_job
+                WHERE state_cd = 'PENDING' AND scheduled_at < now() - make_interval(mins => CAST(:stalePendingMin AS int))) AS stale_pending_cnt
+            FROM (
+              -- 미조치 실패: 실패·중단 중 같은 매핑이 이후 정상 완료되지 않았고 진행 중 재실행도 없는 것(사용 중 매핑만)
+              SELECT count(*) AS cnt, min(coalesce(f.started_at, f.scheduled_at)) AS oldest
+                FROM ax.tb_sync_job f JOIN ax.tb_sync_map m ON m.map_id = f.map_id AND m.use_flg = 'Y'
+               WHERE f.state_cd IN ('FAIL','ABORTED')
+                 AND NOT EXISTS (SELECT 1 FROM ax.tb_sync_job s
+                                  WHERE s.map_id = f.map_id AND s.state_cd IN ('DONE','RETRY_DONE')
+                                    AND coalesce(s.started_at, s.scheduled_at) > coalesce(f.started_at, f.scheduled_at))
+                 AND NOT EXISTS (SELECT 1 FROM ax.tb_sync_job r
+                                  WHERE r.retry_of_job_id = f.job_id AND r.state_cd IN ('PENDING','RUNNING'))
+            ) open_fail
+            """.trimIndent(), p
+        ) { rs, _ ->
+            SyncHealthStats(
+                lastRun = lastRun,
+                recentRunStates = recentStates,
+                todayFailRunCnt = rs.getLong("today_fail_run_cnt"),
+                lastSuccessAt = Rs.dateTime(rs, "last_success_at"),
+                staleMin = (rs.getObject("stale_min") as? Number)?.toLong(),
+                openFailJobCnt = rs.getLong("open_fail_job_cnt"),
+                oldestOpenFailAt = Rs.dateTime(rs, "oldest_open_fail_at"),
+                stalePendingCnt = rs.getLong("stale_pending_cnt")
+            )
+        }!!
+    }
+
+    /**
      * 이관 실행 이력을 조회한다. (SY-15 — 엔진 1회 실행 = 1행)
      *
      * `tb_sync_job` 은 "테이블 1건의 이관" 단위라, 그 앞에서 멈춘 실행은 흔적이 없다.
@@ -79,7 +165,8 @@ class SyncRepository(
         state: String?,
         mode: String?,
         limit: Int,
-        offset: Int
+        offset: Int,
+        source: String? = null
     ): List<Map<String, Any?>> {
         val sql = StringBuilder(
             """
@@ -114,10 +201,11 @@ class SyncRepository(
               AND r.started_at <  :toExclusive
               AND (:state::varchar IS NULL OR r.state_cd = :state)
               AND (:mode::varchar  IS NULL OR r.mode_cd  = :mode)
+              AND $SOURCE_SQL
             """.trimIndent()
         )
 
-        val params = runParams(from, to, state, mode)
+        val params = runParams(from, to, state, mode, source)
         sql.append("\nORDER BY r.started_at DESC\nLIMIT :limit OFFSET :offset")
         params.addValue("limit", limit).addValue("offset", offset)
 
@@ -133,7 +221,8 @@ class SyncRepository(
                 "durationSec" to Rs.intOrNull(rs, "duration_sec"),
                 "triggeredByCd" to rs.getString("triggered_by_cd"),
                 "triggeredBy" to rs.getString("triggered_by"),
-                "options" to rs.getString("options_desc"),
+                // 실행 문구·옵션·호스트는 내부 주소를 가린 값이다(SYN-05). DB 원문은 그대로 둔다.
+                "options" to SensitiveText.mask(rs.getString("options_desc")),
                 // 테이블 수다. tb_sync_job.target_rows(진짜 행수)와 이름이 겹치면
                 // 같은 응답의 okRows·ngRows 옆에서 행수로 읽힌다. 그래서 tableCnt 로 내린다.
                 "tableCnt" to rs.getInt("target_cnt"),
@@ -150,14 +239,14 @@ class SyncRepository(
                 // 화면은 이 값으로 구분한다. options 문자열을 뒤지면 문구가 바뀔 때 조용히 깨진다.
                 "dryRun" to rs.getBoolean("is_dry_run"),
                 "engineVersion" to rs.getString("engine_version"),
-                "host" to rs.getString("host_name"),
-                "message" to rs.getString("message")
+                "host" to SensitiveText.mask(rs.getString("host_name")),
+                "message" to SensitiveText.mask(rs.getString("message"))
             )
         }
     }
 
     /** 이관 실행 이력 전체 건수 */
-    fun countRuns(from: LocalDate, to: LocalDate, state: String?, mode: String?): Long {
+    fun countRuns(from: LocalDate, to: LocalDate, state: String?, mode: String?, source: String? = null): Long {
         val sql = StringBuilder(
             """
             SELECT count(*)
@@ -166,10 +255,11 @@ class SyncRepository(
               AND r.started_at <  :toExclusive
               AND (:state::varchar IS NULL OR r.state_cd = :state)
               AND (:mode::varchar  IS NULL OR r.mode_cd  = :mode)
+              AND $SOURCE_SQL
             """.trimIndent()
         )
         return jdbcTemplate.queryForObject(
-            sql.toString(), runParams(from, to, state, mode), Long::class.java
+            sql.toString(), runParams(from, to, state, mode, source), Long::class.java
         ) ?: 0L
     }
 
@@ -178,12 +268,14 @@ class SyncRepository(
         from: LocalDate,
         to: LocalDate,
         state: String?,
-        mode: String?
+        mode: String?,
+        source: String? = null
     ): MapSqlParameterSource = MapSqlParameterSource()
         .addValue("from", from.atStartOfDay())
         .addValue("toExclusive", to.plusDays(1).atStartOfDay())
         .addValue("state", state?.trim()?.takeIf { it.isNotBlank() })
         .addValue("mode", mode?.trim()?.takeIf { it.isNotBlank() })
+        .addValue("source", source?.trim()?.uppercase()?.takeIf { it.isNotBlank() })
 
     /**
      * 이관 작업 이력을 조회한다. (No.227)
@@ -194,7 +286,9 @@ class SyncRepository(
         srcTable: String?,
         state: String?,
         limit: Int,
-        offset: Int
+        offset: Int,
+        runId: String? = null,
+        includePending: Boolean = true
     ): List<Map<String, Any?>> {
         val sql = StringBuilder(
             """
@@ -202,21 +296,19 @@ class SyncRepository(
                 j.job_id, j.map_id, j.run_id, j.sync_kind_cd, j.started_at, j.scheduled_at,
                 j.ended_at, j.duration_sec,
                 j.target_rows, j.ok_rows, j.ng_rows, j.state_cd, j.checksum_match,
-                j.retry_cnt, j.triggered_by_cd, j.triggered_by, j.remark,
-                m.src_db, m.src_schema, m.src_table, m.tgt_schema, m.tgt_table
+                j.retry_cnt, j.triggered_by_cd, j.triggered_by, j.remark, j.retry_of_job_id,
+                m.src_db, m.src_schema, m.src_table, m.tgt_schema, m.tgt_table,
+                $RETRYABLE_SQL AS retryable
             FROM ax.tb_sync_job j
             INNER JOIN ax.tb_sync_map m ON m.map_id = j.map_id
             -- PENDING 작업은 아직 시작하지 않아 started_at 이 NULL 이다. 예약 시각으로 기간을 판정한다.
-            WHERE coalesce(j.started_at, j.scheduled_at) >= :from
-              AND coalesce(j.started_at, j.scheduled_at) <  :toExclusive
+            $JOB_PERIOD_SQL
             """.trimIndent()
         )
 
-        val params = MapSqlParameterSource()
-            .addValue("from", from.atStartOfDay())
-            .addValue("toExclusive", to.plusDays(1).atStartOfDay())
+        val params = jobParams(from, to, includePending)
 
-        appendJobFilters(sql, params, srcTable, state)
+        appendJobFilters(sql, params, srcTable, state, runId)
 
         // 대기 중인 작업을 맨 위에 둔다 — 운영자가 가장 먼저 확인해야 할 행이다
         sql.append("\nORDER BY (j.state_cd = 'PENDING') DESC, coalesce(j.started_at, j.scheduled_at) DESC")
@@ -243,28 +335,34 @@ class SyncRepository(
                 "state" to rs.getString("state_cd"),
                 "checksumMatch" to Rs.boolOrNull(rs, "checksum_match"),
                 "retryCnt" to rs.getInt("retry_cnt"),
-                "triggeredBy" to rs.getString("triggered_by_cd")
+                "triggeredBy" to rs.getString("triggered_by_cd"),
+                // 요청자(사번 또는 SYSTEM) — triggeredBy 는 경로 코드 그대로 둔다 (12 SYN-07 · 4.4)
+                "triggeredByUser" to rs.getString("triggered_by"),
+                // 실패 원인 — 내부 주소를 가린 값 (12 SYN-15 엑셀 열)
+                "remark" to SensitiveText.mask(rs.getString("remark")),
+                // 재실행 연결(V57) — 이 작업이 재실행이면 원 작업, 화면이 「재실행」 버튼을 그릴지 (SYN-02)
+                "retryOfJobId" to rs.getString("retry_of_job_id"),
+                "retryable" to rs.getBoolean("retryable")
             )
         }
     }
 
     /** 이관 작업 전체 건수 */
-    fun countJobs(from: LocalDate, to: LocalDate, srcTable: String?, state: String?): Long {
+    fun countJobs(
+        from: LocalDate, to: LocalDate, srcTable: String?, state: String?, runId: String? = null, includePending: Boolean = true
+    ): Long {
         val sql = StringBuilder(
             """
             SELECT count(*)
             FROM ax.tb_sync_job j
             INNER JOIN ax.tb_sync_map m ON m.map_id = j.map_id
-            WHERE coalesce(j.started_at, j.scheduled_at) >= :from
-              AND coalesce(j.started_at, j.scheduled_at) <  :toExclusive
+            $JOB_PERIOD_SQL
             """.trimIndent()
         )
 
-        val params = MapSqlParameterSource()
-            .addValue("from", from.atStartOfDay())
-            .addValue("toExclusive", to.plusDays(1).atStartOfDay())
+        val params = jobParams(from, to, includePending)
 
-        appendJobFilters(sql, params, srcTable, state)
+        appendJobFilters(sql, params, srcTable, state, runId)
 
         return jdbcTemplate.queryForObject(sql.toString(), params, Long::class.java) ?: 0L
     }
@@ -274,11 +372,17 @@ class SyncRepository(
         sql: StringBuilder,
         params: MapSqlParameterSource,
         srcTable: String?,
-        state: String?
+        state: String?,
+        runId: String? = null
     ) {
+        // 원본 테이블 — 대소문자 무시, 목록 응답처럼 스키마를 달고 와도(dbo.TB_X) 같은 결과 (12 SYN-08)
         if (!srcTable.isNullOrBlank()) {
-            sql.append(" AND m.src_table = :srcTable")
+            sql.append(" AND (upper(m.src_table) = upper(:srcTable) OR upper(m.src_schema || '.' || m.src_table) = upper(:srcTable))")
             params.addValue("srcTable", srcTable.trim())
+        }
+        runId?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            sql.append(" AND j.run_id = :runId")
+            params.addValue("runId", it)
         }
         if (!state.isNullOrBlank()) {
             sql.append(" AND j.state_cd = :state")
@@ -292,13 +396,14 @@ class SyncRepository(
     fun findJob(jobId: String): Map<String, Any?>? {
         val sql = """
             SELECT
-                j.job_id, j.map_id, j.sync_kind_cd, j.started_at, j.ended_at, j.duration_sec,
+                j.job_id, j.map_id, j.run_id, j.sync_kind_cd, j.started_at, j.ended_at, j.scheduled_at, j.duration_sec,
                 j.target_rows, j.ok_rows, j.ng_rows, j.state_cd, j.checksum_match,
-                j.retry_cnt, j.triggered_by_cd, j.triggered_by, j.remark,
+                j.retry_cnt, j.triggered_by_cd, j.triggered_by, u.user_nm AS triggered_by_nm, j.remark, j.retry_of_job_id,
                 m.src_db, m.src_schema, m.src_table, m.tgt_schema, m.tgt_table,
-                m.key_columns, m.cdc_column, m.schedule_desc, m.schedule_cron
+                m.key_columns, m.cdc_column, m.schedule_desc, m.schedule_cron, m.use_flg
             FROM ax.tb_sync_job j
             INNER JOIN ax.tb_sync_map m ON m.map_id = j.map_id
+            LEFT JOIN ax.tb_sys_user u ON u.user_id = j.triggered_by
             WHERE j.job_id = :jobId
         """.trimIndent()
 
@@ -306,9 +411,11 @@ class SyncRepository(
             mapOf(
                 "job" to mapOf(
                     "jobId" to rs.getString("job_id"),
+                    "runId" to rs.getString("run_id"),
                     "kind" to rs.getString("sync_kind_cd"),
                     "startedAt" to Rs.dateTime(rs, "started_at"),
                     "endedAt" to Rs.dateTime(rs, "ended_at"),
+                    "scheduledAt" to Rs.dateTime(rs, "scheduled_at"),
                     "duration" to Rs.intOrNull(rs, "duration_sec"),
                     "rows" to rs.getLong("target_rows"),
                     "okRows" to rs.getLong("ok_rows"),
@@ -317,7 +424,11 @@ class SyncRepository(
                     "checksumMatch" to Rs.boolOrNull(rs, "checksum_match"),
                     "retryCnt" to rs.getInt("retry_cnt"),
                     "triggeredBy" to rs.getString("triggered_by_cd"),
-                    "remark" to rs.getString("remark")
+                    // 요청자 사번(또는 SYSTEM)과 이름 — 사번이 아니면 이름은 null (12 SYN-07)
+                    "triggeredByUser" to rs.getString("triggered_by"),
+                    "triggeredByName" to rs.getString("triggered_by_nm"),
+                    "remark" to SensitiveText.mask(rs.getString("remark")),
+                    "retryOfJobId" to rs.getString("retry_of_job_id")
                 ),
                 "params" to mapOf(
                     "srcDb" to rs.getString("src_db"),
@@ -328,7 +439,8 @@ class SyncRepository(
                     "schedule" to rs.getString("schedule_desc"),
                     "cron" to rs.getString("schedule_cron")
                 ),
-                "mapId" to rs.getInt("map_id")
+                "mapId" to rs.getInt("map_id"),
+                "mapUseFlg" to rs.getString("use_flg")
             )
         }.firstOrNull()
     }
@@ -351,13 +463,89 @@ class SyncRepository(
             mapOf(
                 "rowNo" to rs.getInt("err_seq"),
                 "code" to rs.getString("err_code"),
-                "message" to rs.getString("err_msg"),
-                "rawData" to (rs.getString("payload") ?: rs.getString("src_key")),
+                "message" to SensitiveText.mask(rs.getString("err_msg")),
+                // 원본 키와 원본 행(jsonb) — 접속 문자열이 섞일 수 있어 가린 값 (12 SYN-07, Q12 결정 전)
+                "srcKey" to SensitiveText.mask(rs.getString("src_key")),
+                "payload" to SensitiveText.mask(rs.getString("payload")),
+                // 하위 호환 — 예전 합친 칸
+                "rawData" to SensitiveText.mask(rs.getString("payload") ?: rs.getString("src_key")),
                 "retriedAt" to Rs.dateTime(rs, "retried_at"),
                 "resolved" to rs.getBoolean("resolved")
             )
         }
     }
+
+    /** 재실행 판정에 쓰는 원 작업 정보 */
+    data class RetryTarget(val jobId: String, val mapId: Int, val state: String, val kind: String?, val mapUseFlg: String?)
+
+    /**
+     * 재실행할 원 작업을 **잠그고** 읽는다 (SYN-02). 같은 작업 재실행이 동시에 두 번 와도 한 요청만 예약을 만든다.
+     */
+    fun lockJobForRetry(jobId: String): RetryTarget? =
+        jdbcTemplate.query(
+            """
+            SELECT j.job_id, j.map_id, j.state_cd, j.sync_kind_cd, m.use_flg
+              FROM ax.tb_sync_job j JOIN ax.tb_sync_map m ON m.map_id = j.map_id
+             WHERE j.job_id = :jobId
+               FOR UPDATE OF j
+            """.trimIndent(),
+            MapSqlParameterSource("jobId", jobId)
+        ) { rs, _ ->
+            RetryTarget(rs.getString("job_id"), rs.getInt("map_id"), rs.getString("state_cd"),
+                rs.getString("sync_kind_cd"), rs.getString("use_flg"))
+        }.firstOrNull()
+
+    /** 원 작업의 진행 중(PENDING·RUNNING) 재실행 — 있으면 새로 예약하지 않는다 */
+    fun findActiveRetry(jobId: String): String? =
+        jdbcTemplate.query(
+            """
+            SELECT job_id FROM ax.tb_sync_job
+             WHERE retry_of_job_id = :jobId AND state_cd IN ('PENDING','RUNNING')
+             ORDER BY coalesce(started_at, scheduled_at) DESC LIMIT 1
+            """.trimIndent(),
+            MapSqlParameterSource("jobId", jobId)
+        ) { rs, _ -> rs.getString("job_id") }.firstOrNull()
+
+    /**
+     * 같은 매핑에서 원 작업 **이후** 정상 완료된 가장 최근 작업 — 재실행하지 않아도 데이터가 이미 맞을 수 있다는 근거.
+     * 없으면 null.
+     */
+    fun findSupersededBy(jobId: String): Map<String, Any?>? =
+        jdbcTemplate.query(
+            """
+            SELECT s.job_id, s.ended_at
+              FROM ax.tb_sync_job s JOIN ax.tb_sync_job f ON f.job_id = :jobId
+             WHERE s.map_id = f.map_id AND s.job_id <> f.job_id
+               AND s.state_cd IN ('DONE','RETRY_DONE')
+               AND coalesce(s.started_at, s.scheduled_at) > coalesce(f.started_at, f.scheduled_at)
+             ORDER BY s.ended_at DESC NULLS LAST LIMIT 1
+            """.trimIndent(),
+            MapSqlParameterSource("jobId", jobId)
+        ) { rs, _ -> mapOf<String, Any?>("jobId" to rs.getString("job_id"), "endedAt" to Rs.dateTime(rs, "ended_at")) }.firstOrNull()
+
+    /** 원 작업을 재실행한 작업들 — 최근 순 */
+    fun findRetriedBy(jobId: String): List<Map<String, Any?>> =
+        jdbcTemplate.query(
+            """
+            SELECT job_id, state_cd, started_at, ended_at FROM ax.tb_sync_job
+             WHERE retry_of_job_id = :jobId
+             ORDER BY coalesce(started_at, scheduled_at) DESC
+            """.trimIndent(),
+            MapSqlParameterSource("jobId", jobId)
+        ) { rs, _ -> mapOf<String, Any?>("jobId" to rs.getString("job_id"), "state" to rs.getString("state_cd"),
+            "startedAt" to Rs.dateTime(rs, "started_at"), "endedAt" to Rs.dateTime(rs, "ended_at")) }
+
+    /** 작업 오류 전체 건수 — 상세 errors 는 500건까지라 따로 센다 (12 SYN-07) */
+    fun countJobErrors(jobId: String): Long =
+        jdbcTemplate.queryForObject(
+            "SELECT count(*) FROM ax.tb_sync_job_error WHERE job_id = :jobId", MapSqlParameterSource("jobId", jobId), Long::class.java
+        ) ?: 0L
+
+    /** 작업 목록 기간 조건 — 기간 안 작업 + (includePending 이면) 기간과 무관한 대기 작업 (12 SYN-08) */
+    private fun jobParams(from: LocalDate, to: LocalDate, includePending: Boolean) = MapSqlParameterSource()
+        .addValue("from", from.atStartOfDay())
+        .addValue("toExclusive", to.plusDays(1).atStartOfDay())
+        .addValue("includePending", includePending)
 
     /**
      * 이관 작업을 재실행 등록한다. (No.229)
@@ -374,12 +562,12 @@ class SyncRepository(
             INSERT INTO ax.tb_sync_job (
                 job_id, map_id, sync_kind_cd, started_at, scheduled_at,
                 target_rows, ok_rows, ng_rows,
-                state_cd, retry_cnt, triggered_by_cd, triggered_by, remark
+                state_cd, retry_cnt, triggered_by_cd, triggered_by, remark, retry_of_job_id
             )
             SELECT
                 :newJobId, j.map_id, j.sync_kind_cd, NULL, now(), 0, 0, 0,
                 'PENDING', j.retry_cnt + 1, 'RETRY', :triggeredBy,
-                '작업 ' || j.job_id || ' 재실행'
+                '작업 ' || j.job_id || ' 재실행', j.job_id
             FROM ax.tb_sync_job j
             WHERE j.job_id = :sourceJobId
             RETURNING job_id
@@ -551,7 +739,9 @@ class SyncRepository(
                 )                                                                       AS max_retry_cnt,
                 (
                     SELECT c.cond_id FROM ax.tb_alm_cond c
-                     WHERE c.cond_nm ILIKE '%연동%' OR c.cond_nm ILIKE '%sync%'
+                      JOIN ax.tb_met_metric_std m ON m.metric_id = c.metric_id
+                     WHERE m.metric_cd IN ($SYNC_ALERT_METRICS) AND c.use_flg = 'Y'
+                     ORDER BY c.cond_id
                      LIMIT 1
                 )                                                                       AS fail_alert_cond_id
         """.trimIndent()
@@ -771,4 +961,56 @@ class SyncRepository(
         val sql = "SELECT count(*) FROM ax.tb_sync_schema_drift WHERE drift_id = :driftId"
         return (jdbcTemplate.queryForObject(sql, MapSqlParameterSource("driftId", driftId), Long::class.java) ?: 0L) > 0
     }
+
+    companion object {
+        /**
+         * 목록의 재실행 가능 여부 — 서비스의 `SyncService.retryVerdict` 와 같은 규칙이다(테스트로 묶음).
+         * 실패·중단 작업이고, 매핑이 사용 중이고, 진행 중이거나 완료된 재실행이 없을 때만.
+         */
+        const val RETRYABLE_SQL = """(j.state_cd IN ('FAIL','ABORTED') AND m.use_flg = 'Y'
+                AND NOT EXISTS (SELECT 1 FROM ax.tb_sync_job r
+                                 WHERE r.retry_of_job_id = j.job_id
+                                   AND r.state_cd IN ('PENDING','RUNNING','DONE','RETRY_DONE')))"""
+    }
+
+    /**
+     * 이관 실패 알림 현황 (12 SYN-04) — 이관 지표(V61: SYNC_FAIL_RATE · SYNC_STALE_MIN)를 쓰는 사용 중 발송 조건 수,
+     * 그 조건의 미확인 운영 알림 수, 마지막 알림 시각. 조건이 0 이면 화면은 「실패 알림 미설정」 을 띄운다.
+     */
+    fun findSyncAlertStats(): Map<String, Any?> =
+        jdbcTemplate.queryForObject(
+            """
+            WITH c AS (
+                SELECT c.cond_id FROM ax.tb_alm_cond c
+                  JOIN ax.tb_met_metric_std m ON m.metric_id = c.metric_id
+                 WHERE m.metric_cd IN ($SYNC_ALERT_METRICS) AND c.use_flg = 'Y'
+            )
+            SELECT (SELECT count(*) FROM c) AS cond_cnt,
+                   (SELECT count(*) FROM ax.tb_alm_alert a WHERE a.cond_id IN (SELECT cond_id FROM c)
+                       AND a.test_flg = 'N' AND a.ack_state_cd = 'OPEN') AS open_cnt,
+                   (SELECT max(a.occurred_at) FROM ax.tb_alm_alert a WHERE a.cond_id IN (SELECT cond_id FROM c)
+                       AND a.test_flg = 'N') AS last_at
+            """.trimIndent(),
+            MapSqlParameterSource()
+        ) { rs, _ ->
+            mapOf(
+                "condCnt" to rs.getLong("cond_cnt"),
+                "openAlertCnt" to rs.getLong("open_cnt"),
+                "lastAlertAt" to com.dwje.api.common.util.Rs.dateTime(rs, "last_at")
+            )
+        } ?: emptyMap()
 }
+
+/** 연동 상태 판정 재료 (SYN-03) — [SyncRepository.findHealthStats] */
+data class SyncHealthStats(
+    val lastRun: Map<String, Any?>?,
+    /** 최근 실행 상태(최신 순, 진행 중·건너뜀 제외) */
+    val recentRunStates: List<String>,
+    val todayFailRunCnt: Long,
+    val lastSuccessAt: String?,
+    /** 마지막 정상 이관 후 지난 분 — 정상 이관 기록이 없으면 null */
+    val staleMin: Long?,
+    val openFailJobCnt: Long,
+    val oldestOpenFailAt: String?,
+    val stalePendingCnt: Long
+)

@@ -3,8 +3,13 @@ package com.dwje.api.controller
 import com.dwje.api.common.response.ApiResponse
 import com.dwje.api.model.request.ConnectionTestRequest
 import com.dwje.api.model.request.DownloadLogRecordRequest
+import com.dwje.api.model.request.ListExportRequest
+import com.dwje.api.service.ListExportService
+import org.springframework.core.io.ByteArrayResource
+import org.springframework.http.ResponseEntity
 import com.dwje.api.model.request.SchemaDriftResolveRequest
 import com.dwje.api.model.request.SyncManualRequest
+import com.dwje.api.repository.DownloadLogRepository
 import com.dwje.api.service.DownloadLogService
 import com.dwje.api.service.SyncService
 import io.swagger.v3.oas.annotations.Operation
@@ -26,7 +31,8 @@ import org.springframework.web.bind.annotation.RestController
 @RequestMapping("/api/v1/download-logs")
 @Tag(name = "12. 시스템관리 - 운영")
 class DownloadLogController(
-    private val downloadLogService: DownloadLogService
+    private val downloadLogService: DownloadLogService,
+    private val listExportService: ListExportService
 ) {
 
     /** 다운로드 이력 요약 (No.222) */
@@ -34,9 +40,20 @@ class DownloadLogController(
     @GetMapping("/summary")
     fun summary(
         @RequestParam(required = false) from: String?,
-        @RequestParam(required = false) to: String?
+        @RequestParam(required = false) to: String?,
+        @RequestParam(required = false) reportId: String?,
+        @RequestParam(required = false) menuId: String?,
+        @RequestParam(required = false) deptId: String?,
+        @RequestParam(required = false) format: String?,
+        @RequestParam(required = false) scopeCd: String?,
+        @RequestParam(required = false) keyword: String?,
+        @RequestParam(required = false) blindOnly: Boolean?,
+        @RequestParam(required = false) empNo: String?,
+        @RequestParam(required = false) origin: String?
     ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(downloadLogService.getSummary(from, to))
+        // 목록과 같은 조건 — 카드 총 건수 = 목록 meta.total (10 DLG-06)
+        ApiResponse.ok(downloadLogService.getSummary(from, to,
+            DownloadLogRepository.LogFilter(reportId, menuId, deptId, format, scopeCd, keyword, blindOnly ?: false, empNo = empNo, origin = origin)))
 
     /** 보존 정책 조회 (No.225) */
     @Operation(summary = "보존 정책 조회", description = "다운로드 이력 보존 연수와 보관 대상 건수를 반환한다.")
@@ -45,20 +62,42 @@ class DownloadLogController(
         ApiResponse.ok(downloadLogService.getRetentionPolicy())
 
     /** 다운로드 이력 조회 (No.223) */
-    @Operation(summary = "다운로드 이력 조회", description = "기간·보고서·부서·형식별 다운로드 이력을 조회한다.")
+    @Operation(summary = "다운로드 이력 조회", description = "기간·화면·부서·형식·범위별 다운로드 이력을 조회한다.")
     @GetMapping
     fun logs(
         @RequestParam(required = false) from: String?,
         @RequestParam(required = false) to: String?,
-        @RequestParam(required = false) reportId: String?,
-        @Parameter(description = "부서명") @RequestParam(required = false) deptId: String?,
-        @Parameter(description = "형식 — XLS|CSV|PDF") @RequestParam(required = false) format: String?,
+        @Parameter(description = "보고서 정의 ID (호환)") @RequestParam(required = false) reportId: String?,
+        @Parameter(description = "화면 ID(menu_id)") @RequestParam(required = false) menuId: String?,
+        @Parameter(description = "부서 ID(숫자). 숫자가 아니면 부서명") @RequestParam(required = false) deptId: String?,
+        @Parameter(description = "형식 — XLS|XLSX|CSV|PDF|PNG|JSONL") @RequestParam(required = false) format: String?,
+        @Parameter(description = "범위 — VIEW|ALL|UNKNOWN") @RequestParam(required = false) scopeCd: String?,
+        @Parameter(description = "사번·이름·부서·보고서·화면·조회 조건·파일명 검색어") @RequestParam(required = false) keyword: String?,
+        @Parameter(description = "비공개 칸이 있는 기록만") @RequestParam(required = false) blindOnly: Boolean?,
+        @Parameter(description = "사번(정확 일치)") @RequestParam(required = false) empNo: String?,
+        @Parameter(description = "생성 경로 — CLIENT|SERVER|UNKNOWN") @RequestParam(required = false) origin: String?,
         @RequestParam(required = false) page: Int?,
         @RequestParam(required = false) size: Int?
     ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta) = downloadLogService.getLogs(from, to, reportId, deptId, format, page, size)
+        val (rows, meta) = downloadLogService.getLogs(
+            from, to,
+            DownloadLogRepository.LogFilter(reportId, menuId, deptId, format, scopeCd, keyword, blindOnly ?: false, empNo = empNo, origin = origin),
+            page, size
+        )
         return ApiResponse.page(mapOf("items" to rows), meta)
     }
+
+    /** 다운로드 이력 전체 내려받기 — 서버 생성 xlsx (공통 CMN-07). {dlId} 보다 먼저 선언한다 */
+    @Operation(summary = "다운로드 이력 전체 내려받기", description = "다운로드 이력 전체를 xlsx 로 만든다(scope=ALL 만, 기간·조건 무관, 상한 50,000건 — 넘으면 X-Export-Truncated·X-Export-Total 헤더).")
+    @PostMapping("/export")
+    fun export(@Valid @RequestBody(required = false) request: ListExportRequest?): ResponseEntity<ByteArrayResource> =
+        listExportService.downloadLogs(request)
+
+    /** 다운로드 이력 상세 */
+    @Operation(summary = "다운로드 이력 상세", description = "목록 행 + 생성 조건(params)·파일명·크기·생성 경로·항목별 비공개 칸(blindFields).")
+    @GetMapping("/{dlId}")
+    fun log(@PathVariable dlId: Long): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(downloadLogService.getLog(dlId))
 
     /**
      * 다운로드 이력 기록 (No.224)
@@ -67,22 +106,12 @@ class DownloadLogController(
      */
     @Operation(
         summary = "다운로드 이력 기록",
-        description = "클라이언트 측 내려받기 이력을 기록한다. " +
-            "받는 키는 reportId · reportNm · menuId · format · scope · rowCnt · blindCnt 이며 그 외 키는 400."
+        description = "클라이언트 측 내려받기 이력을 기록한다. menuId 화면의 조회 권한이 필요하다. 기록에 실패하면 500 이다(화면은 기록 뒤 파일을 저장). " +
+            "받는 키는 reportId · reportNm · menuId · format · scope · scopeCd · condSummary · rowCnt · blindCnt · params · fileSize 이며 그 외 키는 400."
     )
     @PostMapping
     fun record(@Valid @RequestBody request: DownloadLogRecordRequest): ApiResponse<Map<String, Any?>> {
-        val logId = downloadLogService.record(
-            reportId = request.reportId,
-            reportNm = request.reportNm?.takeIf { it.isNotBlank() } ?: "보고서",
-            menuId = request.menuId,
-            format = request.format?.takeIf { it.isNotBlank() } ?: "xls",
-            scope = request.scope,
-            rowCnt = request.rowCnt ?: 0,
-            blindCnt = request.blindCnt ?: 0,
-            params = request.params,
-            fileSize = request.fileSize
-        )
+        val logId = downloadLogService.recordFromClient(request)
         return ApiResponse.ok(mapOf("logId" to logId), "다운로드 이력이 기록되었습니다.")
     }
 }
@@ -96,8 +125,15 @@ class DownloadLogController(
 @RequestMapping("/api/v1/sync")
 @Tag(name = "12. 시스템관리 - 운영")
 class SyncController(
-    private val syncService: SyncService
+    private val syncService: SyncService,
+    private val listExportService: ListExportService
 ) {
+
+    /** 데이터 연동 전체 내려받기 — target JOBS|RUNS|DRIFTS (공통 CMN-07) */
+    @Operation(summary = "데이터 연동 전체 내려받기", description = "이관 작업(JOBS)·실행(RUNS)·스키마 드리프트(DRIFTS)를 xlsx 로 만든다(상한 10,000건).")
+    @PostMapping("/export")
+    fun export(@Valid @RequestBody(required = false) request: ListExportRequest?): ResponseEntity<ByteArrayResource> =
+        listExportService.sync(request)
 
     /** 연동 요약 (No.226) */
     @Operation(summary = "연동 요약", description = "당일 이관 건수·실패 건수·평균 소요 시간을 반환한다.")
@@ -135,12 +171,14 @@ class SyncController(
         @RequestParam(required = false) to: String?,
         @Parameter(description = "결과 — SYNC_RUN_STATE (DONE|PARTIAL|FAIL|PREFLIGHT_FAIL|NO_WORK|SKIPPED|ABORTED|RUNNING)")
         @RequestParam(required = false) state: String?,
-        @Parameter(description = "모드 — SYNC_RUN_MODE (SCHEDULED|MANUAL|QUEUE|RETRY)")
+        @Parameter(description = "모드 — SYNC_RUN_MODE (SCHEDULED|MANUAL|QUEUE|RETRY|GROUPWARE)")
         @RequestParam(required = false) mode: String?,
+        @Parameter(description = "실행 구분 — MES(그룹웨어 외 전부) | GROUPWARE. 없으면 전체")
+        @RequestParam(required = false) source: String?,
         @RequestParam(required = false) page: Int?,
         @RequestParam(required = false) size: Int?
     ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta) = syncService.getRuns(from, to, state, mode, page, size)
+        val (rows, meta) = syncService.getRuns(from, to, state, mode, page, size, source)
         return ApiResponse.page(mapOf("items" to rows), meta)
     }
 
@@ -150,13 +188,17 @@ class SyncController(
     fun jobs(
         @RequestParam(required = false) from: String?,
         @RequestParam(required = false) to: String?,
+        @Parameter(description = "원본 테이블 — 대소문자 무시, 스키마를 붙여도(dbo.TB_X) 된다")
         @RequestParam(required = false) srcTable: String?,
-        @Parameter(description = "상태 — DONE|RUNNING|FAIL|RETRY_DONE|ABORTED")
+        @Parameter(description = "상태 — DONE|RUNNING|FAIL|RETRY_DONE|ABORTED|PENDING")
         @RequestParam(required = false) state: String?,
+        @Parameter(description = "소속 실행 ID") @RequestParam(required = false) runId: String?,
+        @Parameter(description = "기간 밖 대기(PENDING) 작업도 넣을지 — 기본 true")
+        @RequestParam(required = false) includePending: Boolean?,
         @RequestParam(required = false) page: Int?,
         @RequestParam(required = false) size: Int?
     ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta) = syncService.getJobs(from, to, srcTable, state, page, size)
+        val (rows, meta) = syncService.getJobs(from, to, srcTable, state, page, size, runId, includePending ?: true)
         return ApiResponse.page(mapOf("items" to rows), meta)
     }
 

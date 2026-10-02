@@ -46,6 +46,10 @@ class DailyReportService(
 
     private val log = LoggerFactory.getLogger(javaClass)
 
+    /** 감사 기록기 — 서비스를 직접 만드는 단위 시험에서는 없다 */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    var auditLogService: AuditLogService? = null
+
     /**
      * 보고서 양식 본문을 조회한다. (제품 × 공정)
      *
@@ -180,6 +184,10 @@ class DailyReportService(
 
         dailyDecisionRepository.upsertRows(target, parsed, principal.userId)
         log.info("일일 생산현황 보고 회의 결과 저장 : targetDate={} 제품={}종", target, parsed.size)
+        auditLogService?.recordAfterCommit(
+            com.dwje.api.common.util.AuditType.CONFIG_CHANGE, MenuId.PROD_DAILY,
+            "일일 보고 저장 [${target.format(DateUtils.DATE)}]", "${parsed.size}행"
+        )
 
         return mapOf("targetDate" to target.format(DateUtils.DATE), "savedCnt" to parsed.size)
     }

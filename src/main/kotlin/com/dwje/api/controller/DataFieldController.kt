@@ -3,6 +3,7 @@ package com.dwje.api.controller
 import com.dwje.api.common.response.ApiResponse
 import com.dwje.api.model.request.DataFieldApplyRequest
 import com.dwje.api.model.request.DataFieldAttrRequest
+import com.dwje.api.model.request.DataFieldMappingRequest
 import com.dwje.api.model.request.DataFieldSaveRequest
 import com.dwje.api.service.DataFieldService
 import io.swagger.v3.oas.annotations.Operation
@@ -28,8 +29,21 @@ import org.springframework.web.bind.annotation.RestController
 @RequestMapping("/api/v1/system/data-fields")
 @Tag(name = "08. 시스템관리 - 계정·권한")
 class DataFieldController(
-    private val dataFieldService: DataFieldService
+    private val dataFieldService: DataFieldService,
+    private val appProperties: com.dwje.api.config.AppProperties
 ) {
+
+    /** 경로가 `/{fieldKey}` 보다 구체적이라 먼저 맞는다(Spring 은 리터럴 경로를 우선한다) */
+    @Operation(
+        summary = "화면 열 매핑 일괄 저장",
+        description = "새 종류 만들기·열 옮기기·풀기·적용 켜기를 한 트랜잭션으로 저장한다. 하나라도 틀리면 아무것도 바뀌지 않는다(04 DTP-02)."
+    )
+    @PutMapping("/mapping")
+    fun saveMapping(@Valid @RequestBody request: DataFieldMappingRequest): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(
+            dataFieldService.saveMapping(request, appProperties.unassignedDeptName),
+            "${request.moves.orEmpty().size}개 열을 저장했습니다."
+        )
 
     @Operation(summary = "데이터 항목 등록", description = "항목을 미적용(applyFlg='N') 상태로 등록한다. 부서 권한을 채운 뒤 apply 로 켠다.")
     @PostMapping
@@ -59,8 +73,8 @@ class DataFieldController(
     fun removeAttr(@PathVariable fieldKey: String, @PathVariable attrName: String): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(dataFieldService.removeAttr(fieldKey, attrName), "응답 필드명이 해제되었습니다.")
 
-    @Operation(summary = "데이터 항목 적용 스위치", description = "on=true 면 마스킹 적용, false 면 미적용. 화면 반영은 재로그인 때.")
+    @Operation(summary = "데이터 항목 적용 스위치", description = "on=true 면 마스킹 적용, false 면 미적용. 서버 응답에는 다음 조회부터 적용되고, 다른 사용자의 화면 「비공개」 표시는 그 사용자가 화면을 다시 열어야 나온다. 기본 7종은 끌 수 없다(409).")
     @PatchMapping("/{fieldKey}/apply")
     fun apply(@PathVariable fieldKey: String, @Valid @RequestBody request: DataFieldApplyRequest): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(dataFieldService.setApply(fieldKey, request.on), if (request.on) "항목이 적용되었습니다. 재로그인 때 반영됩니다." else "항목 적용이 해제되었습니다.")
+        ApiResponse.ok(dataFieldService.setApply(fieldKey, request.on), if (request.on) "적용했습니다. 서버 응답에는 다음 조회부터 적용됩니다." else "적용을 해제했습니다. 서버 응답에는 다음 조회부터 적용됩니다.")
 }

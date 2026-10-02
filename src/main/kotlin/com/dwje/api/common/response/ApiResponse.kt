@@ -66,6 +66,16 @@ data class ApiResponse<T>(
                 success = false, code = code, message = message, data = null,
                 error = ApiError(code = code, message = message, field = field)
             )
+
+        /**
+         * 실패 응답 + `data` — 화면이 실패 뒤 다음 동작을 정해야 하는 경우(계정 잠금의 해제 안내 등).
+         * `data` 가 null 이면 [error] 와 같은 모양이다.
+         */
+        fun errorWithData(code: String, message: String, field: String? = null, data: Any? = null): ApiResponse<Any?> =
+            ApiResponse(
+                success = false, code = code, message = message, data = data,
+                error = ApiError(code = code, message = message, field = field)
+            )
     }
 }
 
@@ -89,17 +99,25 @@ data class ApiError(
  * @param page  현재 페이지 (1-base)
  * @param size  페이지당 건수
  * @param total 전체 건수
+ * @param truncated 전량 조회가 상한에서 잘렸는지 (잘렸을 때만 true)
  */
+@JsonInclude(JsonInclude.Include.NON_NULL)
 data class PageMeta(
     val page: Int,
     val size: Int,
-    val total: Long
+    val total: Long,
+    /** 전량 조회(`size=0`)가 서버 상한에서 잘렸으면 true — 평소에는 응답에 나오지 않는다(공통 D-29) */
+    val truncated: Boolean? = null
 ) {
     /** 전체 페이지 수 */
     val totalPages: Int get() = if (size <= 0) 0 else ((total + size - 1) / size).toInt()
 
     companion object {
         fun of(page: Int, size: Int, total: Long): PageMeta = PageMeta(page, size, total)
+
+        /** 전량 조회(`size=0`)를 [cap] 건에서 자른 결과 — 잘렸으면 truncated=true */
+        fun capped(total: Long, cap: Int, shown: Int): PageMeta =
+            PageMeta(1, shown, total, truncated = if (total > cap) true else null)
 
         /**
          * 전량 조회(`size=0`) 응답 메타 — 전체가 한 쪽에 담긴다.

@@ -3,8 +3,8 @@ package com.dwje.api.common.mail
 import com.dwje.api.config.EmailVerificationProperties
 import org.slf4j.LoggerFactory
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
-import org.springframework.mail.SimpleMailMessage
 import org.springframework.mail.javamail.JavaMailSender
+import org.springframework.mail.javamail.MimeMessageHelper
 import org.springframework.stereotype.Component
 
 /**
@@ -30,20 +30,31 @@ interface VerificationMailSender {
     fun subjectOf(purpose: String): String = when (purpose) {
         "SIGNUP" -> "[덕우전자 AX] 회원가입 인증 코드"
         "PASSWORD_RESET" -> "[덕우전자 AX] 비밀번호 찾기 인증 코드"
+        "ACCOUNT_UNLOCK" -> "[덕우전자 AX] 계정 잠금 해제 인증 코드"
         else -> "[덕우전자 AX] 이메일 인증 코드"
     }
 
     /** 목적별 메일 본문 */
     fun bodyOf(purpose: String, code: String, expireMinutes: Int): String {
-        val action = if (purpose == "PASSWORD_RESET") "비밀번호 재설정" else "회원가입"
+        val action = when (purpose) {
+            "PASSWORD_RESET" -> "비밀번호 재설정"
+            "ACCOUNT_UNLOCK" -> "계정 잠금 해제"
+            else -> "회원가입"
+        }
+        // 잠금 해제 메일은 대입 시도로 잠겼을 수 있음을 알린다(09 AUD-16).
+        val closing = if (purpose == "ACCOUNT_UNLOCK") {
+            "본인이 로그인을 시도하지 않았는데 이 메일을 받았다면 누군가 비밀번호를 대입했을 수 있습니다. 전산팀에 알려 주세요."
+        } else {
+            "본인이 요청하지 않았다면 이 메일을 무시하시고 전산팀에 알려 주세요."
+        }
         return """
-            덕우전자 AX 시스템 $action 인증 코드입니다.
-
-                인증 코드 : $code
-
-            이 코드는 ${expireMinutes}분간 유효합니다.
-            본인이 요청하지 않았다면 이 메일을 무시하시고 전산팀에 알려 주세요.
-        """.trimIndent()
+            |덕우전자 AX 시스템 $action 인증 코드입니다.
+            |
+            |    인증 코드 : $code
+            |
+            |이 코드는 ${expireMinutes}분간 유효합니다.
+            |$closing
+        """.trimMargin()
     }
 }
 
@@ -94,8 +105,10 @@ class SmtpVerificationMailSender(
     private val log = LoggerFactory.getLogger(javaClass)
 
     override fun sendVerificationCode(to: String, purpose: String, code: String, expireMinutes: Int) {
-        val message = SimpleMailMessage().apply {
-            setFrom(props.fromAddress)
+        // 표시명(「덕우전자 AX」)이 한글이라 MIME 으로 UTF-8 인코딩해 보낸다 (R-17)
+        val message = mailSender.createMimeMessage()
+        MimeMessageHelper(message, false, "UTF-8").apply {
+            setFrom(props.fromAddress, props.fromName)
             setTo(to)
             setSubject(subjectOf(purpose))
             setText(bodyOf(purpose, code, expireMinutes))

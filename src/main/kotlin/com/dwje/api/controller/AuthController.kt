@@ -1,6 +1,7 @@
 package com.dwje.api.controller
 
 import com.dwje.api.common.response.ApiResponse
+import com.dwje.api.common.util.ClientIpResolver
 import com.dwje.api.model.request.EmailCodeSendRequest
 import com.dwje.api.model.request.EmailCodeVerifyRequest
 import com.dwje.api.model.request.LoginRequest
@@ -10,6 +11,9 @@ import com.dwje.api.model.request.PasswordResetRequest
 import com.dwje.api.model.request.RefreshTokenRequest
 import com.dwje.api.model.request.SignupRequest
 import com.dwje.api.model.request.SwitchAccountRequest
+import com.dwje.api.model.request.UnlockCodeRequest
+import com.dwje.api.model.request.UnlockCompleteRequest
+import com.dwje.api.model.request.UnlockVerifyRequest
 import com.dwje.api.model.response.LoginResponse
 import com.dwje.api.model.response.MenuTreeResponse
 import com.dwje.api.model.response.MyInfoResponse
@@ -39,7 +43,8 @@ import org.springframework.web.bind.annotation.RestController
 @Tag(name = "01. 인증·공통")
 class AuthController(
     private val authService: AuthService,
-    private val emailVerificationService: EmailVerificationService
+    private val emailVerificationService: EmailVerificationService,
+    private val clientIpResolver: ClientIpResolver = ClientIpResolver()
 ) {
 
     /**
@@ -57,7 +62,7 @@ class AuthController(
         @Valid @RequestBody request: LoginRequest,
         httpRequest: HttpServletRequest
     ): ApiResponse<LoginResponse> {
-        // 1. 접속 정보 추출 — 프록시 경유 시 X-Forwarded-For 우선
+        // 1. 접속 정보 추출 — 신뢰 프록시를 거친 요청만 프록시 헤더를 본다(AUD-03)
         val ipAddr = clientIp(httpRequest)
         val userAgent = httpRequest.getHeader("User-Agent")
 
@@ -138,11 +143,14 @@ class AuthController(
         description = "입력한 이메일로 인증 코드를 보낸다. 재발송 대기·일일 상한이 적용된다."
     )
     @PostMapping("/email/send-code")
-    fun sendEmailCode(@Valid @RequestBody request: EmailCodeSendRequest): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(
+    fun sendEmailCode(@Valid @RequestBody request: EmailCodeSendRequest): ApiResponse<Map<String, Any?>> {
+        // 잠금 해제 목적은 대상 계정이 묶인 요청만 만든다 — 이 공개 경로로는 받지 않는다(09 AUD-16)
+        emailVerificationService.requirePublicPurpose(request.purpose)
+        return ApiResponse.ok(
             emailVerificationService.sendCode(request.email, request.purpose),
             "인증 코드를 보냈습니다. 메일함을 확인해 주세요."
         )
+    }
 
     /**
      * 이메일 인증 코드 검증
@@ -157,11 +165,43 @@ class AuthController(
         description = "인증 코드를 확인하고 1회용 verificationToken 을 발급한다."
     )
     @PostMapping("/email/verify-code")
-    fun verifyEmailCode(@Valid @RequestBody request: EmailCodeVerifyRequest): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(
+    fun verifyEmailCode(@Valid @RequestBody request: EmailCodeVerifyRequest): ApiResponse<Map<String, Any?>> {
+        emailVerificationService.requirePublicPurpose(request.purpose)
+        return ApiResponse.ok(
             emailVerificationService.verifyCode(request.email, request.purpose, request.code),
             "이메일 인증이 완료되었습니다."
         )
+    }
+
+    // =================================================================================
+    // 계정 잠금 해제 — 로그인 전 경로 (결정 R-02, 09 기획서 AUD-16)
+    // =================================================================================
+
+    /**
+     * 잠금 해제 1단계 — 잠긴 계정이면 등록 이메일로 인증 코드를 보낸다.
+     *
+     * 계정 열거를 막기 위해 대상 여부와 무관하게 같은 응답을 준다.
+     * 이메일 잠금 해제가 꺼져 있으면 503 E-AUTH-007 이다(관리자 잠금 해제만 가능).
+     */
+    @Operation(
+        summary = "계정 잠금 해제 — 인증 코드 요청",
+        description = "잠긴 계정이면 등록된 이메일로 인증 코드를 보낸다. 대상 여부는 응답으로 알려 주지 않는다."
+    )
+    @PostMapping("/unlock/request")
+    fun requestUnlock(@Valid @RequestBody request: UnlockCodeRequest): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(authService.requestUnlock(request.empNo))
+
+    /** 잠금 해제 2단계 — 사번 · 인증 코드로 1회용 토큰을 받는다. */
+    @Operation(summary = "계정 잠금 해제 — 인증 코드 확인", description = "사번과 인증 코드를 확인하고 1회용 verificationToken 을 발급한다.")
+    @PostMapping("/unlock/verify")
+    fun verifyUnlock(@Valid @RequestBody request: UnlockVerifyRequest): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(authService.verifyUnlock(request), "이메일 인증이 완료되었습니다.")
+
+    /** 잠금 해제 3단계 — 새 비밀번호를 정하고 잠금을 푼다. 새 비밀번호는 필수다. */
+    @Operation(summary = "계정 잠금 해제 — 완료", description = "인증 토큰으로 본인 확인 후 새 비밀번호를 정하고 계정 잠금을 해제한다.")
+    @PostMapping("/unlock/complete")
+    fun completeUnlock(@Valid @RequestBody request: UnlockCompleteRequest): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(authService.completeUnlock(request), "잠금이 해제되었습니다.")
 
     // =================================================================================
     // 비밀번호 찾기
@@ -248,14 +288,8 @@ class AuthController(
     fun changePassword(@Valid @RequestBody request: PasswordChangeRequest): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(authService.changePassword(request), "비밀번호가 변경되었습니다.")
 
-    /**
-     * 프록시/로드밸런서를 경유한 실제 클라이언트 IP 를 추출한다.
-     */
-    private fun clientIp(request: HttpServletRequest): String? {
-        val forwarded = request.getHeader("X-Forwarded-For")
-        if (!forwarded.isNullOrBlank()) return forwarded.split(",").first().trim()
-        return request.remoteAddr
-    }
+    /** 실제 클라이언트 IP — 판정 규칙은 [ClientIpResolver] 한 곳에 있다(AUD-03) */
+    private fun clientIp(request: HttpServletRequest): String? = clientIpResolver.resolve(request)
 }
 
 /**

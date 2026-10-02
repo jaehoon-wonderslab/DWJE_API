@@ -2,7 +2,9 @@ package com.dwje.api.controller
 
 import com.dwje.api.common.response.ApiResponse
 import com.dwje.api.common.util.MenuId
-import com.dwje.api.model.request.ExportFormatRequest
+import com.dwje.api.common.util.ReportFormat
+import com.dwje.api.model.request.AiReviewRequest
+import com.dwje.api.model.request.TrainsetExportRequest
 import com.dwje.api.service.AiAdminService
 import com.dwje.api.service.DownloadLogService
 import com.dwje.api.service.ExportService
@@ -15,6 +17,7 @@ import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
+import org.springframework.web.bind.annotation.PutMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RequestParam
@@ -33,7 +36,8 @@ import org.springframework.web.bind.annotation.RestController
 class AiAdminController(
     private val aiAdminService: AiAdminService,
     private val exportService: ExportService,
-    private val downloadLogService: DownloadLogService
+    private val downloadLogService: DownloadLogService,
+    private val listExportService: com.dwje.api.service.ListExportService
 ) {
 
     // =================================================================================
@@ -46,31 +50,96 @@ class AiAdminController(
     fun historySummary(
         @RequestParam(required = false) from: String?,
         @RequestParam(required = false) to: String?,
-        @Parameter(description = "부서명") @RequestParam(required = false) userGroup: String?
+        @Parameter(description = "부서명") @RequestParam(required = false) userGroup: String?,
+        @Parameter(description = "질문 검색어(대소문자 무시)") @RequestParam(required = false) keyword: String?,
+        @Parameter(description = "질의자 평가 — USEFUL|REASK|BAD|NONE") @RequestParam(required = false) rating: String?,
+        @Parameter(description = "관리자 검토 — USEFUL|REASK|BAD|NONE") @RequestParam(required = false) review: String?,
+        @Parameter(description = "응답 여부 — Y|N") @RequestParam(required = false) answered: String?,
+        @Parameter(description = "질의자 사번(쓰기 권한자만)") @RequestParam(required = false) empNo: String?
     ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(aiAdminService.getChatHistorySummary(from, to, userGroup))
+        ApiResponse.ok(aiAdminService.getChatHistorySummary(from, to, userGroup, AiAdminService.HistoryCond(keyword, rating, review, answered, empNo)))
 
-    /** 학습데이터 내보내기 (No.189). {messageId} 매핑보다 먼저 선언한다. */
-    @Operation(summary = "학습데이터 내보내기", description = "질의·응답 이력을 JSONL 학습 샘플로 내려받는다.")
+    /** 학습데이터 내보내기 (No.189, 08 CHH-03). {messageId} 매핑보다 먼저 선언한다. */
+    @Operation(
+        summary = "학습데이터 내보내기",
+        description = "질의·응답 이력을 JSONL 학습 샘플로 내려받는다. 쓰기 권한 필요. 본문 {from, to, ratingFilter(USEFUL|REASK|BAD|ALL, 기본 USEFUL), " +
+            "source(REVIEW_OR_USER|REVIEW|USER, 기본 REVIEW_OR_USER), format}. 쿼리 ratingFilter 도 받는다(본문 우선). 응답 헤더 X-Sample-Count = 샘플 수, 0건이면 404."
+    )
     @PostMapping("/chat/history/export-trainset")
     fun exportTrainset(
-        @Valid @RequestBody(required = false) request: ExportFormatRequest?,
-        @Parameter(description = "평가 필터 — USEFUL|BAD|REASK") @RequestParam(required = false) ratingFilter: String?
+        @Valid @RequestBody(required = false) request: TrainsetExportRequest?,
+        @Parameter(description = "평가 필터 — USEFUL|REASK|BAD|ALL") @RequestParam(required = false) ratingFilter: String?
     ): ResponseEntity<ByteArrayResource> {
-        val lines = aiAdminService.getTrainsetLines(request?.from, request?.to, ratingFilter)
+        val result = aiAdminService.getTrainsetLines(request?.from, request?.to, request?.ratingFilter ?: ratingFilter, request?.source)
+        val fileName = "trainset_${result.from}_${result.to}_${exportService.timestamp()}"
+        val file = exportService.jsonl(fileName, result.lines)
 
         downloadLogService.record(
             reportId = null,
             reportNm = "AI 학습데이터셋",
             menuId = MenuId.CHAT_HISTORY,
-            format = "jsonl",
-            scope = "from=${request?.from}, to=${request?.to}, rating=${ratingFilter ?: "전체"}",
-            rowCnt = lines.size,
-            blindCnt = 0
+            format = ReportFormat.JSONL,
+            scope = "from=${result.from}, to=${result.to}, rating=${result.rating}, source=${result.source}",
+            rowCnt = result.lines.size,
+            blindCnt = result.blindCnt,
+            fileNm = "$fileName.jsonl",
+            fileSize = file.body?.contentLength()
         )
 
-        return exportService.jsonl("trainset_${exportService.timestamp()}", lines)
+        return ResponseEntity.status(file.statusCode).headers(file.headers)
+            .header("X-Sample-Count", result.lines.size.toString()).body(file.body)
     }
+
+    /** 세션 목록 (08 CHH-18) — {messageId} 매핑보다 먼저 선언한다 */
+    @Operation(
+        summary = "질의 세션 목록",
+        description = "질의 이력을 세션(대화) 단위로 묶어 최근 순으로 보여 준다. 기간 92일 이내. empNo 는 쓰기 권한자만 쓴다. " +
+            "세션이 없는 질의는 sessionKey=chat-{messageId} 한 건짜리 세션이다. hiddenCnt = 열람자에게 응답이 가려지는 질의 수."
+    )
+    @GetMapping("/chat/history/sessions")
+    fun sessions(
+        @RequestParam(required = false) from: String?,
+        @RequestParam(required = false) to: String?,
+        @Parameter(description = "부서명") @RequestParam(required = false) userGroup: String?,
+        @Parameter(description = "질의자 사번(쓰기 권한자만)") @RequestParam(required = false) empNo: String?,
+        @Parameter(description = "세션 안 질문 검색어") @RequestParam(required = false) keyword: String?,
+        @Parameter(description = "이 평가가 있는 세션 — USEFUL|REASK|BAD|NONE") @RequestParam(required = false) rating: String?,
+        @Parameter(description = "이 검토가 있는 세션 — USEFUL|REASK|BAD|NONE") @RequestParam(required = false) review: String?,
+        @Parameter(description = "응답 여부 — Y|N (그런 질의가 있는 세션)") @RequestParam(required = false) answered: String?,
+        @RequestParam(required = false) page: Int?,
+        @RequestParam(required = false) size: Int?
+    ): ApiResponse<Map<String, Any?>> {
+        val (rows, meta) = aiAdminService.getChatSessions(from, to, userGroup, empNo, keyword, page, size,
+            cond = AiAdminService.HistoryCond(rating = rating, review = review, answered = answered))
+        return ApiResponse.page(mapOf("items" to rows), meta)
+    }
+
+    /** 세션 상세 (08 CHH-18) */
+    @Operation(summary = "질의 세션 상세", description = "세션 하나의 질의·응답을 시간순으로 보여 준다. 열람자 권한으로 볼 수 없는 응답은 answerHidden 으로 가린다.")
+    @GetMapping("/chat/history/sessions/{sessionKey}")
+    fun sessionDetail(@PathVariable sessionKey: String): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(aiAdminService.getChatSession(sessionKey))
+
+    /** 관리자 검토 저장 (08 CHH-04) — 쓰기 권한 */
+    @Operation(summary = "질의 검토 저장", description = "관리자가 응답을 USEFUL·REASK·BAD 로 검토한다. 질의자 평가와 따로 저장한다. 쓰기 권한 필요.")
+    @PutMapping("/chat/history/{messageId}/review")
+    fun review(@PathVariable messageId: Long, @Valid @RequestBody request: AiReviewRequest): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(aiAdminService.saveReview(messageId, request.reviewCd, request.comment), "검토 결과를 저장했습니다.")
+
+    /** 질의 이력 부서 선택지 (08 WEB 계약) */
+    @Operation(summary = "질의 이력 부서 목록", description = "기간 안 질의의 부서별 건수. 화면의 부서 선택지.")
+    @GetMapping("/chat/history/groups")
+    fun historyGroups(
+        @RequestParam(required = false) from: String?,
+        @RequestParam(required = false) to: String?
+    ): ApiResponse<Map<String, Any?>> = ApiResponse.ok(aiAdminService.getChatHistoryGroups(from, to))
+
+    /** 질의 이력 전체 내려받기 — view QUERY|SESSION (공통 CMN-07, 조회 권한) */
+    @Operation(summary = "질의 이력 전체 내려받기", description = "질의 단위(QUERY, 별칭 MESSAGE) 또는 세션 단위(SESSION)로 xlsx 를 만든다. 범위는 전체(ALL)만 — 기간·화면 조건과 무관, 최근 순 상한 10,000건. 가린 응답은 「비공개」.")
+    @PostMapping("/chat/history/export")
+    fun historyExport(
+        @Valid @RequestBody(required = false) request: com.dwje.api.model.request.ListExportRequest?
+    ): ResponseEntity<ByteArrayResource> = listExportService.chatHistory(request)
 
     /** 질의 이력 조회 (No.187) */
     @Operation(summary = "질의 이력 조회", description = "기간·부서별 질의 이력을 조회한다.")
@@ -79,11 +148,17 @@ class AiAdminController(
         @RequestParam(required = false) from: String?,
         @RequestParam(required = false) to: String?,
         @RequestParam(required = false) userGroup: String?,
+        @Parameter(description = "질문 검색어(대소문자 무시)") @RequestParam(required = false) keyword: String?,
+        @Parameter(description = "질의자 평가 — USEFUL|REASK|BAD|NONE") @RequestParam(required = false) rating: String?,
+        @Parameter(description = "관리자 검토 — USEFUL|REASK|BAD|NONE") @RequestParam(required = false) review: String?,
+        @Parameter(description = "응답 여부 — Y|N") @RequestParam(required = false) answered: String?,
+        @Parameter(description = "질의자 사번(쓰기 권한자만)") @RequestParam(required = false) empNo: String?,
         @RequestParam(required = false) page: Int?,
         @RequestParam(required = false) size: Int?
     ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta) = aiAdminService.getChatHistory(from, to, userGroup, page, size)
-        return ApiResponse.page(mapOf("items" to rows), meta)
+        val result = aiAdminService.getChatHistory(from, to, userGroup, page, size, AiAdminService.HistoryCond(keyword, rating, review, answered, empNo))
+        // maskedRowCnt — 열람자 권한으로 응답을 가린 행 수 (CHH-02)
+        return ApiResponse.page(mapOf("items" to result.rows, "maskedRowCnt" to result.maskedRowCnt), result.meta)
     }
 
     /** 질의 상세 조회 (No.188) */
@@ -92,7 +167,7 @@ class AiAdminController(
     fun historyDetail(@PathVariable messageId: Long): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(aiAdminService.getChatDetail(messageId))
 
-    /** chat_id가 생성되기 전에 실패한 ask도 requestId로 조회할 수 있다. 통합관리자 전용. */
+    /** chat_id가 생성되기 전에 실패한 ask도 requestId로 조회할 수 있다. 쓰기 권한(관리 기능). */
     @GetMapping("/chat/history/debug/{requestId}")
     fun askDebug(@PathVariable requestId: String): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(aiAdminService.getAskDebug(requestId))

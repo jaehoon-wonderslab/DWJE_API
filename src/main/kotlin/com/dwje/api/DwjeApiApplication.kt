@@ -91,5 +91,10 @@ fun main(args: Array<String>) {
         )
     }
 
+    // local 에서 AX_MAIL_SENDER_MODE=SMTP 면 실제 발송으로 바꾼다(R-17). 키 이름만 찍는다 — 값(비밀번호)은 찍지 않는다
+    com.dwje.api.config.LocalMailMode.apply(profile).takeIf { it.isNotEmpty() }?.let {
+        System.err.println("local 메일 발송 모드: SMTP (설정 ${it.size}개를 LOCAL_MAIL_* 로 전환)")
+    }
+
     runApplication<DwjeApiApplication>(*args)
 }

@@ -119,7 +119,14 @@ class GlossaryDuplicateTest {
 
     private fun service(repo: MemRepo): GlossaryService {
         val auth = mock(AuthorizationService::class.java)
-            .also { `when`(it.requireMenu(MenuId.SYS_GLOSS)).thenReturn(admin) }
+            .also {
+                `when`(it.requireMenu(MenuId.SYS_GLOSS)).thenReturn(admin)
+                // 등록·수정·삭제는 쓰기 권한 판정이다(R-06, 07 GLS-16)
+                `when`(it.requireWrite(MenuId.SYS_GLOSS)).thenReturn(admin)
+                // 공식 용어 편집은 통합관리자만(07 GLS-01) · 조회는 두 화면 공용(13 GLV-02)
+                `when`(it.requireSuperAdmin()).thenReturn(admin)
+                `when`(it.requireAnyMenu(MenuId.SYS_GLOSS, MenuId.GLOSS_VIEW)).thenReturn(admin)
+            }
         return GlossaryService(repo, mock(GlossaryNormalizer::class.java), mock(VectorIndexRepository::class.java), auth)
     }
 

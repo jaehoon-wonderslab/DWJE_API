@@ -8,8 +8,8 @@
 > `RequestBodyContractTest` 가 `Map` 본문 개수가 코드와 맞는지 검사한다 —
 > 이 문서를 처음 쓴 날 용어 API 4개를 DTO 로 바꾸고 갱신하지 않아 같은 날 안에 틀렸다.
 
-- 본문을 받는 엔드포인트 **62개**
-- 타입 DTO **56개** — 모르는 키는 400
+- 본문을 받는 엔드포인트 **86개**
+- 타입 DTO **71개** — 모르는 키는 400
 - `Map` 본문 **0개** — **전부 타입 DTO 로 전환 완료**
 
 ## 왜 켰는가
@@ -36,7 +36,28 @@
 > 키·타입이 어긋난 항목만 빠지고 200 이 나가서, 10개를 보냈는데 3개만 반영되고도
 > 화면은 성공으로 읽었다. 지금은 어긋난 항목이 하나라도 있으면 400 이다.
 
-## B. 타입 DTO 56개 — 선언 키만 허용
+## B. 타입 DTO 71개 — 선언 키만 허용
+
+### `TrainsetExportRequest`
+
+허용 키 — `from`, `to`, `ratingFilter`, `source`, `format`
+
+- `POST /api/v1/ai/chat/history/export-trainset`
+
+### `AiReviewRequest`
+
+허용 키 — `reviewCd`, `comment`
+
+- `PUT /api/v1/ai/chat/history/{messageId}/review`
+
+### `ListExportRequest`
+
+허용 키 — `scope`, `scopeCd`, `menuId`, `condSummary`, `format`, `from`, `to`, `target`, `view`, `keyword`
+
+- `POST /api/v1/ai/chat/history/export`
+- `POST /api/v1/download-logs/export`
+- `POST /api/v1/sync/export`
+- `POST /api/v1/audit-logs/export`
 
 ### `AiAskRequest`
 
@@ -44,19 +65,17 @@
 
 - `POST /api/v1/ai/chat/ask`
 
-### `ExportFormatRequest`
-
-허용 키 — `format`, `yearMonth`, `from`, `to`, `scope`
-
-- `POST /api/v1/ai/chat/history/export-trainset`
-- `POST /api/v1/dashboard/kpi/evidence-export`
-- `POST /api/v1/production/results/export`
-
 ### `AiExportRequest`
 
 허용 키 — `format`
 
 - `POST /api/v1/ai/chat/messages/{messageId}/export`
+
+### `AiDefectTopExportRequest`
+
+허용 키 — `from`, `to`, `limit`
+
+- `POST /api/v1/ai/chat/defects/top/export`
 
 ### `AiFeedbackRequest`
 
@@ -64,11 +83,46 @@
 
 - `POST /api/v1/ai/chat/messages/{messageId}/feedback`
 
+### `AiModelConfigSaveRequest`
+
+허용 키 — `items`
+
+- `PUT /api/v1/ai/model-config`
+
+### `AiModelConfigCreateRequest`
+
+허용 키 — `category`, `key`, `name`, `value`, `valueType`, `unit`, `options`, `description`, `agentCd`
+
+- `POST /api/v1/ai/model-config`
+
+### `AiModelConfigUpdateRequest`
+
+허용 키 — `name`, `value`, `valueType`, `unit`, `options`, `description`, `agentCd`
+
+- `PUT /api/v1/ai/model-config/{configId}`
+
+### `AiModelConfigStateRequest`
+
+허용 키 — `on`
+
+- `PATCH /api/v1/ai/model-config/{configId}/state`
+
+### `AiAgentStateRequest`
+
+허용 키 — `on`
+
+- `PATCH /api/v1/ai/agents/{agentCd}/state`
+
 ### `AlertConditionRequest`
 
-허용 키 — `name`, `metricStdId`, `metricDesc`, `op`, `threshold`, `thresholdText`, `thresholdUnit`, `duration`, `targetScope`, `target`, `severity`, `channels`, `groupIds`, `validWindow`, `dedupMin`, `msgTemplate`
+허용 키 — `name`, `metricStdId`, `metricDesc`, `op`, `threshold`, `thresholdVal`, `thresholdText`, `thresholdUnit`, `duration`, `targetScope`, `target`, `severity`, `channels`, `groupIds`, `validWindow`, `dedupMin`, `msgTemplate`, `pickTargets`, `scopeDim`, `windowTime`, `evalIntervalSec`, `ignoreWindow`, `autoClose`, `escalation`
 
 - `POST /api/v1/alert-conditions`
+
+### `AlertConditionUpdateRequest`
+
+허용 키 — `name`, `metricStdId`, `metricDesc`, `op`, `threshold`, `thresholdVal`, `thresholdText`, `thresholdUnit`, `duration`, `targetScope`, `target`, `pickTargets`, `severity`, `channels`, `groupIds`, `validWindow`, `dedupMin`, `msgTemplate`, `updatedAt`, `scopeDim`, `windowTime`, `evalIntervalSec`, `ignoreWindow`, `autoClose`, `escalation`
+
 - `PUT /api/v1/alert-conditions/{condId}`
 
 ### `StateChangeRequest`
@@ -76,20 +130,19 @@
 허용 키 — `state`, `on`, `reason`
 
 - `PATCH /api/v1/alert-conditions/{condId}/state`
+- `PATCH /api/v1/alert-recipient-groups/{groupId}/state`
 - `PATCH /api/v1/alert-recipients/{recipientId}/state`
-- `PATCH /api/v1/system/users/{empNo}/state`
-
-### `EscalationRuleRequest`
-
-허용 키 — `stages`
-
-- `PUT /api/v1/alert-escalation-rules`
 
 ### `RecipientGroupRequest`
 
 허용 키 — `name`, `channels`, `validWindow`, `night`, `deptId`, `memberEmpNos`
 
 - `POST /api/v1/alert-recipient-groups`
+
+### `RecipientGroupUpdateRequest`
+
+허용 키 — `name`, `channels`, `validWindow`, `night`, `deptId`, `memberEmpNos`, `updatedAt`
+
 - `PUT /api/v1/alert-recipient-groups/{groupId}`
 
 ### `RecipientRequest`
@@ -99,11 +152,41 @@
 - `POST /api/v1/alert-recipients`
 - `PUT /api/v1/alert-recipients/{recipientId}`
 
+### `EscalationRuleRequest`
+
+허용 키 — `stages`
+
+- `PUT /api/v1/alert-escalation-rules`
+
 ### `ReasonRequest`
 
 허용 키 — `reason`, `actionNote`
 
 - `POST /api/v1/alerts/{alertId}/ack`
+
+### `AoiBriefingRequest`
+
+허용 키 — `from`, `to`, `wcCd`, `eqptCd`
+
+- `POST /api/v1/quality/aoi/dimension/briefing`
+
+### `LoginRequest`
+
+허용 키 — `loginId`, `password`
+
+- `POST /api/v1/auth/login`
+
+### `RefreshTokenRequest`
+
+허용 키 — `refreshToken`
+
+- `POST /api/v1/auth/refresh`
+
+### `SwitchAccountRequest`
+
+허용 키 — `empNo`
+
+- `POST /api/v1/auth/switch`
 
 ### `EmailCodeSendRequest`
 
@@ -117,17 +200,23 @@
 
 - `POST /api/v1/auth/email/verify-code`
 
-### `LoginRequest`
+### `UnlockCodeRequest`
 
-허용 키 — `loginId`, `password`
+허용 키 — `empNo`
 
-- `POST /api/v1/auth/login`
+- `POST /api/v1/auth/unlock/request`
 
-### `PasswordChangeRequest`
+### `UnlockVerifyRequest`
 
-허용 키 — `currentPassword`, `newPassword`, `newPasswordConfirm`
+허용 키 — `empNo`, `code`
 
-- `POST /api/v1/auth/password`
+- `POST /api/v1/auth/unlock/verify`
+
+### `UnlockCompleteRequest`
+
+허용 키 — `verificationToken`, `newPassword`, `newPasswordConfirm`
+
+- `POST /api/v1/auth/unlock/complete`
 
 ### `PasswordForgotRequest`
 
@@ -141,166 +230,36 @@
 
 - `POST /api/v1/auth/password/reset`
 
-### `RefreshTokenRequest`
-
-허용 키 — `refreshToken`
-
-- `POST /api/v1/auth/refresh`
-
 ### `SignupRequest`
 
 허용 키 — `empNo`, `name`, `deptId`, `pos`, `email`, `verificationToken`, `password`, `passwordConfirm`
 
 - `POST /api/v1/auth/signup`
 
-### `SwitchAccountRequest`
+### `PasswordChangeRequest`
 
-허용 키 — `empNo`
+허용 키 — `currentPassword`, `newPassword`, `newPasswordConfirm`
 
-- `POST /api/v1/auth/switch`
+- `POST /api/v1/auth/password`
 
-### `DownloadLogRecordRequest`
+### `ExportFormatRequest`
 
-허용 키 — `reportId`, `reportNm`, `menuId`, `format`, `scope`, `rowCnt`, `blindCnt`, `params`, `fileSize`
+허용 키 — `format`, `yearMonth`, `from`, `to`, `scope`
 
-- `POST /api/v1/download-logs`
+- `POST /api/v1/dashboard/kpi/evidence-export`
+- `POST /api/v1/production/results/export`
 
-### `GlossaryNormalizeRequest`
+### `UploadDocHideRequest`
 
-허용 키 — `text`
+허용 키 — `reason`
 
-- `POST /api/v1/glossary/normalize`
+- `DELETE /api/v1/system/uploads/{docId}`
 
-### `GlossaryTermRequest`
+### `DataFieldMappingRequest`
 
-허용 키 — `term`, `definition`, `domainCd`
+허용 키 — `newFields`, `moves`, `screenId`
 
-- `POST /api/v1/glossary/terms`
-- `PUT /api/v1/glossary/terms/{termId}`
-
-### `GlossaryVariantRequest`
-
-허용 키 — `word`
-
-- `POST /api/v1/glossary/terms/{termId}/variants`
-- `PUT /api/v1/glossary/variants/{variantId}`
-
-### `ReportRegenerateRequest`
-
-허용 키 — `targetDate`
-
-
-### `ReportCorrectionRequest`
-
-허용 키 — `sections`, `remark`
-
-
-### `DayTargetRequest`
-
-허용 키 — `product`, `processId`, `applyFrom`, `targetQty`, `remark`
-(수정 시 `product`·`processId` 는 무시된다 — 제품·공정은 바꿀 수 없다)
-
-- `POST /api/v1/production/day-targets`
-- `PUT /api/v1/production/day-targets/{targetId}`
-
-### `DailyReportRowsRequest`
-
-허용 키 — `targetDate`, `rows`
-`rows[]` 허용 키 — `product`, `targetQty`, `decision`, `dri`, `due`
-
-- `POST /api/v1/production/daily-reports/rows`
-
-
-### `ReportUsageRequest`
-
-허용 키 — `screenId`
-(메뉴에 없는 ID 는 400, 권한 없는 화면은 E-AUTH-002. 응답은 상위 5개 목록)
-
-- `POST /api/v1/reports/usage`
-
-### `ReportCopyRequest`
-
-허용 키 — `targetDate`
-
-
-### `DowntimeCreateRequest`
-
-허용 키 — `eqptCd`, `stopAt`, `resumeAt`, `reasonCd`, `remark`
-
-- `POST /api/v1/production/downtimes`
-
-### `DowntimeUpdateRequest`
-
-허용 키 — `reasonCd`, `remark`, `resumeAt`
-
-- `PUT /api/v1/production/downtimes/{downtimeId}`
-
-### `QualityReportDraftRequest`
-
-허용 키 — `formId`, `lotNo`, `occurDate`, `disclosurePolicy`
-
-
-### `EvidenceImageRequest`
-
-허용 키 — `imageIds`, `images`
-
-
-### `AoiBriefingRequest`
-
-허용 키 — `from`, `to`, `wcCd`, `eqptCd`
-
-- `POST /api/v1/quality/aoi/dimension/briefing`
-
-### `QualityDefectExportRequest`
-
-허용 키 — `from`, `to`, `processId`, `defectTypeCd`, `format`, `levels`
-
-- `POST /api/v1/quality/defects/by-type/export`
-- `POST /api/v1/quality/defects/by-line/export`
-
-### `ScrapDraftRequest`
-
-허용 키 — `step`, `cond`, `pickedVoucherIds`, `form`, `review`
-
-
-### `ApprovalLineRequest`
-
-허용 키 — `depts`, `appr`, `due`, `notifyChannels`
-
-
-### `ScrapManualRowRequest`
-
-허용 키 — `model`, `process`, `reason`, `kind`, `qty`, `itemCd`, `occurDate`
-
-
-### `ScrapUnitPriceRequest`
-
-허용 키 — `key`, `keyValue`, `unitPrice`, `reason`
-
-
-### `ConnectionTestRequest`
-
-허용 키 — `target`
-
-- `POST /api/v1/sync/connection-test`
-
-### `SyncManualRequest`
-
-허용 키 — `srcTables`, `kind`, `scheduledAt`
-
-- `POST /api/v1/sync/jobs/manual`
-
-### `SchemaDriftResolveRequest`
-
-허용 키 — `note`
-
-- `POST /api/v1/sync/schema-drift/{driftId}/resolve`
-
-### `DataPermRequest`
-
-허용 키 — `deptId`, `fieldKey`, `allowed`
-
-- `PUT /api/v1/system/data-perms`
+- `PUT /api/v1/system/data-fields/mapping`
 
 ### `DataFieldSaveRequest`
 
@@ -321,6 +280,174 @@
 
 - `PATCH /api/v1/system/data-fields/{fieldKey}/apply`
 
+### `GlossaryExportRequest`
+
+허용 키 — `keyword`, `domainCd`, `mineOnly`, `menuId`, `format`, `scopeCd`, `scope`, `condSummary`
+
+- `POST /api/v1/glossary/terms/export`
+
+### `GlossaryTermRequest`
+
+허용 키 — `term`, `definition`, `domainCd`
+
+- `POST /api/v1/glossary/terms`
+- `PUT /api/v1/glossary/terms/{termId}`
+
+### `GlossaryVariantRequest`
+
+허용 키 — `word`
+
+- `POST /api/v1/glossary/terms/{termId}/variants`
+- `PUT /api/v1/glossary/variants/{variantId}`
+
+### `GlossaryNormalizeRequest`
+
+허용 키 — `text`
+
+- `POST /api/v1/glossary/normalize`
+
+### `GwDeptMapSaveRequest`
+
+허용 키 — `gwDeptNm`, `deptId`, `joinYn`, `remark`, `fromGwDeptNm`
+
+- `PUT /api/v1/system/gw-dept-maps`
+
+### `GwDeptMapBulkSaveRequest`
+
+허용 키 — `gwDeptNms`, `deptId`, `joinYn`, `keepRemark`, `remark`
+
+- `PUT /api/v1/system/gw-dept-maps/bulk`
+
+### `GwDeptReassignRequest`
+
+허용 키 — `empNos`, `gwDeptNms`, `all`, `includeSuspended`
+
+- `POST /api/v1/system/gw-dept-maps/reassign`
+
+### `LlmChatRequest`
+
+허용 키 — `messages`, `context`, `messageId`, `sessionId`
+
+- `POST /api/ai/chat`
+
+### `AiToolCallRequest`
+
+허용 키 — `from`, `to`, `wcCd`, `eqptCd`, `groupByDate`, `compareFrom`, `compareTo`, `label`, `compareLabel`, `limit`, `years`, `basis`, `defectReports`
+
+- `POST /api/ai/tools/{name}`
+
+### `MetricStandardRequest`
+
+허용 키 — `metricCd`, `name`, `category`, `unit`, `normal`, `warn`, `critical`, `window`, `basis`, `applied`, `direction`
+
+- `POST /api/v1/metrics/standards`
+- `PUT /api/v1/metrics/standards/{stdId}`
+
+### `MetricStandardStateRequest`
+
+허용 키 — `applied`
+
+- `PATCH /api/v1/metrics/standards/{stdId}/state`
+
+### `MetricCollectRequest`
+
+허용 키 — `collectMode`, `collectorCd`, `dimCd`, `intervalSec`, `lookbackMin`, `sqlText`, `applied`
+
+- `PUT /api/v1/metrics/standards/{stdId}/collect`
+
+### `MetricSourceSaveRequest`
+
+허용 키 — `items`
+
+- `PUT /api/v1/metrics/standards/{stdId}/sources`
+
+### `DailyReportRowsRequest`
+
+허용 키 — `targetDate`, `rows`
+
+- `POST /api/v1/production/daily-reports/rows`
+
+### `DayTargetRequest`
+
+허용 키 — `product`, `processId`, `applyFrom`, `targetQty`, `remark`
+
+- `POST /api/v1/production/day-targets`
+- `PUT /api/v1/production/day-targets/{targetId}`
+
+### `DowntimeCreateRequest`
+
+허용 키 — `eqptCd`, `stopAt`, `resumeAt`, `reasonCd`, `remark`
+
+- `POST /api/v1/production/downtimes`
+
+### `DowntimeUpdateRequest`
+
+허용 키 — `reasonCd`, `remark`, `resumeAt`
+
+- `PUT /api/v1/production/downtimes/{downtimeId}`
+
+### `QualityDefectExportRequest`
+
+허용 키 — `from`, `to`, `processId`, `defectTypeCd`, `format`, `levels`
+
+- `POST /api/v1/quality/defects/by-type/export`
+- `POST /api/v1/quality/defects/by-line/export`
+
+### `ReportUsageRequest`
+
+허용 키 — `screenId`
+
+- `POST /api/v1/reports/usage`
+
+### `DownloadLogRecordRequest`
+
+허용 키 — `reportId`, `reportNm`, `menuId`, `format`, `scope`, `scopeCd`, `condSummary`, `rowCnt`, `blindCnt`, `params`, `fileSize`
+
+- `POST /api/v1/download-logs`
+
+### `SyncManualRequest`
+
+허용 키 — `srcTables`, `kind`, `scheduledAt`
+
+- `POST /api/v1/sync/jobs/manual`
+
+### `ConnectionTestRequest`
+
+허용 키 — `target`
+
+- `POST /api/v1/sync/connection-test`
+
+### `SchemaDriftResolveRequest`
+
+허용 키 — `note`
+
+- `POST /api/v1/sync/schema-drift/{driftId}/resolve`
+
+### `SignupApprovalRequest`
+
+허용 키 — `approve`, `reason`, `deptId`
+
+- `POST /api/v1/system/users/{empNo}/approve`
+
+### `UserSaveRequest`
+
+허용 키 — `empNo`, `name`, `deptId`, `pos`, `state`, `switchable`, `plantCd`, `password`, `remark`, `extraMenuIds`, `extraMenuReasons`
+
+- `POST /api/v1/system/users`
+- `PUT /api/v1/system/users/{empNo}`
+
+### `UserStateChangeRequest`
+
+허용 키 — `state`, `reason`, `resetPassword`
+
+- `PATCH /api/v1/system/users/{empNo}/state`
+
+### `UserDeptChangeRequest`
+
+허용 키 — `deptId`
+
+- `PUT /api/v1/system/users/{empNo}/dept`
+
 ### `DeptSaveRequest`
 
 허용 키 — `deptNm`, `abbr`, `desc`, `plantCd`, `initPermFrom`
@@ -330,38 +457,24 @@
 
 ### `MenuPermRequest`
 
-허용 키 — `deptId`, `screenId`, `allowed`
+허용 키 — `deptId`, `screenId`, `allowed`, `perm`
 
 - `PUT /api/v1/system/menu-perms`
 
-### `MenuPermCopyRequest`
-
-허용 키 — `fromDeptId`, `toDeptId`
-
-- `POST /api/v1/system/menu-perms/copy`
-
 ### `MenuPermGroupRequest`
 
-허용 키 — `deptId`, `groupNm`, `allowed`
+허용 키 — `deptId`, `groupId`, `groupNm`, `allowed`, `perm`, `includeActions`
 
 - `PUT /api/v1/system/menu-perms/group`
 
-### `UserSaveRequest`
+### `MenuPermCopyRequest`
 
-허용 키 — `empNo`, `name`, `deptId`, `pos`, `state`, `switchable`, `plantCd`, `password`, `remark`, `extraMenuIds`
+허용 키 — `fromDeptId`, `toDeptId`, `dryRun`, `expectedHash`
 
-- `POST /api/v1/system/users`
-- `PUT /api/v1/system/users/{empNo}`
+- `POST /api/v1/system/menu-perms/copy`
 
-### `SignupApprovalRequest`
+### `DataPermRequest`
 
-허용 키 — `approve`, `reason`
+허용 키 — `deptId`, `fieldKey`, `allowed`
 
-- `POST /api/v1/system/users/{empNo}/approve`
-
-### `UserDeptChangeRequest`
-
-허용 키 — `deptId`
-
-- `PUT /api/v1/system/users/{empNo}/dept`
-
+- `PUT /api/v1/system/data-perms`

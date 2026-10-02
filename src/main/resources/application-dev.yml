@@ -20,15 +20,22 @@ spring:
       connection-timeout: 10000
       connection-init-sql: "SET search_path TO ax, mes, vec, common, public"
 
-  # --- 메일 발송 (이메일 인증) ---
+  # --- 메일 발송 (이메일 인증, R-17) ---
+  # 한비로 SMTP — 465 SSL 직접 연결(STARTTLS 아님). 비밀번호는 환경변수 DEV_MAIL_PASSWORD 로만 넣는다(저장소에 적지 않음).
   mail:
     host: "${DEV_MAIL_HOST}"
-    port: 587
+    port: ${DEV_MAIL_PORT:465}
     username: "${DEV_MAIL_USERNAME}"
     password: "${DEV_MAIL_PASSWORD}"
+    default-encoding: UTF-8
     properties:
       mail.smtp.auth: true
-      mail.smtp.starttls.enable: true
+      mail.smtp.ssl.enable: true
+      mail.smtp.starttls.enable: false
+      # 연결·읽기·쓰기 제한 각 10초 — SMTP 가 멈춰도 요청 스레드를 오래 붙들지 않는다
+      mail.smtp.connectiontimeout: 10000
+      mail.smtp.timeout: 10000
+      mail.smtp.writetimeout: 10000
 
 app:
   # 서버 DB 개발 환경(case3) — 게이트웨이 주소는 api.env.dev 로 재정의할 수 있다.
@@ -43,3 +50,8 @@ app:
     email-verification:
       # 운영·개발은 실제 메일을 보낸다. LOG 모드는 인증 코드가 로그에 남으므로 쓰면 안 된다.
       sender-mode: SMTP
+      # 발신 주소는 인증 계정과 같아야 한다(R-17). 따로 주지 않으면 인증 계정을 쓴다
+      from-address: "${DEV_MAIL_FROM:${DEV_MAIL_USERNAME}}"
+    account-unlock:
+      # SMTP 설정이 끝나 켠다(R-17, D-23 결정) — 잠긴 계정 본인이 이메일 인증으로 풀 수 있다
+      email-enabled: true

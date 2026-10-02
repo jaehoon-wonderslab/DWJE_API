@@ -2,6 +2,13 @@ package com.dwje.api.common.exception
 
 import com.dwje.api.common.response.ApiResponse
 import com.dwje.api.common.response.ErrorCode
+import com.dwje.api.common.security.UserContext
+import com.dwje.api.common.util.AuditResult
+import com.dwje.api.common.util.AuditType
+import com.dwje.api.service.AuditLogService
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.beans.factory.annotation.Value
+import java.util.concurrent.ConcurrentHashMap
 import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
@@ -30,15 +37,51 @@ class GlobalExceptionHandler {
 
     private val log = LoggerFactory.getLogger(javaClass)
 
+    /** 접근 거부 감사 기록기 — 단위 시험처럼 빈이 없으면 기록하지 않는다 */
+    @Autowired(required = false)
+    var auditLogService: AuditLogService? = null
+
+    /** 같은 사람·같은 거부를 이 시간(초) 안에 다시 남기지 않는다 (09 AUD-10) */
+    @Value("\${app.audit-access-denied-dedup-sec:60}")
+    var accessDeniedDedupSec: Long = 60
+
+    private val deniedSeen = ConcurrentHashMap<String, Long>()
+
     /**
      * 업무 예외 처리 — 정의된 [ErrorCode] 의 HTTP 상태로 응답한다.
      */
     @ExceptionHandler(BusinessException::class)
-    fun handleBusiness(e: BusinessException, request: HttpServletRequest): ResponseEntity<ApiResponse<Nothing?>> {
+    fun handleBusiness(e: BusinessException, request: HttpServletRequest): ResponseEntity<ApiResponse<Any?>> {
         // 업무 예외는 스택트레이스 없이 원인만 기록한다.
         log.warn("비즈니스 처리 중 예외 발생 [{} {}] {} : {}", request.method, request.requestURI, e.errorCode.code, e.message)
+        recordAccessDenied(e, request)
+        // data 는 잠금 안내처럼 예외가 직접 실은 값만 내려 준다(없으면 기존 실패 응답과 같은 모양).
         return ResponseEntity.status(e.errorCode.status)
-            .body(ApiResponse.error(e.errorCode.code, e.message, e.field))
+            .body(ApiResponse.errorWithData(e.errorCode.code, e.message, e.field, e.data))
+    }
+
+    /**
+     * 화면·데이터·쓰기 권한 거부를 감사 로그(ACCESS_DENIED · REJECT)에 남긴다 (09 AUD-10).
+     * 같은 사람·코드·대상은 [accessDeniedDedupSec] 초 안에 한 번만 — 화면이 같은 API 를 되풀이해 불러도 행이 쌓이지 않게.
+     */
+    internal fun recordAccessDenied(e: BusinessException, request: HttpServletRequest, now: Long = System.currentTimeMillis()) {
+        val audit = auditLogService ?: return
+        val (menuId, fieldKey) = when (e) {
+            is MenuAccessDeniedException -> e.menuId to null
+            is WriteAccessDeniedException -> e.menuId to null
+            is DataAccessDeniedException -> null to e.fieldKey
+            else -> return
+        }
+        val user = UserContext.currentOrNull()?.userId ?: "-"
+        val key = "$user|${e.errorCode.code}|${menuId ?: fieldKey}"
+        val last = deniedSeen[key]
+        if (last != null && now - last < accessDeniedDedupSec * 1000) return
+        deniedSeen[key] = now
+        if (deniedSeen.size > 10_000) deniedSeen.entries.removeIf { now - it.value >= accessDeniedDedupSec * 1000 }
+        audit.record(
+            logType = AuditType.ACCESS_DENIED, menuId = menuId, fieldKey = fieldKey,
+            targetDesc = "${request.method} ${request.requestURI}".take(300), resultCd = AuditResult.REJECT, remark = e.errorCode.code
+        )
     }
 
     /**

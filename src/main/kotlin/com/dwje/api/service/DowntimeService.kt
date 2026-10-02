@@ -1,5 +1,6 @@
 package com.dwje.api.service
 
+import com.dwje.api.common.util.AuditType
 import com.dwje.api.common.exception.InvalidParameterException
 import com.dwje.api.common.exception.ResourceNotFoundException
 import com.dwje.api.common.response.PageMeta
@@ -164,7 +165,7 @@ class DowntimeService(
 
         // 변경 전후를 감사 로그에 남긴다.
         auditLogService.record(
-            logType = "AUTO_GEN",
+            logType = AuditType.CONFIG_CHANGE,
             menuId = MenuId.PROD_DOWN,
             targetDesc = "비가동 사유 수정 [설비=${before["eqptCd"]}, 정지=${before["stopAt"]}]",
             remark = "사유 ${before["reasonCd"]} → ${request.reasonCd ?: before["reasonCd"]}"

@@ -1,12 +1,16 @@
 package com.dwje.api.service
 
+import com.dwje.api.common.util.AuditType
+import com.dwje.api.common.exception.BusinessRuleException
 import com.dwje.api.common.exception.InvalidParameterException
 import com.dwje.api.common.exception.ResourceNotFoundException
 import com.dwje.api.common.response.PageMeta
 import com.dwje.api.common.util.DateUtils
+import com.dwje.api.common.security.UserPrincipal
 import com.dwje.api.common.util.MenuId
 import com.dwje.api.common.validation.CodeValidator
 import com.dwje.api.common.util.PageRequestParam
+import com.dwje.api.config.AppProperties
 import com.dwje.api.model.request.SchemaDriftResolveRequest
 import com.dwje.api.model.request.SyncManualRequest
 import com.dwje.api.repository.SyncRepository
@@ -35,7 +39,8 @@ class SyncService(
     private val authorizationService: AuthorizationService,
     private val auditLogService: AuditLogService,
     private val agentRunRecorder: AgentRunRecorder,
-    private val codeValidator: CodeValidator
+    private val codeValidator: CodeValidator,
+    private val appProperties: AppProperties = AppProperties()
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -45,6 +50,8 @@ class SyncService(
         private val ALLOWED_KINDS = mapOf("full" to "FULL", "incremental" to "INCR", "incr" to "INCR")
         private val ALLOWED_DRIFT_SIDES = setOf("SOURCE", "TARGET")
         private val ALLOWED_DRIFT_KINDS = setOf("NEW", "MISSING")
+        /** 재실행할 수 있는 작업 상태 (SYN-02) */
+        val RETRYABLE_STATES = setOf("FAIL", "ABORTED")
     }
 
     /** 연동 요약 (No.226) */
@@ -52,7 +59,22 @@ class SyncService(
     fun getSummary(date: String?): Map<String, Any?> {
         authorizationService.requireMenu(MenuId.SYS_SYNC)
         val target = DateUtils.parseDate(date, "date", LocalDate.now())
-        return syncRepository.findSummary(target)
+        // 기존 필드는 기준일 하루 기준, 상태 줄 필드(SYN-03)는 기준일과 무관하게 지금 기준이다
+        val stats = syncRepository.findHealthStats(appProperties.sync.stalePendingMin)
+        val (healthState, healthReason) = SyncHealth.evaluate(stats, appProperties.sync)
+        return syncRepository.findSummary(target) + mapOf(
+            "healthState" to healthState,
+            "healthReason" to healthReason,
+            "lastRun" to stats.lastRun,
+            "lastSuccessAt" to stats.lastSuccessAt,
+            "staleMin" to stats.staleMin,
+            "consecutiveFailRuns" to SyncHealth.consecutiveFailRuns(stats.recentRunStates),
+            "todayFailRunCnt" to stats.todayFailRunCnt,
+            "openFailJobCnt" to stats.openFailJobCnt,
+            "oldestOpenFailAt" to stats.oldestOpenFailAt,
+            "stalePendingCnt" to stats.stalePendingCnt,
+            "alert" to syncRepository.findSyncAlertStats()
+        )
     }
 
     /**
@@ -71,21 +93,31 @@ class SyncService(
         state: String?,
         mode: String?,
         page: Int?,
-        size: Int?
+        size: Int?,
+        source: String? = null
     ): Pair<List<Map<String, Any?>>, PageMeta> {
         authorizationService.requireMenu(MenuId.SYS_SYNC)
 
         // 코드 집합 밖의 값을 그냥 넘기면 조용히 0건이 나와 "실행 이력이 없음" 과 구분되지 않는다.
         codeValidator.require("SYNC_RUN_STATE", state, "state", "실행 결과")
         codeValidator.require("SYNC_RUN_MODE", mode, "mode", "실행 모드")
+        val src = source?.trim()?.uppercase()?.takeIf { it.isNotEmpty() }
+        if (src != null && src !in setOf("MES", "GROUPWARE")) {
+            throw InvalidParameterException("실행 구분은 MES 또는 GROUPWARE 만 허용합니다. [$source]", "source")
+        }
 
         val (fromDate, toDate) = DateUtils.periodOf(from, to, 7)
         val paging = PageRequestParam.of(page, size)
 
-        val total = syncRepository.countRuns(fromDate, toDate, state, mode)
-        val rows = syncRepository.findRuns(fromDate, toDate, state, mode, paging.limit, paging.offset)
+        val total = syncRepository.countRuns(fromDate, toDate, state, mode, src)
+        val rows = syncRepository.findRuns(fromDate, toDate, state, mode, paging.limit, paging.offset, src)
 
         return rows to PageMeta.of(paging.page, paging.size, total)
+    }
+
+    /** 데이터 연동 화면 조회 권한 — 전체 내려받기가 입력 검사 전에 부른다 */
+    fun requireViewer() {
+        authorizationService.requireMenu(MenuId.SYS_SYNC)
     }
 
     /** 이관 작업 이력 조회 (No.227) */
@@ -96,16 +128,19 @@ class SyncService(
         srcTable: String?,
         state: String?,
         page: Int?,
-        size: Int?
+        size: Int?,
+        runId: String? = null,
+        includePending: Boolean = true
     ): Pair<List<Map<String, Any?>>, PageMeta> {
         authorizationService.requireMenu(MenuId.SYS_SYNC)
         codeValidator.require("SYNC_STATE", state, "state", "작업 상태")
 
         val (fromDate, toDate) = DateUtils.periodOf(from, to, 7)
         val paging = PageRequestParam.of(page, size)
+        val run = runId?.trim()?.takeIf { it.isNotEmpty() }
 
-        val total = syncRepository.countJobs(fromDate, toDate, srcTable, state)
-        val rows = syncRepository.findJobs(fromDate, toDate, srcTable, state, paging.limit, paging.offset)
+        val total = syncRepository.countJobs(fromDate, toDate, srcTable, state, run, includePending)
+        val rows = syncRepository.findJobs(fromDate, toDate, srcTable, state, paging.limit, paging.offset, run, includePending)
 
         return rows to PageMeta.of(paging.page, paging.size, total)
     }
@@ -115,10 +150,23 @@ class SyncService(
     fun getJob(jobId: String): Map<String, Any?> {
         authorizationService.requireMenu(MenuId.SYS_SYNC)
 
-        val job = syncRepository.findJob(jobId)
+        val found = syncRepository.findJob(jobId)
             ?: throw ResourceNotFoundException("이관 작업을 찾을 수 없습니다. [jobId=$jobId]")
 
-        return job + mapOf("errors" to syncRepository.findJobErrors(jobId, 500))
+        // 재실행 연결과 판정 (SYN-02) — 화면은 retryable 로 버튼을, supersededBy 로 「이후 정상 완료」 안내를 그린다
+        @Suppress("UNCHECKED_CAST")
+        val job = found["job"] as Map<String, Any?>
+        val state = job["state"] as String?
+        val retriedBy = syncRepository.findRetriedBy(jobId)
+        val (retryable, reason) = retryVerdict(state, found["mapUseFlg"] as String?, retriedBy)
+        val supersededBy = if (state in RETRYABLE_STATES) syncRepository.findSupersededBy(jobId) else null
+        val enriched = job + mapOf(
+            "retryable" to retryable, "retryBlockedReason" to reason,
+            "retriedBy" to retriedBy, "supersededBy" to supersededBy
+        )
+        return (found - "mapUseFlg") + mapOf(
+            "job" to enriched, "errorTotal" to syncRepository.countJobErrors(jobId), "errors" to syncRepository.findJobErrors(jobId, 500)
+        )
     }
 
     /**
@@ -129,24 +177,54 @@ class SyncService(
      */
     @Transactional
     fun retryJob(jobId: String): Map<String, Any?> {
-        val principal = authorizationService.requireMenu(MenuId.SYS_SYNC)
+        val principal = requireSyncWrite()
 
-        if (!syncRepository.existsJob(jobId)) {
-            throw ResourceNotFoundException("이관 작업을 찾을 수 없습니다. [jobId=$jobId]")
+        // 원 작업을 잠그고 판정한다 — 같은 재실행이 동시에 두 번 와도 예약은 하나만 생긴다 (SYN-02)
+        val t = syncRepository.lockJobForRetry(jobId)
+            ?: throw ResourceNotFoundException("이관 작업을 찾을 수 없습니다. [jobId=$jobId]")
+        val context = "원 상태=${t.state}, 매핑=${t.mapId}, 구분=${t.kind ?: "-"}"
+        fun reject(message: String): Nothing {
+            auditLogService.record(
+                logType = AuditType.CONFIG_CHANGE, menuId = MenuId.SYS_SYNC,
+                targetDesc = "이관 작업 재실행 [$jobId]", resultCd = "REJECT", remark = "$message; $context"
+            )
+            throw BusinessRuleException(message)
         }
+        if (t.state !in RETRYABLE_STATES) reject("실패하거나 중단된 작업만 재실행할 수 있습니다. [state=${t.state}]")
+        syncRepository.findActiveRetry(jobId)?.let { reject("이미 재실행이 예약되어 있습니다. [newJobId=$it]") }
+        if (t.mapUseFlg != "Y") reject("사용 중지된 이관 정의라 재실행할 수 없습니다. [map_id=${t.mapId}]")
 
         val newJobId = syncRepository.insertRetryJob(jobId, principal.userId)
             ?: throw ResourceNotFoundException("재실행할 매핑 정보를 찾을 수 없습니다. [jobId=$jobId]")
+        // 이후 같은 매핑이 이미 정상 완료됐으면 알린다 — 재실행은 그래도 등록한다(데이터 확인은 사람이 한다)
+        val supersededBy = syncRepository.findSupersededBy(jobId)
 
         auditLogService.record(
-            logType = "AUTO_GEN",
+            logType = AuditType.CONFIG_CHANGE,
             menuId = MenuId.SYS_SYNC,
             targetDesc = "이관 작업 재실행 [$jobId]",
-            remark = "새 작업=$newJobId"
+            // 이후 정상 완료된 작업이 있으면 함께 남긴다 (12 SYN-12)
+            remark = "새 작업=$newJobId, $context, supersededBy=${supersededBy?.get("jobId") ?: "-"}"
         )
 
         log.info("이관 작업 재실행 예약 : {} → {} (이관 엔진이 집어갑니다)", jobId, newJobId)
-        return mapOf("newJobId" to newJobId, "state" to "PENDING")
+        return mapOf("newJobId" to newJobId, "state" to "PENDING", "supersededBy" to supersededBy)
+    }
+
+    /**
+     * 재실행 가능 여부와 막힌 사유 — 목록 SQL(`SyncRepository.RETRYABLE_SQL`)과 같은 규칙이다 (SYN-02).
+     *
+     * @param retriedBy 이 작업을 재실행한 작업들(`state` 포함)
+     * @return (가능 여부, 막힌 사유 — 가능하면 null)
+     */
+    fun retryVerdict(state: String?, mapUseFlg: String?, retriedBy: List<Map<String, Any?>>): Pair<Boolean, String?> {
+        if (state !in RETRYABLE_STATES) return false to "실패하거나 중단된 작업만 재실행할 수 있습니다."
+        retriedBy.firstOrNull { it["state"] in setOf("PENDING", "RUNNING") }
+            ?.let { return false to "재실행이 이미 예약되어 있습니다. [${it["jobId"]}]" }
+        retriedBy.firstOrNull { it["state"] in setOf("DONE", "RETRY_DONE") }
+            ?.let { return false to "이미 재실행되어 완료되었습니다. [${it["jobId"]}]" }
+        if (mapUseFlg != "Y") return false to "사용 중지된 이관 정의입니다."
+        return true to null
     }
 
     /**
@@ -157,7 +235,7 @@ class SyncService(
      */
     @Transactional
     fun scheduleManualJobs(request: SyncManualRequest): Map<String, Any?> {
-        val principal = authorizationService.requireMenu(MenuId.SYS_SYNC)
+        val principal = requireSyncWrite()
 
         if (request.srcTables.isEmpty()) {
             throw InvalidParameterException("이관할 대상 테이블을 선택해 주세요.", "srcTables")
@@ -185,19 +263,19 @@ class SyncService(
 
         val jobIds = syncRepository.insertManualJobs(request.srcTables, kind, scheduledAt, principal.userId)
 
-        auditLogService.record(
-            logType = "AUTO_GEN",
-            menuId = MenuId.SYS_SYNC,
-            targetDesc = "수동 이관 예약",
-            remark = "대상=${request.srcTables.joinToString(",")}, 구분=$kind, 작업=${jobIds.size}건"
-        )
-
         if (jobIds.isEmpty()) {
-            // use_flg='N' 이거나 매핑에 없는 테이블만 넘어온 경우
+            // use_flg='N' 이거나 매핑에 없는 테이블만 넘어온 경우 — 감사는 남기지 않는다(예약한 것이 없다, 12 SYN-12)
             throw InvalidParameterException(
                 "이관 정의에 없거나 사용 중지된 테이블입니다. 연동 매핑을 확인해 주세요.", "srcTables"
             )
         }
+
+        auditLogService.record(
+            logType = AuditType.CONFIG_CHANGE,
+            menuId = MenuId.SYS_SYNC,
+            targetDesc = "수동 이관 예약",
+            remark = "대상=${request.srcTables.joinToString(",")}, 구분=$kind, 작업=${jobIds.size}건"
+        )
 
         // ② 데이터 분류 Agent — **API 가 끝낸 일은 예약까지**다. 실제 이관은 MES_migration_engine 이 한다.
         // 그래서 "완료" 가 아니라 "예약 N건" 으로 남긴다. 이관이 끝난 시점의 기록은
@@ -214,7 +292,7 @@ class SyncService(
     /** 연결 테스트 (No.231) */
     @Transactional(readOnly = true)
     fun testConnection(target: String): Map<String, Any?> {
-        authorizationService.requireMenu(MenuId.SYS_SYNC)
+        requireSyncWrite()
         return syncRepository.testConnection(target)
     }
 
@@ -257,7 +335,7 @@ class SyncService(
     /** 스키마 드리프트 수동 해소 (No.236 — 감사 로그 기록) */
     @Transactional
     fun resolveDrift(driftId: Long, request: SchemaDriftResolveRequest?): Map<String, Any?> {
-        val principal = authorizationService.requireMenu(MenuId.SYS_SYNC)
+        val principal = requireSyncWrite()
 
         if (!syncRepository.existsDrift(driftId)) {
             throw ResourceNotFoundException("스키마 드리프트를 찾을 수 없습니다. [driftId=$driftId]")
@@ -269,7 +347,7 @@ class SyncService(
         }
 
         auditLogService.record(
-            logType = "AUTO_GEN",
+            logType = AuditType.CONFIG_CHANGE,
             menuId = MenuId.SYS_SYNC,
             targetDesc = "스키마 드리프트 해소 [driftId=$driftId]",
             remark = request?.note?.take(200)
@@ -300,4 +378,10 @@ class SyncService(
         policy["retentionDays"] = 365 * 3
         return policy.toMap()
     }
+
+    /**
+     * 연동 쓰기 동작(재실행·수동 이관·연결 시험·드리프트 해소)의 쓰기 권한 확인 (R-06, 12 SYN-14).
+     * 거부 기록은 전역 예외 처리기가 ACCESS_DENIED 로 남긴다(09 AUD-10) — 여기서 따로 남기면 두 줄이 된다.
+     */
+    private fun requireSyncWrite(): UserPrincipal = authorizationService.requireWrite(MenuId.SYS_SYNC)
 }

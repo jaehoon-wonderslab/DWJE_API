@@ -5,6 +5,7 @@ import com.dwje.api.common.response.ApiResponse
 import com.dwje.api.common.util.DateUtils
 import com.dwje.api.common.util.ProductionMonitorPeriod
 import com.dwje.api.common.util.MenuId
+import com.dwje.api.common.util.ReportFormat
 import com.dwje.api.model.request.DailyReportRowsRequest
 import com.dwje.api.model.request.DayTargetRequest
 import com.dwje.api.model.request.DowntimeCreateRequest
@@ -203,23 +204,26 @@ class ProductionController(
 
         // 파일을 먼저 만든다 — 크기를 이력에 남겨야 하고, 만들다 실패하면
         // 'DONE' 으로 기록되는 것도 막힌다. (문서를 저장하지 않으므로 이 이력이 유일한 기록이다)
+        val blind = exportService.blindCells()
         val response = exportService.export(
             format = format,
             fileName = "production_results_${exportService.timestamp()}",
             headers = listOf("기간", "투입수량", "양품수량", "불량수량", "불량률(%)", "수율(%)", "가동률(%)", "비가동(분)"),
             keys = listOf("period", "inputQty", "okQty", "ngQty", "defectRate", "yield", "uptimeRate", "downtimeMin"),
-            rows = rows
+            rows = rows,
+            blind = blind
         )
 
         downloadLogService.record(
             reportId = null,
             reportNm = "생산 실적 집계",
             menuId = MenuId.PROD_RESULT,
-            format = format,
+            // 실제로 만든 파일 기준 형식(DLG-02), 비공개 건수는 셀 수(DLG-15)
+            format = ReportFormat.ofServerExport(format),
             scope = "from=${request?.from}, to=${request?.to}, unit=${unit ?: "day"}",
             rowCnt = rows.size,
-            blindCnt = mask.maskedCount(),
-            blindCells = mask.maskedKeys().associateWith { rows.size },
+            blindCnt = blind.total,
+            blindCells = blind.counts(),
             params = mapOf(
                 "from" to request?.from,
                 "to" to request?.to,
@@ -254,7 +258,8 @@ class ProductionController(
         val data = productionService.getResultScreenExport(request?.from, request?.to)
 
         // 파일을 먼저 만든다 — 크기를 이력에 남겨야 하고, 만들다 실패하면 'DONE' 으로 기록되는 것도 막힌다.
-        val bytes = resultScreenWorkbook.build(data)
+        val blind = exportService.blindCells()
+        val bytes = resultScreenWorkbook.build(data, blind)
         val fileName = "실적_집계_전체_${data.from}_${data.to}.xlsx"
         val response = exportService.xlsx(bytes, fileName)
 
@@ -262,12 +267,12 @@ class ProductionController(
             reportId = null,
             reportNm = "생산 실적 집계(화면 전체)",
             menuId = MenuId.PROD_RESULT,
-            format = "xlsx",
+            format = ReportFormat.XLSX,
             // scope_desc 는 100자 컬럼이다 — 조건 전문은 params 에 있다.
             scope = "screen from=${data.from}, to=${data.to}, unit=day",
             rowCnt = data.rows.size,
-            blindCnt = data.maskedFields.size,
-            blindCells = data.maskedFields.associateWith { data.rows.size },
+            blindCnt = blind.total,
+            blindCells = blind.counts(),
             fileNm = fileName,
             params = mapOf(
                 "scope" to "screen",

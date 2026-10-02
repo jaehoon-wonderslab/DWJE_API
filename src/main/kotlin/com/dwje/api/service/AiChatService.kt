@@ -1,5 +1,6 @@
 package com.dwje.api.service
 
+import com.dwje.api.common.util.AuditType
 import com.dwje.api.common.exception.InvalidParameterException
 import com.dwje.api.common.exception.ResourceNotFoundException
 import com.dwje.api.common.exception.BusinessException
@@ -52,6 +53,32 @@ class AiChatService(
     private val log = LoggerFactory.getLogger(javaClass)
 
     companion object {
+        /** 치환 내역 중 열람자가 볼 수 있는 분류의 것만 — 분류 데이터 항목(fieldKey)은 응답에 싣지 않는다 (R-18) */
+        fun visibleReplacements(replacements: List<Map<String, Any?>>, principal: UserPrincipal): List<Map<String, Any?>> =
+            replacements.filter { r -> (r["fieldKey"] as String?)?.let { principal.canReadField(it) } ?: true }.map { it - "fieldKey" }
+
+        /** 의도 = 원문 판정, unknown 이면 정규화 문장 판정 (07 GLS-04) */
+        fun intentOf(question: String, normalizedText: String): String =
+            classifyIntent(question).takeIf { it != "unknown" } ?: classifyIntent(normalizedText)
+
+        /**
+         * 문서 검색어 = 공식 용어 + 원문 (07 GLS-04) — 원문 표현과 공식 용어 둘 다로 찾는다.
+         * 검색이 앞 12낱말만 쓰므로 공식 용어를 앞에 둔다.
+         */
+        fun searchTextOf(question: String, replacements: List<Map<String, Any?>>): String {
+            val terms = replacements.mapNotNull { it["to"] as? String }.distinct()
+            return if (terms.isEmpty()) question else terms.joinToString(" ") + " " + question
+        }
+
+        private fun classifyIntent(question: String): String =
+            if (isGreeting(question)) "greeting" else INTENT_KEYWORDS.firstOrNull { (_, keywords) -> keywords.any { question.contains(it, ignoreCase = true) } }
+                ?.first
+                ?: "unknown"
+
+        private fun isGreeting(question: String): Boolean =
+            Regex("^(안녕(?:하세요|하십니까)?|하이|hi|hello|고마워(?:요)?|감사(?:합니다|해요)?)[!?.~ ]*$", RegexOption.IGNORE_CASE)
+                .matches(question.trim())
+
         private val DATABASE_TOOL_ROUTES = setOf(
             "PRODUCT_LIST", "DAILY_PRODUCT_DEFECT", "AOI_DIMENSION_SUMMARY", "AOI_WORKCENTER_REQUIRED",
             "DEFECT_RATE_TOP", "DEFECT_TOP", "PRODUCTION_COMPARE", "DOCUMENT_COUNT"
@@ -130,8 +157,9 @@ class AiChatService(
         // 3. 질의는 막지 않는다 — 데이터 권한은 결과에서 값만 가린다. (2026-09-16 요청자 결정)
         val blindKeys = dataFieldService.blindKeysFor(principal)
 
-        // 4. 의도 분류
-        val intent = classifyIntent(normalized.normalizedText)
+        // 4. 의도 분류 — 원문 우선, 원문이 어느 의도에도 걸리지 않을 때만 정규화 문장으로 본다 (07 GLS-04)
+        //    정규화가 「불량」 을 다른 공식 용어로 바꿔 「추이」 질문이 다른 의도로 뒤집히지 않게 한다.
+        val intent = intentOf(question, normalized.normalizedText)
 
         // 4-1. 이전 대화 맥락 및 기간 확인
         val prevChatId = aiChatRepository.findLastChatId(sessionId, principal.userId)
@@ -156,7 +184,7 @@ class AiChatService(
         // 5-1. 근거 문서 검색 — 문서 질의에만 실행한다. MES/품질 데이터 질문은 DB 도구 결과가
         // 유일한 근거여야 하며, 오래된 벡터 문서가 빈 조회 결과를 대신하거나 답을 덮지 않게 한다.
         val hits = (if (toolResult.route in DATABASE_TOOL_ROUTES) emptyList() else
-            aiChatRepository.searchDocumentChunks(normalized.normalizedText, principal.deptId, SEARCH_TOP_K, principal.superAdmin))
+            aiChatRepository.searchDocumentChunks(searchTextOf(question, normalized.replacements), principal.deptId, SEARCH_TOP_K, principal.superAdmin))
             .map { it.toMutableMap() }
         trace.docHitCount = hits.size
         var blindAppliedCnt = hits.sumOf { dataFieldService.maskHit(it, principal) }
@@ -183,7 +211,7 @@ class AiChatService(
         // 가린 것이 있으면 감사 로그(MASK) 한 건 — 공통 규약 6. 질의는 막지 않았으므로 결과 코드는 MASKED 다.
         if (blindAppliedCnt > 0) {
             auditLogService.record(
-                logType = "MASK", menuId = "ai-chat", fieldKey = blindKeys.sorted().joinToString(",").take(30),
+                logType = AuditType.MASK, menuId = "ai-chat", fieldKey = blindKeys.sorted().joinToString(",").take(30),
                 targetDesc = "AI 질의 결과", resultCd = "MASKED", maskedCnt = blindAppliedCnt, remark = "자연어 질의 결과 값 마스킹"
             )
         }
@@ -205,7 +233,10 @@ class AiChatService(
             prevChatId = prevChatId,
             evidenceSummary = (hits.mapNotNull { it["title"]?.toString() } + dataEvidence.mapNotNull { it["text"]?.toString() })
                 .joinToString("; ").take(5000).ifEmpty { null },
-            unansweredReason = if (hits.isEmpty() && dataEvidence.isEmpty() && intent != "greeting") "답변 근거를 찾지 못했습니다." else "응답 생성 중입니다."
+            unansweredReason = if (hits.isEmpty() && dataEvidence.isEmpty() && intent != "greeting") "답변 근거를 찾지 못했습니다." else "응답 생성 중입니다.",
+            // 질의자에게 가린 데이터 항목 — 질의 이력에서 권한이 더 좁은 열람자에게 응답을 가리는 기준(08 CHH-02)
+            blindFieldKeys = blindKeys,
+            askMs = elapsedMs
         )
         trace.chatId = chatId
 
@@ -268,7 +299,8 @@ class AiChatService(
             // 실적 DB 집계 근거 — 화면이 문서 근거보다 앞 번호([1]…)로 붙여 LLM 에 넘긴다
             "dataEvidence" to dataEvidence.map { mapOf("title" to it["title"], "text" to it["text"], "tool" to it["tool"], "args" to it["args"]) },
             "normalizedQuestion" to AiQuestionPrivacy.forStorage(normalized.normalizedText),
-            "termReplacements" to normalized.replacements,
+            // 열람자가 볼 수 없는 분류(고객사 등)의 용어는 응답·LLM [용어] 블록에서 뺀다 — 정규화 자체는 사전 전체를 쓴다 (R-18)
+            "termReplacements" to visibleReplacements(normalized.replacements, principal),
             // 후속 질문 목록 — 화면에 칩으로 표시되어 클릭 시 즉시 탐색 가능
             "followups" to followups,
             "elapsedMs" to elapsedMs
@@ -343,7 +375,8 @@ class AiChatService(
             else -> throw InvalidParameterException("평가 값은 good/bad/reask 만 허용합니다. [${request.rating}]", "rating")
         }
 
-        val updated = aiChatRepository.updateRating(messageId, ratingCd, principal.userId)
+        val updated = aiChatRepository.updateRating(messageId, ratingCd, principal.userId,
+            request.comment?.trim()?.ifBlank { null }?.take(500))
         if (updated == 0) throw ResourceNotFoundException("평가할 응답을 찾을 수 없습니다. [messageId=$messageId]")
 
         log.info("AI 응답 평가 등록 : messageId={} rating={} by={}", messageId, ratingCd, principal.userId)
@@ -386,15 +419,6 @@ class AiChatService(
     /**
      * 키워드 기반으로 질의 의도를 분류한다.
      */
-    private fun classifyIntent(question: String): String =
-        if (isGreeting(question)) "greeting" else INTENT_KEYWORDS.firstOrNull { (_, keywords) -> keywords.any { question.contains(it, ignoreCase = true) } }
-            ?.first
-            ?: "unknown"
-
-    private fun isGreeting(question: String): Boolean =
-        Regex("^(안녕(?:하세요|하십니까)?|하이|hi|hello|고마워(?:요)?|감사(?:합니다|해요)?)[!?.~ ]*$", RegexOption.IGNORE_CASE)
-            .matches(question.trim())
-
     /** 의도 코드의 한글 명칭 */
     private fun intentName(intent: String): String = when (intent) {
         "trend" -> "추이 분석"

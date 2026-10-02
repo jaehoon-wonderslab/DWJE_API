@@ -1259,6 +1259,7 @@ class DashboardAiRepository(
             FROM ax.tb_alm_alert a
             LEFT JOIN ax.tb_ai_agent ag ON ag.agent_id = a.detect_agent_id
             WHERE a.occurred_at >= now() - make_interval(hours => :hours)
+              AND a.test_flg = 'N'
               AND (a.plant_cd IS NULL OR a.plant_cd = :plantCd)
             ORDER BY
                 CASE a.severity_cd WHEN 'CRIT' THEN 1 WHEN 'WARN' THEN 2 ELSE 3 END,

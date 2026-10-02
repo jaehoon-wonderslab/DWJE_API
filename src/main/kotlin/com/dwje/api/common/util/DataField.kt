@@ -54,7 +54,10 @@ object MenuId {
     const val ALERT_COND = "alert-cond"
     const val SYS_RECIP = "sys-recip"
     const val SYS_GLOSS = "sys-gloss"
+    /** 자연어 질의 이력 — 2026-10-01 대그룹 「자연어 질의 이력」(history, `/history/chat`)으로 옮겼다 (R-08) */
     const val CHAT_HISTORY = "chat-history"
+    /** 용어 사전 › 용어 사전 조회 (GL-01, 대그룹 glossary, `/glossary/view`) — 조회 전용 (R-09 · R-15) */
+    const val GLOSS_VIEW = "gloss-view"
     const val SYS_AUDIT = "sys-audit"
     const val SYS_DL = "sys-dl"
     const val SYS_SYNC = "sys-sync"
@@ -97,4 +100,27 @@ object MenuId {
         RPT_PRESS_MORNING, RPT_PLATING_MORNING, RPT_SHIP_PLAN,
         RPT_YIELD_MODEL, RPT_LRR_CUSTOMER, RPT_SCRAP
     )
+
+    /**
+     * 미배정 부서가 볼 수 있는 화면 — 대시보드 3개 · 덕반장 AI · 자연어 질의 이력, 모두 조회 전용 (R-01 · 2차 R-11).
+     *
+     * `AuthorizationService.loadPrincipal` 이 미배정 소속의 유효 화면 권한을 이 목록과의 교집합으로 자른다.
+     * DB 에 행이 잘못 들어가도 권한이 넓어지지 않게 하는 방어선이다. 목록을 바꿀 때는 미배정 시드 마이그레이션과 함께 바꾼다.
+     */
+    val UNASSIGNED_SCREENS: Set<String> = linkedSetOf(DASH_AI, DASH_PROC, PROD_MONITOR, AI_CHAT, CHAT_HISTORY)
+
+    /**
+     * 관리 화면 4종 — 이 화면들의 부서 권한·계정 추가 허용은 통합관리자만 부여·회수한다 (R-07).
+     * 메뉴 접근 권한(03)과 계정 관리(01) 두 화면이 같은 목록을 쓴다.
+     */
+    val ADMIN_SCREENS: Set<String> = linkedSetOf(SYS_ACCOUNT, SYS_MENU, SYS_DATA, SYS_GW_DEPT)
+
+    /**
+     * 전사 공통 화면 — 새 부서를 만들면 조회 권한을 기본으로 준다 (08 CHH-17 · 13 GLV-06 · 03 MNP-17).
+     * 부서별로 끌 수는 있다(D-27). 미배정은 고정 목록([UNASSIGNED_SCREENS])을 따르므로 용어 사전 조회는 없다.
+     */
+    val DEFAULT_READ_MENUS: Set<String> = linkedSetOf(CHAT_HISTORY, GLOSS_VIEW)
+
+    /** 메뉴 권한 매트릭스의 「공통 화면」 표시 (03 MNP-17) — [DEFAULT_READ_MENUS] 와 같은 목록 */
+    val COMMON_SCREENS: Set<String> = DEFAULT_READ_MENUS
 }

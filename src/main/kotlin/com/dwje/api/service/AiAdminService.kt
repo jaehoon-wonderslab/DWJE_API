@@ -1,24 +1,31 @@
 package com.dwje.api.service
 
+import com.dwje.api.common.util.AuditType
 import com.dwje.api.common.exception.ResourceNotFoundException
-import com.dwje.api.common.exception.MenuAccessDeniedException
 import com.dwje.api.common.exception.InvalidParameterException
-import com.dwje.api.common.security.UserContext
 import com.dwje.api.common.response.PageMeta
+import com.dwje.api.common.security.UserPrincipal
 import com.dwje.api.common.util.DateUtils
 import com.dwje.api.common.util.MenuId
 import com.dwje.api.common.util.PageRequestParam
 import com.dwje.api.repository.AiChatRepository
 import com.dwje.api.repository.VectorIndexRepository
+import java.time.LocalDate
+import java.time.temporal.ChronoUnit
 import java.util.UUID
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
 /**
- * 자연어 질의 이력 서비스 (SY-08)
+ * 자연어 질의 이력 서비스 (SY-08 · 08 기획서)
  *
- * 접근 : 화면 권한 `chat-history`(ax.tb_sys_dept_menu_perm) · 값 마스킹 : 없음
+ * 접근 : 화면 권한 `chat-history`(ax.tb_sys_dept_menu_perm). 조회는 전 부서가 전 사용자 이력을 본다(R-08).
+ *        단 미배정 소속은 본인 이력만 본다(D-22 권장안 — [scopeUserId] 한 곳에서 판정).
+ *        관리 기능(검토 저장·학습데이터 내보내기·디버그)은 쓰기 권한(R-06, CHH-16).
+ * 값 가림 : 질의자보다 데이터 접근 권한이 좁은 열람자에게는 응답·판단 근거를 보이지 않는다(CHH-02).
+ *          질의자 본인 행과 쓰기 권한자가 아니면 질의자 이름을 가리고 사번을 주지 않는다(CHH-09 조회 시점).
+ *          남의 이력을 본 조회는 감사 로그 RAW_VIEW, 응답을 가린 조회는 MASK 로 남긴다(CHH-06).
  *
  * AI 모델 설정(SY-10) · AI 모델 버전 관리(SY-11) · Agent 실행 현황(SY-12)은 2026-09-15 에 화면과 함께 제거됐다.
  * AI 통합 대시보드의 Agent 작동 현황은 `DashboardAiService` 가 따로 제공한다.
@@ -29,8 +36,81 @@ class AiAdminService(
     private val vectorIndexRepository: VectorIndexRepository,
     private val authorizationService: AuthorizationService,
     private val objectMapper: ObjectMapper,
-    private val askDebugRecorder: AiAskDebugRecorder
+    private val askDebugRecorder: AiAskDebugRecorder,
+    private val dataFieldService: DataFieldService,
+    private val auditLogService: AuditLogService,
+    private val appProperties: com.dwje.api.config.AppProperties = com.dwje.api.config.AppProperties()
 ) {
+
+    companion object {
+        private const val MENU = MenuId.CHAT_HISTORY
+        private val REVIEW_CODES = setOf("USEFUL", "REASK", "BAD")
+        private val RATING_FILTERS = setOf("USEFUL", "REASK", "BAD", "ALL")
+        private val SOURCES = setOf("REVIEW_OR_USER", "REVIEW", "USER")
+        private const val SESSION_MAX_DAYS = 92L
+        /** 목록 필터 값 — 평가·검토 (NONE = 없음) */
+        private val FILTER_CODES = setOf("USEFUL", "REASK", "BAD", "NONE")
+        /** 「전체」 내려받기의 기간 하한 — 기간 조건을 두지 않는다(공통 10.6) */
+        private val UNBOUNDED_FROM: LocalDate = LocalDate.of(2000, 1, 1)
+        private const val NULL_KEYS_REASON = "이 기능 도입 전 질의라 질의자의 권한을 확인할 수 없어 응답을 표시하지 않습니다"
+    }
+
+    // ---------------------------------------------------------------------------------
+    // 공용 판정
+    // ---------------------------------------------------------------------------------
+
+    /** 열람 범위 — 미배정 소속은 본인 이력만 (D-22 권장안). 결정이 바뀌면 여기 한 줄만 고친다 */
+    private fun scopeUserId(p: UserPrincipal): String? = if (p.unassigned && !p.superAdmin) p.userId else null
+
+    /**
+     * 응답을 가릴 항목 — 질의자에게는 보였지만 열람자에게는 가려지는 데이터 항목. 가리지 않으면 null.
+     * 질의자 본인 행·가릴 것이 없는 열람자는 가리지 않는다. 기록 이전 행(NULL)은 열람자에게 가려지는 항목을 모두 가린다.
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun hiddenKeys(row: Map<String, Any?>, p: UserPrincipal, viewerBlind: Set<String>): Set<String>? {
+        if (row["empNo"] == p.userId || viewerBlind.isEmpty()) return null
+        val asker = row["blindFieldKeys"] as Set<String>? ?: return viewerBlind
+        return (viewerBlind - asker).takeIf { it.isNotEmpty() }
+    }
+
+    /** 가린 행 표시 — 응답·판단 근거를 비우고 사유를 담는다. 질문은 그대로 둔다 */
+    @Suppress("UNCHECKED_CAST")
+    private fun applyHidden(row: Map<String, Any?>, hidden: Set<String>?): Map<String, Any?> {
+        if (hidden == null) return row + mapOf("answerHidden" to false, "answerHiddenReason" to null)
+        val names = dataFieldService.appliedFieldsCached().associate { it["key"] as String to it["name"] as String }
+        val reason = if (row["blindFieldKeys"] == null) NULL_KEYS_REASON
+            else "질의자보다 데이터 접근 권한이 좁아 응답을 표시하지 않습니다 (가려지는 항목: ${hidden.sorted().joinToString(", ") { names[it] ?: it }})"
+        return row + mapOf("answer" to null, "judgmentBasis" to null, "answerHidden" to true, "answerHiddenReason" to reason)
+    }
+
+    /** 질의자 이름 가림 (CHH-09) — 본인·쓰기 권한자는 그대로, 그 밖에는 첫 글자만 남기고 사번을 비운다 */
+    private fun maskAsker(row: Map<String, Any?>, p: UserPrincipal, nameKey: String = "name"): Map<String, Any?> {
+        if (row["empNo"] == p.userId || p.canWriteMenu(MENU)) return row
+        val nm = row[nameKey] as String?
+        return row + mapOf(nameKey to nm?.takeIf { it.isNotEmpty() }?.let { it.first() + "**" }, "empNo" to null)
+    }
+
+    /** 공개용 문장 정리 — 내부 조회 정보(스키마·SQL)는 숨긴다 */
+    private fun publicRow(row: Map<String, Any?>): Map<String, Any?> = row + mapOf(
+        "question" to AiResponseSanitizer.publicText(row["question"] as? String),
+        "answer" to AiResponseSanitizer.publicText(row["answer"] as? String),
+        "judgmentBasis" to (AiResponseSanitizer.publicText(row["judgmentBasis"] as? String) ?: "판단 근거 기록 없음"),
+        "unansweredReason" to (row["unansweredReason"] ?: if ((row["answer"] as? String).isNullOrBlank()) "응답이 기록되지 않았습니다." else null)
+    )
+
+    /** 응답을 가린 조회의 감사 1행 (CHH-02) */
+    private fun auditMask(rows: List<Pair<Map<String, Any?>, Set<String>?>>, desc: String) {
+        val hidden = rows.mapNotNull { it.second }
+        if (hidden.isEmpty()) return
+        auditLogService.record(
+            logType = AuditType.MASK, menuId = MENU, fieldKey = hidden.flatten().toSortedSet().joinToString(",").take(30),
+            targetDesc = "질의 이력 응답 가림", resultCd = "BLIND", maskedCnt = hidden.size, remark = desc.take(500)
+        )
+    }
+
+    /** 남의 이력을 본 조회의 감사 1행 (CHH-06) */
+    private fun auditView(targetDesc: String, remark: String? = null) =
+        auditLogService.record(logType = AuditType.RAW_VIEW, menuId = MENU, targetDesc = targetDesc.take(200), resultCd = "ALLOW", remark = remark)
 
     // =================================================================================
     // SY-08. 자연어 질의 이력
@@ -38,12 +118,70 @@ class AiAdminService(
 
     /** 질의 이력 요약 (No.186) */
     @Transactional(readOnly = true)
-    fun getChatHistorySummary(from: String?, to: String?, userGroup: String?): Map<String, Any?> {
-        authorizationService.requireMenu(MenuId.CHAT_HISTORY)
-        val (fromDate, toDate) = DateUtils.periodOf(from, to)
+    fun getChatHistorySummary(from: String?, to: String?, userGroup: String?, cond: HistoryCond = HistoryCond()): Map<String, Any?> {
+        val principal = authorizationService.requireMenu(MENU)
+        val (fromDate, toDate) = boundedPeriod(from, to)
 
-        return aiChatRepository.findHistorySummary(fromDate, toDate, userGroup)
+        // canManage — 관리 기능(검토·학습데이터 내보내기·디버그) 표시 여부, 쓰기 권한 기준(R-06, 08 CHH-16)
+        return aiChatRepository.findHistorySummary(fromDate, toDate, filterOf(principal, userGroup, cond)) + mapOf(
+            "canManage" to principal.canWriteMenu(MENU),
+            // 보존 일수(0 = 파기 안 함, CHH-08) · 목표 답변율(CHH-11)
+            "retentionDays" to appProperties.ai.chatRetentionDays.coerceAtLeast(0),
+            // 보존 기간이 지나 다음 정리 때 지워질 질의 수 — 조회 조건과 무관한 전체 (R-20, 첫 실행 전에 보여 준다)
+            "expiredCnt" to appProperties.ai.chatRetentionDays.takeIf { it > 0 }?.let { days ->
+                aiChatRepository.countBefore(java.time.LocalDate.now(java.time.ZoneId.of("Asia/Seoul")).minusDays(days.toLong()).atStartOfDay())
+            }.let { it ?: 0L },
+            "targetAnswerRate" to appProperties.ai.targetAnswerRate
+        )
     }
+
+    /**
+     * 질의 목록 조회 조건 (08 CHH-10) — 화면 값 그대로 받아 [filterOf] 가 검증한다.
+     *
+     * @param answered Y | N
+     */
+    data class HistoryCond(
+        val keyword: String? = null,
+        val rating: String? = null,
+        val review: String? = null,
+        val answered: String? = null,
+        val empNo: String? = null
+    )
+
+    /** 조회 조건 검증 → 저장소 조건. 질의자 사번 조건은 쓰기 권한자만 쓴다 */
+    private fun filterOf(p: UserPrincipal, userGroup: String?, c: HistoryCond): AiChatRepository.HistoryFilter {
+        fun code(v: String?, field: String, label: String): String? = v?.trim()?.uppercase()?.ifEmpty { null }?.also {
+            if (it !in FILTER_CODES) throw InvalidParameterException("$label 값은 USEFUL/REASK/BAD/NONE 만 허용합니다.", field)
+        }
+        val answered = c.answered?.trim()?.uppercase()?.ifEmpty { null }?.also {
+            if (it !in setOf("Y", "N")) throw InvalidParameterException("응답 여부는 Y 또는 N 만 허용합니다.", "answered")
+        }
+        return AiChatRepository.HistoryFilter(
+            userGroup = userGroup, keyword = c.keyword, rating = code(c.rating, "rating", "평가"),
+            review = code(c.review, "review", "검토"), answered = answered,
+            empNo = c.empNo?.takeIf { p.canWriteMenu(MENU) }, scopeUserId = scopeUserId(p)
+        )
+    }
+
+    /** 조회 기간 — 92일 이내 (CHH-10). 「전체」 내려받기는 이 함수를 쓰지 않는다 */
+    private fun boundedPeriod(from: String?, to: String?): Pair<LocalDate, LocalDate> {
+        val (fromDate, toDate) = DateUtils.periodOf(from, to)
+        if (ChronoUnit.DAYS.between(fromDate, toDate) + 1 > SESSION_MAX_DAYS) {
+            throw InvalidParameterException("조회 기간은 92일 이내로 지정해 주세요.", "to")
+        }
+        return fromDate to toDate
+    }
+
+    /** 질의 이력 목록 결과 — 가린 행 수(maskedRowCnt)를 함께 준다 */
+    /** 질의 이력 부서 선택지 — 기간 안 부서별 질의 건수. 미배정은 본인 이력 범위(D-22) */
+    @Transactional(readOnly = true)
+    fun getChatHistoryGroups(from: String?, to: String?): Map<String, Any?> {
+        val principal = authorizationService.requireMenu(MENU)
+        val (fromDate, toDate) = boundedPeriod(from, to)
+        return mapOf("items" to aiChatRepository.findHistoryGroups(fromDate, toDate, scopeUserId(principal)))
+    }
+
+    data class HistoryPage(val rows: List<Map<String, Any?>>, val meta: PageMeta, val maskedRowCnt: Int)
 
     /** 질의 이력 조회 (No.187) */
     @Transactional(readOnly = true)
@@ -52,82 +190,233 @@ class AiAdminService(
         to: String?,
         userGroup: String?,
         page: Int?,
-        size: Int?
-    ): Pair<List<Map<String, Any?>>, PageMeta> {
-        authorizationService.requireMenu(MenuId.CHAT_HISTORY)
+        size: Int?,
+        cond: HistoryCond = HistoryCond(),
+        exporting: Boolean = false
+    ): HistoryPage {
+        val principal = authorizationService.requireMenu(MENU)
 
-        val (fromDate, toDate) = DateUtils.periodOf(from, to)
+        // 「전체」 내려받기(exporting)는 기간을 두지 않고 감사는 내려받기 끝에서 한 번만 남긴다(CHH-06·07)
+        val (fromDate, toDate) = if (exporting) UNBOUNDED_FROM to LocalDate.now().plusDays(1) else boundedPeriod(from, to)
+        val filter = filterOf(principal, userGroup, cond)
         val paging = PageRequestParam.of(page, size)
 
-        val total = aiChatRepository.countHistory(fromDate, toDate, userGroup)
-        val rows = aiChatRepository.findHistory(fromDate, toDate, userGroup, paging.limit, paging.offset).map { row ->
-            row + mapOf("question" to AiResponseSanitizer.publicText(row["question"] as? String),
-                "answer" to AiResponseSanitizer.publicText(row["answer"] as? String),
-                "judgmentBasis" to (AiResponseSanitizer.publicText(row["judgmentBasis"] as? String) ?: "판단 근거 기록 없음"),
-                "unansweredReason" to (row["unansweredReason"] ?: if ((row["answer"] as? String).isNullOrBlank()) "응답이 기록되지 않았습니다." else null))
+        val total = aiChatRepository.countHistory(fromDate, toDate, filter)
+        val viewerBlind = dataFieldService.blindKeysFor(principal)
+        val judged = aiChatRepository.findHistory(fromDate, toDate, filter, paging.limit, paging.offset).map { row ->
+            row to hiddenKeys(row, principal, viewerBlind)
+        }
+        // 가림 판정(질의자 사번 필요) → 공개 문장 정리 → 응답 가림 → 이름 가림 순서
+        val rows = judged.map { (row, hidden) ->
+            maskAsker(applyHidden(publicRow(row), hidden), principal) - "blindFieldKeys"
         }
 
-        return rows to PageMeta.of(paging.page, paging.size, total)
+        if (!exporting) {
+            val desc = "from=$fromDate, to=$toDate, userGroup=${userGroup ?: "전체"}, keyword=${cond.keyword ?: "-"}, " +
+                "rating=${filter.rating ?: "-"}, review=${filter.review ?: "-"}, answered=${filter.answered ?: "-"}, page=${paging.page}"
+            if (judged.any { it.first["empNo"] != principal.userId }) auditView("질의 이력 목록", "$desc, rows=${rows.size}")
+            auditMask(judged, desc)
+        }
+
+        return HistoryPage(rows, PageMeta.of(paging.page, paging.size, total), judged.count { it.second != null })
     }
 
     /** 질의 상세 조회 (No.188) */
     @Transactional(readOnly = true)
     fun getChatDetail(messageId: Long): Map<String, Any?> {
-        requireDetailAdmin()
+        // 상세는 조회 권한으로 연다. 디버그 진단만 관리 기능(쓰기 권한)이다(R-06 · 08 CHH-16).
+        val principal = authorizationService.requireMenu(MENU)
+        val canManage = principal.canWriteMenu(MENU)
 
         val chat = aiChatRepository.findChatLog(messageId)
+            ?.let { it + mapOf("empNo" to it["userId"]) }
             ?: throw ResourceNotFoundException("질의를 찾을 수 없습니다. [messageId=$messageId]")
-        val basis = (chat["evidenceSummary"] as? String)?.takeIf { it.isNotBlank() } ?: run {
-            val query = vectorIndexRepository.findQueryDetail(messageId)
-            val hits = (query?.get("queryId") as? Long)?.let { vectorIndexRepository.findQueryHits(it) }.orEmpty()
-            hits.mapNotNull { it["title"] as? String }.distinct().joinToString("; ").ifBlank { "판단 근거 기록 없음" }
-        }
+        // 범위 밖(미배정이 남의 질의)은 있는지조차 알리지 않는다
+        scopeUserId(principal)?.let { if (chat["userId"] != it) throw ResourceNotFoundException("질의를 찾을 수 없습니다. [messageId=$messageId]") }
 
-        return mapOf(
+        // 근거 문서 — 열람자 권한으로 발췌·제목을 가린다(CHH-05). 판단 근거가 비었을 때의 대체 문구에도 같은 목록을 쓴다
+        val hits = vectorIndexRepository.findQueryDetail(messageId)?.get("queryId")?.let { it as? Long }
+            ?.let { vectorIndexRepository.findQueryHits(it) }.orEmpty().take(8)
+            .map { h ->
+                val m = h.toMutableMap()
+                dataFieldService.maskHit(m, principal)
+                mapOf("docId" to m["docId"], "title" to m["title"], "page" to m["page"], "score" to m["score"],
+                    "cited" to m["cited"], "heading" to m["heading"])
+            }
+        val basis = (chat["evidenceSummary"] as? String)?.takeIf { it.isNotBlank() }
+            ?: hits.mapNotNull { it["title"] as? String }.distinct().joinToString("; ").ifBlank { "판단 근거 기록 없음" }
+        val hidden = hiddenKeys(chat, principal, dataFieldService.blindKeysFor(principal))
+
+        val base = mapOf(
             "messageId" to messageId,
-            "question" to AiResponseSanitizer.publicText(chat["question"] as? String),
-            "answer" to AiResponseSanitizer.publicText(chat["answer"] as? String),
-            "judgmentBasis" to AiResponseSanitizer.publicText(basis),
-            "unansweredReason" to (chat["unansweredReason"] ?: if ((chat["answer"] as? String).isNullOrBlank()) "응답이 기록되지 않았습니다." else null),
+            "empNo" to chat["userId"],
+            "name" to chat["userNm"],
+            "dept" to chat["deptNm"],
+            "ts" to chat["askedAt"],
+            "askedAt" to chat["askedAt"],
+            "sessionKey" to (chat["sessionId"] ?: "chat-$messageId"),
+            "hits" to hits,
+            "question" to chat["question"],
+            "answer" to chat["answer"],
+            "judgmentBasis" to basis,
+            "unansweredReason" to chat["unansweredReason"],
             "evaluationCriteria" to "근거 부합성·질문 충족 여부·응답 적시성",
-            "debug" to askDebugRecorder.byChatId(messageId),
             "elapsedMs" to chat["responseMs"],
             "maskedCnt" to chat["maskedCnt"],
-            "rating" to chat["rating"]
+            "rating" to chat["rating"],
+            "ratingComment" to chat["ratingComment"],
+            "review" to chat["review"],
+            "reviewNm" to chat["reviewNm"],
+            "reviewComment" to chat["reviewComment"],
+            "reviewedBy" to chat["reviewedBy"],
+            "reviewedAt" to chat["reviewedAt"],
+            "blindFieldKeys" to chat["blindFieldKeys"]
         )
+        val masked = maskAsker(applyHidden(publicRow(base), hidden), principal) - "blindFieldKeys"
+        // userName = 가림 뒤 이름(CHH-05). 디버그 진단은 쓰기 권한자에게만 — 권한이 없으면 키 자체가 없다
+        val result = masked + ("userName" to masked["name"]) +
+            (if (canManage) mapOf("debug" to askDebugRecorder.byChatId(messageId)) else emptyMap())
+
+        if (chat["userId"] != principal.userId) auditView("질의 상세 messageId=$messageId 질의자=${chat["userId"]}")
+        auditMask(listOf(chat to hidden), "messageId=$messageId")
+        return result
+    }
+
+    /**
+     * 관리자 검토 저장 (08 CHH-04) — 질의자 평가와 따로 둔다. 다시 저장하면 덮어쓰고 이전 값은 감사 로그에 남긴다.
+     */
+    @Transactional
+    fun saveReview(messageId: Long, reviewCd: String, comment: String?): Map<String, Any?> {
+        val principal = authorizationService.requireWrite(MENU)
+        val code = reviewCd.trim().uppercase()
+        if (code !in REVIEW_CODES) throw InvalidParameterException("검토 값은 USEFUL/REASK/BAD 만 허용합니다.", "reviewCd")
+        val chat = aiChatRepository.findChatLog(messageId)
+            ?: throw ResourceNotFoundException("질의를 찾을 수 없습니다. [messageId=$messageId]")
+
+        val reviewedAt = aiChatRepository.updateReview(messageId, code, comment?.trim()?.ifBlank { null }, principal.userId)
+            ?: throw ResourceNotFoundException("질의를 찾을 수 없습니다. [messageId=$messageId]")
+        auditLogService.record(
+            logType = AuditType.RAW_VIEW, menuId = MENU,
+            targetDesc = "질의 검토 messageId=$messageId 질의자=${chat["userId"]}", resultCd = "ALLOW",
+            remark = "review ${chat["review"] ?: "없음"}/${(chat["reviewComment"] as String?).orEmpty()} → $code".take(500)
+        )
+        return mapOf("messageId" to messageId, "review" to code, "reviewedBy" to principal.userId, "reviewedAt" to reviewedAt)
+    }
+
+    // ---------------------------------------------------------------------------------
+    // 세션별 조회 (08 CHH-18, 2차 결정 R-12)
+    // ---------------------------------------------------------------------------------
+
+    /**
+     * 세션 목록 — 최근 질의 순. 기간은 92일 이내.
+     *
+     * @param empNo 질의자 사번 — 쓰기 권한자만 쓸 수 있고, 그 밖에는 무시한다
+     */
+    @Transactional(readOnly = true)
+    fun getChatSessions(
+        from: String?, to: String?, userGroup: String?, empNo: String?, keyword: String?, page: Int?, size: Int?,
+        exporting: Boolean = false, cond: HistoryCond = HistoryCond()
+    ): Pair<List<Map<String, Any?>>, PageMeta> {
+        val principal = authorizationService.requireMenu(MENU)
+        val (fromDate, toDate) = if (exporting) UNBOUNDED_FROM to LocalDate.now().plusDays(1) else boundedPeriod(from, to)
+        val filter = filterOf(principal, userGroup, cond.copy(keyword = keyword ?: cond.keyword, empNo = empNo ?: cond.empNo))
+        val viewerBlind = dataFieldService.blindKeysFor(principal)
+        val paging = PageRequestParam.of(page, size)
+
+        val total = aiChatRepository.countSessions(fromDate, toDate, filter, principal.userId, viewerBlind)
+        val raw = aiChatRepository.findSessions(fromDate, toDate, filter, principal.userId, viewerBlind, paging.limit, paging.offset)
+        val rows = raw.map { maskAsker(it + mapOf("firstQuestion" to AiResponseSanitizer.publicText(it["firstQuestion"] as String?)), principal) }
+        if (!exporting && raw.any { it["empNo"] != principal.userId }) {
+            auditView("질의 세션 목록", "from=$fromDate, to=$toDate, userGroup=${userGroup ?: "전체"}, page=${paging.page}, rows=${rows.size}")
+        }
+        return rows to PageMeta.of(paging.page, paging.size, total)
+    }
+
+    /** 세션 상세 — 그 세션의 질의·응답을 시간순으로. 키는 session_id 또는 `chat-{messageId}`(세션 없는 질의) */
+    @Transactional(readOnly = true)
+    fun getChatSession(sessionKey: String): Map<String, Any?> {
+        val principal = authorizationService.requireMenu(MENU)
+        val notFound = { ResourceNotFoundException("세션을 찾을 수 없습니다. [sessionKey=$sessionKey]") }
+        val turns = Regex("^chat-(\\d+)$").find(sessionKey)?.let { aiChatRepository.findSessionTurns(null, it.groupValues[1].toLong()) }
+            ?: runCatching { UUID.fromString(sessionKey) }.getOrNull()?.let { aiChatRepository.findSessionTurns(it, null) }
+            ?: throw notFound()
+        if (turns.isEmpty()) throw notFound()
+        val owner = turns.first()
+        scopeUserId(principal)?.let { if (owner["empNo"] != it) throw notFound() }
+
+        val viewerBlind = dataFieldService.blindKeysFor(principal)
+        val judged = turns.map { it to hiddenKeys(it, principal, viewerBlind) }
+        val shaped = judged.map { (row, hidden) ->
+            applyHidden(publicRow(row), hidden).filterKeys {
+                it in setOf("messageId", "askedAt", "question", "answer", "answerHidden", "answerHiddenReason", "judgmentBasis",
+                    "unansweredReason", "responseSec", "rating", "ratingComment", "review", "reviewNm", "reask")
+            }
+        }
+        val head = maskAsker(
+            mapOf("sessionKey" to sessionKey, "sessionId" to owner["sessionId"], "empNo" to owner["empNo"], "name" to owner["name"],
+                "dept" to owner["dept"], "startedAt" to turns.first()["askedAt"], "lastAskedAt" to turns.last()["askedAt"]),
+            principal
+        )
+        if (owner["empNo"] != principal.userId) auditView("세션 상세 sessionKey=$sessionKey 질의자=${owner["empNo"]}")
+        auditMask(judged, "sessionKey=$sessionKey")
+        return head + mapOf("turns" to shaped)
     }
 
     @Transactional(readOnly = true)
     fun getAskDebug(requestId: String): Map<String, Any?> {
-        requireDetailAdmin()
+        // 디버그 진단 조회는 관리 기능 — 쓰기 권한(R-06 · 08 CHH-16, 공통 9.8 예외)
+        authorizationService.requireWrite(MENU)
         val id = runCatching { UUID.fromString(requestId) }
             .getOrElse { throw InvalidParameterException("요청 ID 형식이 올바르지 않습니다.", "requestId") }
         return askDebugRecorder.byRequestId(id) ?: throw ResourceNotFoundException("진단 기록을 찾을 수 없습니다.")
     }
 
-    private fun requireDetailAdmin() {
-        authorizationService.requireMenu(MenuId.CHAT_HISTORY)
-        if (!UserContext.current().superAdmin) throw MenuAccessDeniedException(MenuId.CHAT_HISTORY)
-    }
+    /**
+     * 학습데이터 내보내기 결과
+     *
+     * @param blindCnt 열람자 권한으로 응답을 볼 수 없어 뺀 샘플 수
+     */
+    data class TrainsetResult(
+        val lines: List<String>, val blindCnt: Int, val from: String, val to: String, val rating: String, val source: String
+    )
 
-    /** 학습데이터 내보내기 대상 (No.189) */
+    /**
+     * 학습데이터 내보내기 대상 (No.189, 08 CHH-03)
+     *
+     * - 평가: 기본 USEFUL. 출처 기본 REVIEW_OR_USER(관리자 검토가 있으면 검토, 없으면 질의자 평가). ALL 은 평가가 있는 건 전체.
+     * - 질문은 정규화 문장이 아니라 **원문**(저장 시 가림 규칙을 한 번 더 거친다), 빈 답·가린 답은 뺀다.
+     * - 열람자 권한으로 응답을 볼 수 없는 샘플은 빼고 [TrainsetResult.blindCnt] 로 센다(CHH-02 와 같은 규칙).
+     * - 0건이면 404 — 빈 파일을 내려주지 않는다.
+     */
     @Transactional(readOnly = true)
-    fun getTrainsetLines(from: String?, to: String?, ratingFilter: String?): List<String> {
-        authorizationService.requireMenu(MenuId.CHAT_HISTORY)
+    fun getTrainsetLines(from: String?, to: String?, ratingFilter: String?, source: String? = null): TrainsetResult {
+        // 학습데이터 내보내기는 질의·응답 원문 전체를 반출하는 관리 기능 — 쓰기 권한(공통 9.8 예외, 08 CHH-16)
+        val principal = authorizationService.requireWrite(MENU)
+        val rating = (ratingFilter?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: "USEFUL")
+        if (rating !in RATING_FILTERS) throw InvalidParameterException("평가 필터는 USEFUL/REASK/BAD/ALL 만 허용합니다.", "ratingFilter")
+        val src = source?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: "REVIEW_OR_USER"
+        if (src !in SOURCES) throw InvalidParameterException("출처는 REVIEW_OR_USER/REVIEW/USER 만 허용합니다.", "source")
         val (fromDate, toDate) = DateUtils.periodOf(from, to, 90)
 
-        // JSONL 한 줄에 한 샘플(prompt/completion)을 담는다.
-        return aiChatRepository.findTrainsetRows(fromDate, toDate, ratingFilter, 10000).map { row ->
-            objectMapper.writeValueAsString(
-                mapOf(
-                    "messages" to listOf(
-                        mapOf("role" to "user", "content" to AiResponseSanitizer.publicText((row["normalizedQuestion"] ?: row["question"]) as? String)),
-                        mapOf("role" to "assistant", "content" to AiResponseSanitizer.publicText(stripHtml(row["answer"] as? String)))
-                    ),
-                    "meta" to mapOf("rating" to row["rating"], "chatId" to row["chatId"])
+        val viewerBlind = dataFieldService.blindKeysFor(principal)
+        var blindCnt = 0
+        val lines = aiChatRepository.findTrainsetRows(fromDate, toDate, rating.takeIf { it != "ALL" }, src, AiResponseSanitizer.HIDDEN, 10000)
+            .mapNotNull { row ->
+                if (hiddenKeys(row, principal, viewerBlind) != null) { blindCnt++; return@mapNotNull null }
+                val question = AiResponseSanitizer.publicText(AiQuestionPrivacy.forStorage(row["question"] as String? ?: ""))
+                val answer = AiResponseSanitizer.publicText(stripHtml(row["answer"] as? String))
+                if (question.isNullOrBlank() || answer.isNullOrBlank() ||
+                    question == AiResponseSanitizer.HIDDEN || answer == AiResponseSanitizer.HIDDEN) return@mapNotNull null
+                // JSONL 한 줄에 한 샘플(prompt/completion)을 담는다.
+                objectMapper.writeValueAsString(
+                    mapOf(
+                        "messages" to listOf(mapOf("role" to "user", "content" to question), mapOf("role" to "assistant", "content" to answer)),
+                        "meta" to mapOf("chatId" to row["chatId"], "rating" to row["rating"], "ratingSource" to row["ratingSource"])
+                    )
                 )
-            )
-        }
+            }
+        if (lines.isEmpty()) throw ResourceNotFoundException("내보낼 학습 샘플이 없습니다. 기간이나 평가 조건을 바꿔 주세요.")
+        return TrainsetResult(lines, blindCnt, fromDate.toString(), toDate.toString(), rating, src)
     }
 
     /** HTML 태그를 제거해 학습 샘플로 정리한다. */

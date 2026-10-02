@@ -1,5 +1,6 @@
 package com.dwje.api.service
 
+import com.dwje.api.common.util.AuditType
 import com.dwje.api.common.exception.ConflictingValueException
 import com.dwje.api.common.exception.InvalidParameterException
 import com.dwje.api.common.exception.ResourceNotFoundException
@@ -68,13 +69,16 @@ class MetricStandardService(
         applied: Boolean?,
         level: String?,
         page: Int?,
-        size: Int?
+        size: Int?,
+        alertOnly: Boolean? = null
     ): Pair<List<Map<String, Any?>>, PageMeta> {
-        authorizationService.requireMenu(MenuId.SYS_METRIC)
+        // 이상 알림 발송 조건 관리 화면이 감지 지표 선택지로 쓴다 — sys-metric 화면은 제거되어(1.2) 이 권한만으로는
+        // 통합관리자 외에 아무도 지나가지 못했다(CMN-02, 05 ALC-02). 조회만 두 화면에 연다.
+        authorizationService.requireAnyMenu(MenuId.ALERT_COND, MenuId.SYS_METRIC)
         val paging = PageRequestParam.of(page, size)
 
-        val total = metricStandardRepository.countStandards(category, applied, level)
-        val rows = metricStandardRepository.findStandards(category, applied, level, paging.limit, paging.offset)
+        val total = metricStandardRepository.countStandards(category, applied, level, alertOnly)
+        val rows = metricStandardRepository.findStandards(category, applied, level, paging.limit, paging.offset, alertOnly)
 
         return rows to PageMeta.of(paging.page, paging.size, total)
     }
@@ -114,7 +118,7 @@ class MetricStandardService(
         )
 
         auditLogService.record(
-            logType = "AUTO_GEN",
+            logType = AuditType.CONFIG_CHANGE,
             menuId = MenuId.SYS_METRIC,
             targetDesc = "지표 기준 등록 [$name]",
             remark = "정상=${request.normal}, 주의=${request.warn}, 위험=${request.critical}"
@@ -175,7 +179,7 @@ class MetricStandardService(
         )
 
         auditLogService.record(
-            logType = "AUTO_GEN",
+            logType = AuditType.CONFIG_CHANGE,
             menuId = MenuId.SYS_METRIC,
             targetDesc = "지표 기준 수치 수정 [${before["name"]}]",
             remark = "정상 ${before["normal"]}→${request.normal ?: before["normal"]}, " +
@@ -199,7 +203,7 @@ class MetricStandardService(
         metricStandardRepository.updateStandardApplied(stdId, applied, principal.userId)
 
         auditLogService.record(
-            logType = "AUTO_GEN",
+            logType = AuditType.CONFIG_CHANGE,
             menuId = MenuId.SYS_METRIC,
             targetDesc = "지표 ${if (applied) "적용" else "해제"} [${before["name"]}]",
             remark = "stdId=$stdId"
@@ -366,7 +370,7 @@ class MetricStandardService(
         )
 
         auditLogService.record(
-            logType = "AUTO_GEN",
+            logType = AuditType.CONFIG_CHANGE,
             menuId = MenuId.SYS_METRIC,
             targetDesc = "지표 수집 정의 저장 [${standard["name"]}]",
             remark = "방식=${request.collectMode}, 주기=${request.intervalSec}s, 적용=${request.applied}"
@@ -403,7 +407,7 @@ class MetricStandardService(
         val saved = metricStandardRepository.replaceSources(stdId, items)
 
         auditLogService.record(
-            logType = "AUTO_GEN",
+            logType = AuditType.CONFIG_CHANGE,
             menuId = MenuId.SYS_METRIC,
             targetDesc = "지표 산출 근거 저장 [${standard["name"]}]",
             remark = "근거 ${saved}건"

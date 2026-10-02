@@ -108,11 +108,13 @@ class ProductionResultScreenWorkbook {
         )
     }
 
-    fun build(data: ResultScreenExport): ByteArray = XSSFWorkbook().use { wb ->
-        val styles = WorkbookStyles(wb)
+    /** @param blind 가린 칸 판정기 — 채운 칸 수를 호출자가 다운로드 이력에 남긴다(R-10) */
+    fun build(data: ResultScreenExport, blind: BlindCells = BlindCells()): ByteArray = XSSFWorkbook().use { wb ->
+        val styles = WorkbookStyles(wb, blind)
         writeSummary(wb.createSheet(SHEET_SUMMARY), data, styles)
         writeTrend(wb.createSheet(SHEET_TREND), data, styles)
         writeTree(wb.createSheet(SHEET_TREE), data, styles)
+        blind.writeNoticeSheet(wb)
         ByteArrayOutputStream().use { out ->
             wb.write(out)
             out.toByteArray()
@@ -133,11 +135,11 @@ class ProductionResultScreenWorkbook {
             "제품" to "전체",
             "설비" to "전체",
             "집계 기준" to "MES 라벨 이력(mes.tb_pop_label_hist) · 삭제분 제외 · 등록 시각 기준 일 단위(00:00~24:00) · 출하 원장이 아님",
-            "투입 수량 합계" to s["inputQty"],
-            "양품 수량 합계" to s["okQty"],
-            "불량 수량 합계" to s["ngQty"],
-            "불량률(%)" to s["defectRate"],
-            "수율(%)" to s["yield"],
+            "투입 수량 합계" to st.blind.fill("inputQty", s["inputQty"]),
+            "양품 수량 합계" to st.blind.fill("okQty", s["okQty"]),
+            "불량 수량 합계" to st.blind.fill("ngQty", s["ngQty"]),
+            "불량률(%)" to st.blind.fill("defectRate", s["defectRate"]),
+            "수율(%)" to st.blind.fill("yield", s["yield"]),
             "평균 가동률(%)" to s["avgUptimeRate"],
             "비가동 시간 합계(분)" to s["downtimeMin"],
             "실적 있는 일수" to data.countOf(1),
@@ -146,7 +148,7 @@ class ProductionResultScreenWorkbook {
             "권한 마스킹 항목" to (if (masked.isEmpty()) "없음" else masked.joinToString(", ")),
             "내려받은 사용자" to data.downloadedBy,
             "생성 시각" to data.generatedAt.format(DateUtils.DATETIME),
-            "빈 칸의 뜻" to "값 없음(미측정 또는 권한 마스킹). 0 으로 채우지 않음. 가동률·비가동 시간은 일자 행에만 출처가 있음"
+            "빈 칸의 뜻" to "값 없음(미측정). 0 으로 채우지 않음. 데이터 접근 권한으로 가린 칸은 「비공개」. 가동률·비가동 시간은 일자 행에만 출처가 있음"
         )
         st.keyValue(sheet, lines)
     }
@@ -158,9 +160,9 @@ class ProductionResultScreenWorkbook {
         data.dayRows.forEachIndexed { i, d ->
             val row = sheet.createRow(i + 1)
             st.text(row, 0, d["period"]?.toString())
-            st.number(row.createCell(1), d["inputQty"], st.qty)
-            st.number(row.createCell(2), d["ngQty"], st.qty)
-            st.number(row.createCell(3), d["defectRate"], st.rate)
+            st.number(row.createCell(1), d["inputQty"], st.qty, "inputQty")
+            st.number(row.createCell(2), d["ngQty"], st.qty, "ngQty")
+            st.number(row.createCell(3), d["defectRate"], st.rate, "defectRate")
         }
         listOf(14, 14, 14, 12).forEachIndexed { i, w -> sheet.setColumnWidth(i, w * 256) }
         sheet.createFreezePane(0, 1)
@@ -233,12 +235,12 @@ class ProductionResultScreenWorkbook {
             st.text(row, 1, r.productLabel, text)
             st.text(row, 2, r.plantNm, text)
             st.text(row, 3, r.processNm, text)
-            st.text(row, 4, r.eqptCd, text)
-            st.text(row, 5, r.eqptNm, text)
-            st.number(row.createCell(6), r.inputQty, st.qtyOf(r.level))
-            st.number(row.createCell(7), r.okQty, st.qtyOf(r.level))
-            st.number(row.createCell(8), r.ngQty, st.qtyOf(r.level))
-            st.number(row.createCell(9), r.defectRate, st.rateOf(r.level))
+            st.text(row, 4, r.eqptCd, text, "eqptCd")
+            st.text(row, 5, r.eqptNm, text, "eqptNm")
+            st.number(row.createCell(6), r.inputQty, st.qtyOf(r.level), "inputQty")
+            st.number(row.createCell(7), r.okQty, st.qtyOf(r.level), "okQty")
+            st.number(row.createCell(8), r.ngQty, st.qtyOf(r.level), "ngQty")
+            st.number(row.createCell(9), r.defectRate, st.rateOf(r.level), "defectRate")
             st.number(row.createCell(10), r.uptimeRate, st.rateOf(r.level))
             st.number(row.createCell(11), r.downtimeMin, st.qtyOf(r.level))
         }

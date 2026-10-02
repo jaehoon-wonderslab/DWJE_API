@@ -47,12 +47,14 @@ ON CONFLICT (dept_nm) DO NOTHING;
 -- -------------------------------------------------------------------------------------
 -- 2. 계정 (비밀번호는 전부 'Dwje!2026' — PBKDF2-HMAC-SHA512 해시)
 -- -------------------------------------------------------------------------------------
+--    pwd_change_req_yn = 'N' — 컬럼 기본값은 Y(V48, 초기 비밀번호 변경 강제)라 넣지 않으면 시드 계정이
+--    로그인 직후 업무 API 에서 E-AUTH-006 으로 막힌다.
 INSERT INTO ax.tb_sys_user (
     user_id, user_nm, dept_id, plant_cd, position_cd, user_state_cd,
-    is_switch_target, pwd_hash, pwd_upd_at, email, ins_user, upd_user
+    is_switch_target, pwd_hash, pwd_upd_at, pwd_change_req_yn, email, ins_user, upd_user
 )
 SELECT v.user_id, v.user_nm, d.dept_id, 'PL01', v.position_cd, 'ACTIVE',
-       true, '{pbkdf2-sha512}210000$EfdDuCrdExTT/D+WLja3Mg$En/499a3O0IiOzUAvDYD9YHI1LrcOPVhmqWrFpGtNkcsRfyuos5N+yJGCmgHF8UbUziLfUASqXByoOoyd2n9JQ', now(), v.user_id || '@dwje.co.kr', 'SEED', 'SEED'
+       true, '{pbkdf2-sha512}210000$EfdDuCrdExTT/D+WLja3Mg$En/499a3O0IiOzUAvDYD9YHI1LrcOPVhmqWrFpGtNkcsRfyuos5N+yJGCmgHF8UbUziLfUASqXByoOoyd2n9JQ', now(), 'N', v.user_id || '@dwje.co.kr', 'SEED', 'SEED'
 FROM (VALUES
     ('10000', '관리자', '통합관리자', 'ADMIN'),
     ('10001', '김품질', '품질보증팀', 'SENIOR'),
@@ -100,12 +102,33 @@ ON CONFLICT (dept_id, field_key) DO NOTHING;
 -- 4. 메뉴 접근 권한 — 「화면-API 매핑」 시트의 접근 부서
 -- -------------------------------------------------------------------------------------
 
--- 4-1. 전 부서 공통 화면
+-- 4-0. 쓰기 권한 행 (can_write = true) — V49 이관 표 + V67(업로드 문서 숨김) 과 같다. 빈 DB 에서는 V49 가 돌 때 부서가 아직 없어
+--      이관할 행이 없으므로 여기서 넣는다. 아래 4-1 · 4-2 보다 먼저 넣어야 조회 전용 행으로 덮이지 않는다.
+INSERT INTO ax.tb_sys_dept_menu_perm (dept_id, menu_id, can_read, can_write, ins_user, upd_user)
+SELECT d.dept_id, v.menu_id, true, true, 'SEED', 'SEED'
+FROM (VALUES
+    ('sys-account','전산팀'), ('sys-gw-dept','전산팀'), ('sys-menu','전산팀'), ('sys-data','전산팀'),
+    ('alert-cond','전산팀'), ('sys-recip','전산팀'), ('sys-gloss','전산팀'), ('sys-sync','전산팀'),
+    ('chat-history','전산팀'), ('dash-ai-upload','전산팀'), ('sys-upload-doc','전산팀'),
+
+    ('sys-account','통합관리자'), ('alert-cond','통합관리자'), ('sys-recip','통합관리자'),
+    ('sys-sync','통합관리자'), ('sys-gloss','통합관리자'),
+
+    ('sys-gloss','품질보증팀'), ('sys-gloss','생산관리팀'), ('sys-gloss','제조팀'), ('sys-gloss','경영진')
+) AS v(menu_id, dept_nm)
+JOIN ax.tb_sys_dept d ON d.dept_nm = v.dept_nm
+WHERE EXISTS (SELECT 1 FROM ax.tb_sys_menu m WHERE m.menu_id = v.menu_id)
+ON CONFLICT (dept_id, menu_id) DO NOTHING;
+
+-- 4-1. 전 부서 공통 화면 — 미배정은 고정 5개 화면만(V49)이라 뺀다
 INSERT INTO ax.tb_sys_dept_menu_perm (dept_id, menu_id, can_read, can_write, ins_user, upd_user)
 SELECT d.dept_id, m.menu_id, true, false, 'SEED', 'SEED'
 FROM ax.tb_sys_dept d
-CROSS JOIN (VALUES ('ai-chat'), ('dash-ai'), ('dash-proc'), ('alert-list'), ('sys-gloss'), ('chat-history')) AS m(menu_id)
+CROSS JOIN (VALUES ('ai-chat'), ('dash-ai'), ('dash-proc'), ('alert-list'), ('sys-gloss'), ('chat-history'),
+                   ('gloss-view')) AS m(menu_id)
 WHERE d.use_flg = 'Y'
+  AND d.dept_nm <> '미배정'
+  AND EXISTS (SELECT 1 FROM ax.tb_sys_menu x WHERE x.menu_id = m.menu_id)
 ON CONFLICT (dept_id, menu_id) DO NOTHING;
 
 -- 4-2. 부서 지정 화면
@@ -150,6 +173,7 @@ FROM (VALUES
     ('sys-dl','전산팀'), ('sys-dl','통합관리자'),
     ('sys-sync','전산팀'), ('sys-sync','통합관리자'),
     ('sys-model-ver','전산팀'), ('sys-model-ver','통합관리자'),
+    ('sys-upload-doc','전산팀'),
 
     -- 제품군 순위 (전산팀·경영진·통합관리자)
     ('sys-rank','전산팀'), ('sys-rank','경영진'), ('sys-rank','통합관리자')

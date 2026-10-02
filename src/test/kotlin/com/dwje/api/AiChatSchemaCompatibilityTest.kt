@@ -30,7 +30,7 @@ class AiChatSchemaCompatibilityTest {
             "metric", "지표", null, 20, 0, null, null, "불량 2건", "응답 생성 중")
         repository.updateLlmAnswer(7L, "u1", "답변", 30)
         repository.findChatLog(7L)
-        repository.findHistory(LocalDate.parse("2026-09-01"), LocalDate.parse("2026-09-23"), null, 20, 0)
+        repository.findHistory(LocalDate.parse("2026-09-01"), LocalDate.parse("2026-09-23"), AiChatRepository.HistoryFilter(), 20, 0)
     }
 
     @Test fun `legacy schema omits V43 columns from write SQL and aliases read fields`() {

@@ -44,6 +44,14 @@ class DayTargetService(
 
     private val log = LoggerFactory.getLogger(javaClass)
 
+    /** 감사 기록기 — 서비스를 직접 만드는 단위 시험에서는 없다. 값(수량)은 비고에 넣지 않는다(09 8장 #25) */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    var auditLogService: AuditLogService? = null
+
+    private fun audit(targetDesc: String) = auditLogService?.recordAfterCommit(
+        com.dwje.api.common.util.AuditType.CONFIG_CHANGE, MenuId.PROD_DAILY, targetDesc
+    )
+
     /**
      * 일목표를 조회한다.
      *
@@ -102,6 +110,7 @@ class DayTargetService(
             plantCd, product, wcCd, applyFrom, targetQty, request.remark, principal.userId
         )
         log.info("일목표 등록 : product={} wcCd={} applyFrom={} qty={}", product, wcCd, applyFrom, targetQty)
+        audit("일목표 등록 [$product / $wcCd / $applyFrom]")
 
         return mapOf("targetId" to targetId)
     }
@@ -133,6 +142,7 @@ class DayTargetService(
         }
 
         dayTargetRepository.update(targetId, applyFrom, targetQty, request.remark, principal.userId)
+        audit("일목표 수정 [$product / $wcCd / $applyFrom]")
         return mapOf("targetId" to targetId)
     }
 
@@ -141,10 +151,11 @@ class DayTargetService(
     fun delete(targetId: Long): Map<String, Any?> {
         authorizationService.requireMenu(MenuId.PROD_DAILY)
 
-        dayTargetRepository.findById(targetId)
+        val current = dayTargetRepository.findById(targetId)
             ?: throw ResourceNotFoundException("일목표를 찾을 수 없습니다. [targetId=$targetId]")
 
         val deleted = dayTargetRepository.delete(targetId)
+        if (deleted > 0) audit("일목표 삭제 [${current["product"]} / ${current["processId"]} / targetId=$targetId]")
         return mapOf("targetId" to targetId, "deletedCnt" to deleted)
     }
 

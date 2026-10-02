@@ -62,6 +62,9 @@ class DataFieldMaskingAdvice(
         response: ServerHttpResponse
     ): Any? {
         if (body !is ApiResponse<*> || body.data == null) return body
+        // 로그인·권한 관리 응답은 가리지 않는다(04 DTP-01) — 메뉴 ID·사용자 이름 같은 판정 값이 지워지면 화면이 깨진다
+        val path = request.uri.path
+        if (EXCLUDED_PATHS.any { path == it || path.startsWith("$it/") || (it.endsWith("/") && path.startsWith(it)) }) return body
         val principal = UserContext.currentOrNull() ?: return body
         if (principal.superAdmin) return body
 
@@ -81,6 +84,12 @@ class DataFieldMaskingAdvice(
     }
 
     companion object {
+
+        /** 공통 마스킹을 건너뛰는 경로(경로 자체와 하위 모두) — 로그인·권한 관리 응답 */
+        val EXCLUDED_PATHS = listOf(
+            "/api/v1/auth/", "/api/v1/system/menu-perms", "/api/v1/system/data-perms", "/api/v1/system/data-fields",
+            "/api/v1/system/users", "/api/v1/system/depts", "/api/v1/system/perm-logs"
+        )
 
         /** 「응답 필드명 → 항목 key」 중 조회자가 열람할 수 없는 것만 */
         fun blindAttrs(attrFieldMap: Map<String, String>, canRead: (String) -> Boolean): Map<String, String> {

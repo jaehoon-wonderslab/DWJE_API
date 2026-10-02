@@ -60,8 +60,12 @@ data class EmailVerificationProperties(
     @field:NotBlank(message = "메일 발송 방식을 지정해야 합니다.")
     val senderMode: String = "LOG",
 
+    /** 발신 주소 — SMTP 인증 계정과 같아야 한다(한비로는 다르면 거부, R-17) */
     @field:NotBlank(message = "발신자 주소를 지정해야 합니다.")
-    val fromAddress: String = "no-reply@dwje.co.kr",
+    val fromAddress: String = "dw_ai@derkwoo.com",
+
+    /** 발신 표시명 (R-17) */
+    val fromName: String = "덕우전자 AX",
 
     /**
      * 테스트용 고정 인증 코드 — `local` 프로파일 전용.

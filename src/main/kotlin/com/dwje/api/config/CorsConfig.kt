@@ -39,7 +39,7 @@ class CorsConfig {
             allowedOriginPatterns = listOf("http://localhost:*", "http://127.0.0.1:*", "https://*.dwje.internal", "http://192.168.2.8:*")
             allowedMethods = listOf("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
             allowedHeaders = listOf("*")
-            exposedHeaders = listOf("Content-Disposition")
+            exposedHeaders = listOf("Content-Disposition", "X-Sample-Count", "X-Export-Truncated", "X-Export-Total", "X-Export-Limit")
             allowCredentials = true
             maxAge = 3600L
         }

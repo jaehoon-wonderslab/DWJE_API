@@ -7,7 +7,7 @@ import com.dwje.api.model.request.MenuPermCopyRequest
 import com.dwje.api.model.request.MenuPermGroupRequest
 import com.dwje.api.model.request.MenuPermRequest
 import com.dwje.api.model.request.SignupApprovalRequest
-import com.dwje.api.model.request.StateChangeRequest
+import com.dwje.api.model.request.UserStateChangeRequest
 import com.dwje.api.model.request.UserDeptChangeRequest
 import com.dwje.api.model.request.UserSaveRequest
 import com.dwje.api.service.AuditLogService
@@ -57,12 +57,13 @@ class SystemUserController(
     fun users(
         @RequestParam(required = false) keyword: String?,
         @RequestParam(required = false) deptId: Int?,
-        @Parameter(description = "계정 상태 — 사용|정지") @RequestParam(required = false) state: String?,
+        @Parameter(description = "계정 상태 — ACTIVE|SUSPENDED|PENDING|LOCKED, 쉼표로 여러 개") @RequestParam(required = false) state: String?,
         @Parameter(description = "계정 전환 대상 여부") @RequestParam(required = false) switchable: Boolean?,
+        @Parameter(description = "가입 경로 — GROUPWARE|SIGNUP|ADMIN") @RequestParam(required = false) joinSrc: String?,
         @RequestParam(required = false) page: Int?,
         @RequestParam(required = false) size: Int?
     ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta) = systemUserService.getUsers(keyword, deptId, state, switchable, page, size)
+        val (rows, meta) = systemUserService.getUsers(keyword, deptId, state, switchable, page, size, joinSrc)
         return ApiResponse.page(mapOf("items" to rows), meta)
     }
 
@@ -86,7 +87,7 @@ class SystemUserController(
         @Valid @RequestBody(required = false) request: SignupApprovalRequest?
     ): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(
-            systemUserService.approveSignup(empNo, request?.approve ?: true, request?.reason),
+            systemUserService.approveSignup(empNo, request?.approve ?: true, request?.reason, request?.deptId),
             if (request?.approve != false) "가입을 승인했습니다." else "가입을 반려했습니다."
         )
 
@@ -105,6 +106,12 @@ class SystemUserController(
     ): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(systemUserService.updateUser(empNo, request), "계정이 수정되었습니다.")
 
+    /** 계정 삭제 사전 확인 (01 ACC-11) */
+    @Operation(summary = "계정 삭제 사전 확인", description = "막는 참조(서빙 프로필 활성화·문서 작성)와 함께 지워지는 참조(알림 수신자·추가 허용 화면·화면 사용 기록) 건수, 가입 경로. 권한 sys-account 조회.")
+    @GetMapping("/users/{empNo}/delete-check")
+    fun deleteCheck(@PathVariable empNo: String): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(systemUserService.getDeleteCheck(empNo))
+
     /** 계정 삭제 (No.131) */
     @Operation(summary = "계정 삭제", description = "계정을 삭제한다. 로그인 중인 본인 계정은 삭제할 수 없다.")
     @DeleteMapping("/users/{empNo}")
@@ -112,14 +119,14 @@ class SystemUserController(
         ApiResponse.ok(systemUserService.deleteUser(empNo), "계정이 삭제되었습니다.")
 
     /** 계정 사용/정지 (No.132) */
-    @Operation(summary = "계정 사용/정지", description = "계정 상태를 사용 또는 정지로 전환한다.")
+    @Operation(summary = "계정 사용/정지", description = "계정 상태를 사용 또는 정지로 전환한다. 잠긴 계정을 사용으로 바꾸면 관리자 잠금 해제다.")
     @PatchMapping("/users/{empNo}/state")
     fun changeUserState(
         @PathVariable empNo: String,
-        @Valid @RequestBody request: StateChangeRequest
+        @Valid @RequestBody request: UserStateChangeRequest
     ): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(
-            systemUserService.changeUserState(empNo, request.state),
+            systemUserService.changeUserState(empNo, request.state, request.resetPassword ?: false, request.reason),
             "계정 상태가 변경되었습니다."
         )
 
@@ -140,12 +147,13 @@ class SystemUserController(
         @RequestParam(required = false) to: String?,
         @Parameter(description = "전 열 검색 — 대상·구분·내용·수행자(사번/이름/부서)") @RequestParam(required = false) keyword: String?,
         @RequestParam(required = false) target: String?,
-        @Parameter(description = "변경 구분 — ACCOUNT|DEPT|MENU_PERM|DATA_PERM")
+        @Parameter(description = "변경 구분 — ACCOUNT|DEPT|MENU_PERM|DATA_PERM|USER_MENU_PERM|GW_DEPT_MAP, 쉼표로 여러 개")
         @RequestParam(required = false) actType: String?,
+        @Parameter(description = "대상 사번(정확 일치)") @RequestParam(required = false) targetUserId: String?,
         @RequestParam(required = false) page: Int?,
         @RequestParam(required = false) size: Int?
     ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta) = auditLogService.getPermLogs(from, to, target, actType, page, size, keyword)
+        val (rows, meta) = auditLogService.getPermLogs(from, to, target, actType, page, size, keyword, targetUserId)
         return ApiResponse.page(mapOf("items" to rows), meta)
     }
 
@@ -292,8 +300,26 @@ class SystemUserController(
 @RequestMapping("/api/v1/audit-logs")
 @Tag(name = "08. 시스템관리 - 계정·권한")
 class AuditLogController(
-    private val auditLogService: AuditLogService
+    private val auditLogService: AuditLogService,
+    private val listExportService: com.dwje.api.service.ListExportService,
+    private val auditRetentionService: com.dwje.api.service.AuditRetentionService
 ) {
+
+    /** 보존 정책 조회 (09 AUD-11) */
+    @Operation(
+        summary = "감사 로그 보존 정책",
+        description = "보존 연수, 아카이브 배치 사용 여부, 원천(감사·권한 변경·로그인)별 전체·보존 경과·아카이브 건수와 가장 오래된 시각, 마지막·다음 실행 시각. 권한 sys-audit."
+    )
+    @GetMapping("/retention-policy")
+    fun retentionPolicy(): ApiResponse<Map<String, Any?>> = ApiResponse.ok(auditRetentionService.getRetentionPolicy())
+
+    /** 감사 로그 전체 내려받기 — 서버 생성 xlsx (공통 CMN-07) */
+    @Operation(summary = "감사 로그 전체 내려받기", description = "감사 로그 전체를 xlsx 로 만든다(scope=ALL 만, 기간·조건 무관, 상한 50,000건 — 넘으면 X-Export-Truncated·X-Export-Total 헤더).")
+    @PostMapping("/export")
+    fun export(
+        @Valid @RequestBody(required = false) request: com.dwje.api.model.request.ListExportRequest?
+    ): org.springframework.http.ResponseEntity<org.springframework.core.io.ByteArrayResource> =
+        listExportService.auditLogs(request)
 
     /**
      * 감사 로그 조회 (No.190)
@@ -305,14 +331,27 @@ class AuditLogController(
     fun auditLogs(
         @RequestParam(required = false) from: String?,
         @RequestParam(required = false) to: String?,
-        @Parameter(description = "로그 유형 — MASK|UNMASK_REQ|RAW_VIEW|PERM_CHANGE|LOGIN|AUTO_GEN")
+        @Parameter(description = "로그 유형 — MASK|RAW_VIEW|PERM_CHANGE|LOGIN|AUTO_GEN|EXPORT|CONFIG_CHANGE|ACCOUNT_SEC|ACCESS_DENIED|AUDIT_VIEW|UNMASK_REQ, 쉼표로 여러 개. 비우면 AUDIT_VIEW 를 뺀 전체")
         @RequestParam(required = false) type: String?,
         @Parameter(description = "부서명") @RequestParam(required = false) userGroup: String?,
         @RequestParam(required = false) empNo: String?,
+        @Parameter(description = "사번·이름·부서·대상·내용·IP 검색어") @RequestParam(required = false) keyword: String?,
+        @Parameter(description = "IP 또는 대역(10.0.0.0/8). IPv4 앞부분(10.1.)은 앞부분 일치") @RequestParam(required = false) ip: String?,
+        @Parameter(description = "결과 — ALLOW|BLIND|REJECT|MASKED") @RequestParam(required = false) result: String?,
+        @Parameter(description = "로그인 성공·로그아웃 행 제외") @RequestParam(required = false) excludeLoginSuccess: Boolean?,
+        @Parameter(description = "이 시각까지의 행만(yyyy-MM-dd HH:mm:ss) — 첫 쪽 조회 시각을 넘기면 쪽이 밀리지 않는다") @RequestParam(required = false) asOf: String?,
         @RequestParam(required = false) page: Int?,
         @RequestParam(required = false) size: Int?
     ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta) = auditLogService.getAuditLogs(from, to, type, userGroup, empNo, page, size)
+        val asOfAt = asOf?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            runCatching { java.time.LocalDateTime.parse(it.replace(' ', 'T')) }.getOrElse {
+                throw com.dwje.api.common.exception.InvalidParameterException("asOf 는 yyyy-MM-dd HH:mm:ss 형식이어야 합니다.", "asOf")
+            }
+        }
+        val (rows, meta) = auditLogService.getAuditLogs(
+            from, to, type, userGroup, empNo, page, size,
+            com.dwje.api.repository.AuditLogRepository.AuditFilter(keyword, ip, result, excludeLoginSuccess ?: false, asOfAt)
+        )
         return ApiResponse.page(mapOf("items" to rows), meta)
     }
 }

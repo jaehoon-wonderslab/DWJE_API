@@ -27,6 +27,8 @@ data class AiAskRequest(
 data class AiFeedbackRequest(
     @field:NotBlank(message = "평가 값을 선택해 주세요.")
     val rating: String,
+    /** 평가 의견 — 저장한다(500자, 08 CHH-04) */
+    @field:jakarta.validation.constraints.Size(max = 500, message = "평가 의견은 500자 이내로 입력해 주세요.")
     val comment: String? = null
 )
 
@@ -53,6 +55,7 @@ data class AiDefectTopExportRequest(
  */
 data class GlossaryNormalizeRequest(
     @field:NotBlank(message = "정규화할 문장을 입력해 주세요.")
+    @field:jakarta.validation.constraints.Size(max = 2000, message = "미리보기 문장은 2,000자 이하로 입력해 주세요.")
     val text: String
 )
 
@@ -132,4 +135,32 @@ data class LlmFollowupRequest(
     @field:NotBlank(message = "답이 필요합니다.")
     @field:Size(max = 20_000, message = "답이 너무 깁니다.")
     val answer: String? = null
+)
+
+/**
+ * 관리자 검토 저장 — PUT /api/v1/ai/chat/history/{messageId}/review (08 CHH-04)
+ *
+ * @param reviewCd 검토 값 — USEFUL(유용) · REASK(재질의) · BAD(오답)
+ * @param comment  검토 의견 (500자)
+ */
+data class AiReviewRequest(
+    @field:NotBlank(message = "검토 값을 선택해 주세요.")
+    val reviewCd: String,
+    @field:jakarta.validation.constraints.Size(max = 500, message = "검토 의견은 500자 이내로 입력해 주세요.")
+    val comment: String? = null
+)
+
+/**
+ * 학습데이터 내보내기 — POST /api/v1/ai/chat/history/export-trainset (08 CHH-03)
+ *
+ * @param ratingFilter USEFUL | REASK | BAD | ALL (기본 USEFUL, ALL 은 평가가 있는 건 전체)
+ * @param source       REVIEW_OR_USER(기본 — 검토가 있으면 검토) | REVIEW | USER
+ * @param format       jsonl 만
+ */
+data class TrainsetExportRequest(
+    val from: String? = null,
+    val to: String? = null,
+    val ratingFilter: String? = null,
+    val source: String? = null,
+    val format: String? = null
 )

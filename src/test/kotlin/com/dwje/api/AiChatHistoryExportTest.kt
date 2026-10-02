@@ -24,13 +24,13 @@ class AiChatHistoryExportTest {
     @Test fun `history detail exposes required fields without intent agents or internal SQL`() {
         UserContext.set(UserPrincipal("admin", "관리자", 1, "전산", null, null, null, true))
         val repo = mock(AiChatRepository::class.java)
-        val auth = mock(AuthorizationService::class.java)
+        val auth = AuthorizationService(mock(com.dwje.api.repository.AuthRepository::class.java))
         `when`(repo.findChatLog(7L)).thenReturn(mapOf(
             "question" to "불량 top 2", "answer" to "SELECT * FROM mes.tb_pop_label_hist",
             "evidenceSummary" to "불량 유형 2건", "unansweredReason" to null,
             "responseMs" to 120, "rating" to "USEFUL", "maskedCnt" to 0))
         val service = AiAdminService(repo, mock(VectorIndexRepository::class.java), auth, ObjectMapper(),
-            mock(AiAskDebugRecorder::class.java))
+            mock(AiAskDebugRecorder::class.java), mock(DataFieldService::class.java), mock(AuditLogService::class.java))
         val result = service.getChatDetail(7L)
         assertEquals("불량 top 2", result["question"])
         assertEquals(AiResponseSanitizer.HIDDEN, result["answer"])
@@ -42,14 +42,18 @@ class AiChatHistoryExportTest {
         assertFalse(result.containsKey("search"))
     }
 
-    @Test fun `history detail denies non administrator before reading records`() {
-        UserContext.set(UserPrincipal("u1", "사용자", 1, "품질", null, null, null, false,
-            menuPerms = setOf(com.dwje.api.common.util.MenuId.CHAT_HISTORY)))
+    @Test fun `history detail needs screen read and diagnostics need write before reading records`() {
+        // 화면 권한이 없으면 상세도 읽기 전에 막힌다
+        UserContext.set(UserPrincipal("u1", "사용자", 1, "품질", null, null, null, false))
         val repo = mock(AiChatRepository::class.java)
         val service = AiAdminService(repo, mock(VectorIndexRepository::class.java),
-            mock(AuthorizationService::class.java), ObjectMapper(), mock(AiAskDebugRecorder::class.java))
+            AuthorizationService(mock(com.dwje.api.repository.AuthRepository::class.java)), ObjectMapper(), mock(AiAskDebugRecorder::class.java),
+            mock(DataFieldService::class.java), mock(AuditLogService::class.java))
         assertThrows(com.dwje.api.common.exception.MenuAccessDeniedException::class.java) { service.getChatDetail(7L) }
-        assertThrows(com.dwje.api.common.exception.MenuAccessDeniedException::class.java) {
+        // 조회만 있으면 디버그 진단은 쓰기 권한 없음(E-AUTH-004) — 관리 기능이다(08 CHH-16)
+        UserContext.set(UserPrincipal("u1", "사용자", 1, "품질", null, null, null, false,
+            menuPerms = setOf(com.dwje.api.common.util.MenuId.CHAT_HISTORY)))
+        assertThrows(com.dwje.api.common.exception.WriteAccessDeniedException::class.java) {
             service.getAskDebug(UUID.randomUUID().toString())
         }
         assertFalse(mockingDetails(repo).invocations.any { it.method.name == "findChatLog" })
@@ -62,7 +66,7 @@ class AiChatHistoryExportTest {
         val recorder = mock(AiAskDebugRecorder::class.java)
         `when`(recorder.byRequestId(id)).thenReturn(debug)
         val service = AiAdminService(mock(AiChatRepository::class.java), mock(VectorIndexRepository::class.java),
-            mock(AuthorizationService::class.java), ObjectMapper(), recorder)
+            AuthorizationService(mock(com.dwje.api.repository.AuthRepository::class.java)), ObjectMapper(), recorder, mock(DataFieldService::class.java), mock(AuditLogService::class.java))
         assertEquals(debug, service.getAskDebug(id.toString()))
     }
 
@@ -94,12 +98,13 @@ class AiChatHistoryExportTest {
             "defect" to "얼룩", "quantity" to BigDecimal.TEN))
         `when`(data.defectTopForExport(java.time.LocalDate.parse("2026-09-22"),
             java.time.LocalDate.parse("2026-09-23"), 10, UserContext.current())).thenReturn(rows to 0)
-        val controller = AiChatController(mock(AiChatService::class.java), data, ExportService(), logs)
+        val controller = AiChatController(mock(AiChatService::class.java), data, ExportService(), logs,
+            AuthorizationService(mock(com.dwje.api.repository.AuthRepository::class.java)))
         val file = controller.exportDefectTop(AiDefectTopExportRequest("2026-09-22", "2026-09-23", 10))
         val invocation = mockingDetails(logs).invocations.last()
         assertEquals("record", invocation.method.name)
         assertEquals(1, invocation.arguments[5])
-        assertEquals("xlsx", invocation.arguments[3])
+        assertEquals("XLSX", invocation.arguments[3], "실제로 만든 파일 기준 형식 코드(DLG-02)")
         assertTrue((invocation.arguments[8] as String).endsWith(".xlsx"))
         assertTrue((invocation.arguments[10] as Long) > 0)
         assertTrue(file.headers.contentDisposition.toString().contains("attachment"))

@@ -117,6 +117,43 @@ class EmailVerificationRepository(
         }.firstOrNull()
     }
 
+    /**
+     * 대상 계정(사번) 기준 최신 미사용 인증 요청 — 계정 잠금 해제 2단계 (09 AUD-16).
+     * 인덱스 `ix_tb_sys_email_verify_target(target_user_id, purpose_cd, ins_date DESC)` 를 쓴다.
+     */
+    fun findLatestPendingByTarget(targetUserId: String, purposeCd: String, maxAttempts: Int): Map<String, Any?>? {
+        val sql = """
+            SELECT verify_id, email, purpose_cd, code_hash, target_user_id,
+                   verified_at, consumed_at, attempt_cnt,
+                   extract(epoch FROM (expires_at - now()))::bigint AS expires_in_sec
+            FROM ax.tb_sys_email_verify
+            WHERE target_user_id = :targetUserId
+              AND purpose_cd     = :purposeCd
+              AND consumed_at IS NULL
+              AND attempt_cnt    < :maxAttempts
+            ORDER BY ins_date DESC
+            LIMIT 1
+        """.trimIndent()
+
+        val params = MapSqlParameterSource()
+            .addValue("targetUserId", targetUserId)
+            .addValue("purposeCd", purposeCd)
+            .addValue("maxAttempts", maxAttempts)
+
+        return jdbcTemplate.query(sql, params) { rs, _ ->
+            mapOf(
+                "verifyId" to rs.getLong("verify_id"),
+                "email" to rs.getString("email"),
+                "purposeCd" to rs.getString("purpose_cd"),
+                "codeHash" to rs.getString("code_hash"),
+                "targetUserId" to rs.getString("target_user_id"),
+                "expiresInSec" to rs.getLong("expires_in_sec"),
+                "verifiedAt" to Rs.dateTime(rs, "verified_at"),
+                "attemptCnt" to rs.getInt("attempt_cnt")
+            )
+        }.firstOrNull()
+    }
+
     /** 코드 검증 시도 횟수를 1 증가시키고 증가 후 값을 돌려준다. */
     fun increaseAttempt(verifyId: Long): Int {
         val sql = """

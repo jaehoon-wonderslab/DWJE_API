@@ -67,6 +67,18 @@ class GwDeptMapController(
     fun save(@Valid @RequestBody request: GwDeptMapSaveRequest): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(gwDeptMapService.saveMap(request), GwDeptMapService.SAVE_MESSAGE)
 
+    /** 매핑 일괄 지정 (02 GWD-05) — 「/bulk」 리터럴 경로 */
+    @Operation(
+        summary = "그룹웨어 부서 매핑 일괄 지정",
+        description = "여러 그룹웨어 부서를 같은 부서·가입 여부로 한 트랜잭션에 저장한다(최대 200개). 하나라도 틀리면 아무것도 저장하지 않는다. " +
+            "keepRemark(기본 true)면 기존 메모를 그대로 둔다. 이미 가입된 계정의 부서는 바뀌지 않는다."
+    )
+    @PutMapping("/bulk")
+    fun saveBulk(@Valid @RequestBody request: com.dwje.api.model.request.GwDeptMapBulkSaveRequest): ApiResponse<Map<String, Any?>> {
+        val data = gwDeptMapService.saveMapsBulk(request)
+        return ApiResponse.ok(data, "${data["savedCnt"]}개 부서 매핑을 저장했습니다. 이미 가입된 계정의 부서는 바뀌지 않습니다.")
+    }
+
     /** SY-17-F04 삭제 */
     @Operation(summary = "그룹웨어 부서 매핑 삭제", description = "매핑 행을 지운다. 없으면 404. 그 부서 사람은 다음 가입부터 미배정.")
     @DeleteMapping
@@ -81,22 +93,23 @@ class GwDeptMapController(
     @GetMapping("/unassigned-users")
     fun unassignedUsers(
         @Parameter(description = "사번·이름·그룹웨어 부서명") @RequestParam(required = false) keyword: String?,
+        @Parameter(description = "계정 상태 — ACTIVE·LOCKED·SUSPENDED, 쉼표 다중") @RequestParam(required = false) state: String?,
         @RequestParam(required = false) page: Int?,
         @RequestParam(required = false) size: Int?
     ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta) = gwDeptMapService.getUnassignedUsers(keyword, page, size)
+        val (rows, meta) = gwDeptMapService.getUnassignedUsers(keyword, page, size, state)
         return ApiResponse.page(mapOf("items" to rows), meta)
     }
 
     /** SY-17-F06 매핑대로 재배정 */
     @Operation(
         summary = "미배정 계정 재배정",
-        description = "미배정 계정을 제안 부서로 옮긴다(한 트랜잭션). empNos 가 없으면 제안 부서가 있는 미배정 계정 전체. " +
-            "미배정이 아니거나 제안 부서가 없는 사번은 skippedCnt."
+        description = "미배정 계정을 제안 부서로 옮긴다(한 트랜잭션). empNos · gwDeptNms · all=true 중 하나는 필수(없으면 400). " +
+            "옮기지 못한 사번은 skipped[{empNo, reason}] 로 사유를 알린다."
     )
     @PostMapping("/reassign")
     fun reassign(@Valid @RequestBody(required = false) request: GwDeptReassignRequest?): ApiResponse<Map<String, Any?>> {
-        val result = gwDeptMapService.reassign(request?.empNos)
+        val result = gwDeptMapService.reassign(request)
         val moved = result["movedCnt"] as Int
         return ApiResponse.ok(result, if (moved == 0) "옮길 미배정 계정이 없습니다." else "미배정 계정 ${moved}명을 옮겼습니다.")
     }

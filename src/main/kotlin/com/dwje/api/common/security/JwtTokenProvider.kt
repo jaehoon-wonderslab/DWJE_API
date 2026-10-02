@@ -34,6 +34,8 @@ class JwtTokenProvider(private val props: JwtProperties) {
         const val CLAIM_PLANT_CD = "plt"
         const val CLAIM_TOKEN_TYPE = "typ"
         const val CLAIM_IMPERSONATED = "imp"
+        /** 계정 전환을 한 통합관리자 사번 — 전환 토큰에만 넣는다 (09 AUD-02) */
+        const val CLAIM_IMPERSONATED_BY = "impBy"
 
         const val TYPE_ACCESS = "access"
         const val TYPE_REFRESH = "refresh"
@@ -49,6 +51,7 @@ class JwtTokenProvider(private val props: JwtProperties) {
      * @param superAdmin   통합관리자 여부
      * @param plantCd      사업장 코드
      * @param impersonated 계정 전환 여부
+     * @param impersonatedBy 계정 전환을 한 통합관리자 사번 (전환 토큰이 아니면 null)
      */
     fun createAccessToken(
         userId: String,
@@ -57,7 +60,8 @@ class JwtTokenProvider(private val props: JwtProperties) {
         deptName: String,
         superAdmin: Boolean,
         plantCd: String?,
-        impersonated: Boolean = false
+        impersonated: Boolean = false,
+        impersonatedBy: String? = null
     ): String {
         val now = Date()
         val expiry = Date(now.time + props.accessTokenValiditySec * 1000)
@@ -72,6 +76,7 @@ class JwtTokenProvider(private val props: JwtProperties) {
             .claim(CLAIM_SUPER_ADMIN, superAdmin)
             .claim(CLAIM_PLANT_CD, plantCd)
             .claim(CLAIM_IMPERSONATED, impersonated)
+            .claim(CLAIM_IMPERSONATED_BY, impersonatedBy)
             .claim(CLAIM_TOKEN_TYPE, TYPE_ACCESS)
             .signWith(key)
             .compact()

@@ -23,6 +23,20 @@ enum class ErrorCode(
     /** 데이터 접근 권한 없음 */
     AUTH_DATA_DENIED("E-AUTH-003", HttpStatus.FORBIDDEN, "해당 데이터 항목을 조회할 권한이 없습니다."),
 
+    // 2026-10-01 시스템관리 개선 1단계 — 번호는 공통 기획서 9.7 오류 코드표를 따른다.
+
+    /** 쓰기 권한 없음 — 화면 조회 권한은 있으나 그 화면의 쓰기(can_write) 권한이 없다 (R-06) */
+    AUTH_WRITE_DENIED("E-AUTH-004", HttpStatus.FORBIDDEN, "이 화면의 쓰기 권한이 없습니다."),
+
+    /** 계정 잠금 — 비밀번호 연속 실패로 시스템이 잠갔다 (R-02). 응답 data 에 잠금 해제 안내 값이 실린다 */
+    AUTH_ACCOUNT_LOCKED("E-AUTH-005", HttpStatus.UNAUTHORIZED, "비밀번호를 연속으로 잘못 입력해 계정이 잠겼습니다."),
+
+    /** 비밀번호 변경 필요 — 초기 비밀번호를 바꾸기 전에는 허용 목록 밖 API 를 쓸 수 없다 (R-04) */
+    AUTH_PWD_CHANGE_REQUIRED("E-AUTH-006", HttpStatus.FORBIDDEN, "초기 비밀번호를 바꾼 뒤 이용할 수 있습니다."),
+
+    /** 이메일 잠금 해제를 지금 쓸 수 없음 — SMTP 미설정 등 (R-02) */
+    AUTH_UNLOCK_UNAVAILABLE("E-AUTH-007", HttpStatus.SERVICE_UNAVAILABLE, "지금은 이메일로 잠금을 해제할 수 없습니다. 전산팀에 잠금 해제를 요청해 주세요."),
+
     /** 필수 항목 누락 */
     VALID_REQUIRED("E-VALID-001", HttpStatus.BAD_REQUEST, "필수 항목이 누락되었습니다."),
 

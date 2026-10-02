@@ -7,12 +7,14 @@ package com.dwje.api.model.response
  * @param refreshToken 접근 토큰 재발급용 갱신 토큰
  * @param expiresIn    접근 토큰 유효시간(초)
  * @param user         사용자 기본 정보
+ * @param pwdChangeRequired 초기 비밀번호를 바꿔야 하는지 (R-04). true 면 비밀번호 변경 외 API 는 403 E-AUTH-006
  */
 data class LoginResponse(
     val accessToken: String,
     val refreshToken: String,
     val expiresIn: Long,
-    val user: LoginUser
+    val user: LoginUser,
+    val pwdChangeRequired: Boolean = false
 )
 
 /**
@@ -58,6 +60,9 @@ data class RefreshTokenResponse(
  * @param dataFields       적용 중(apply_flg='Y') 항목과 그 API 응답 필드명 — 화면이 「필드명 → 항목」 맵을 만들어 자동 마스킹한다
  * @param servingModelVer  현재 서비스 중인 AI 모델 버전
  * @param impersonated     계정 전환 상태 여부
+ * @param writePerms       쓰기 가능한 화면 ID 목록 — 화면이 저장·삭제 버튼을 미리 비활성으로 그린다 (R-06). 통합관리자는 사용 중 전 화면
+ * @param pwdChangeRequired 초기 비밀번호를 바꿔야 하는지 (R-04). true 면 권한 목록은 모두 빈 값(최소 정보)이다
+ * @param unassigned       미배정 부서 소속 (R-01·R-11, 02 GWD-08) — `dept.unassigned` 와 같은 값. NoAccess 문구·첫 화면 판정용
  */
 data class MyInfoResponse(
     val user: LoginUser,
@@ -67,7 +72,10 @@ data class MyInfoResponse(
     val blindFields: List<String>,
     val dataFields: List<DataFieldInfo>,
     val servingModelVer: String?,
-    val impersonated: Boolean
+    val impersonated: Boolean,
+    val writePerms: List<String> = emptyList(),
+    val pwdChangeRequired: Boolean = false,
+    val unassigned: Boolean = false
 )
 
 /**
@@ -95,13 +103,15 @@ data class DataFieldInfo(
  * @param deptAbbr   부서 약칭
  * @param superAdmin 통합관리자 부서 여부
  * @param plantCd    사업장 코드
+ * @param unassigned 미배정 부서 여부 — 고정 5개 화면 조회 전용 · 데이터 권한 0건 (R-01·R-11). 화면의 NoAccess 문구가 쓴다
  */
 data class DeptInfo(
     val deptId: Int,
     val deptNm: String,
     val deptAbbr: String?,
     val superAdmin: Boolean,
-    val plantCd: String?
+    val plantCd: String?,
+    val unassigned: Boolean = false
 )
 
 /**

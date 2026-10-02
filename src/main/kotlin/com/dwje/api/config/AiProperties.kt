@@ -20,6 +20,21 @@ import jakarta.validation.constraints.NotBlank
  */
 data class AiProperties(
 
+    /**
+     * 질의 이력 보존 일수 (08 CHH-08) — 지난 질의·검색 기록·진단 기록을 매일 03:10 에 지운다.
+     * 0 이하면 지우지 않는다. 보존 기간은 발주자 규정으로 정한다(Q5 결정 전 0).
+     */
+    val chatRetentionDays: Int = 0,
+
+    /** 목표 답변율(%) — 질의 이력 요약 카드의 비교 기준 (08 CHH-11). 정해지지 않으면 null */
+    val targetAnswerRate: Double? = null,
+
+    /**
+     * LLM 근거 앞에 붙이는 `[용어]` 블록 사용 여부 (07 GLS-04) — 질문에서 치환한 현장 표현과 공식 용어·뜻.
+     * 모델 지시문과 충돌하면 끈다(07 Q4, LLM 담당 확인 전).
+     */
+    val glossaryBlockEnabled: Boolean = true,
+
     val enabled: Boolean = false,
 
     /**

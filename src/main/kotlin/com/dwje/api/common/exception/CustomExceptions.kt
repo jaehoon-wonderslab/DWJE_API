@@ -10,11 +10,13 @@ import com.dwje.api.common.response.ErrorCode
  * @param errorCode 매핑 에러 코드
  * @param message   사용자에게 노출할 메시지
  * @param field     오류 유발 필드명 (선택)
+ * @param data      실패 응답의 `data` 로 함께 내려 줄 값 (선택 — 잠금 안내처럼 화면이 다음 동작을 정해야 할 때)
  */
 open class BusinessException(
     val errorCode: ErrorCode,
     override val message: String = errorCode.defaultMessage,
-    val field: String? = null
+    val field: String? = null,
+    val data: Any? = null
 ) : RuntimeException(message)
 
 /** E-AUTH-001 : 미인증 · 세션 만료 */
@@ -22,12 +24,38 @@ class UnauthenticatedException(message: String = ErrorCode.AUTH_UNAUTHENTICATED.
     BusinessException(ErrorCode.AUTH_UNAUTHENTICATED, message)
 
 /** E-AUTH-002 : 메뉴 접근 권한 없음 */
-class MenuAccessDeniedException(menuId: String) :
+class MenuAccessDeniedException(val menuId: String) :
     BusinessException(ErrorCode.AUTH_MENU_DENIED, "화면 접근 권한이 없습니다. [$menuId]")
 
 /** E-AUTH-003 : 데이터 접근 권한 없음 */
-class DataAccessDeniedException(fieldKey: String) :
+class DataAccessDeniedException(val fieldKey: String) :
     BusinessException(ErrorCode.AUTH_DATA_DENIED, "데이터 접근 권한이 없습니다. [$fieldKey]", fieldKey)
+
+/**
+ * E-AUTH-004 : 쓰기 권한 없음 (R-06)
+ *
+ * 화면 조회 권한은 있으나 그 화면의 쓰기 권한(부서 `can_write` OR 계정 추가 허용 `can_write`)이 없다.
+ * 조회 권한까지 없으면 이 예외가 아니라 [MenuAccessDeniedException](E-AUTH-002)이다.
+ */
+class WriteAccessDeniedException(val menuId: String) :
+    BusinessException(ErrorCode.AUTH_WRITE_DENIED, "이 화면의 쓰기 권한이 없습니다. [$menuId]")
+
+/**
+ * E-AUTH-005 : 계정 잠금 (R-02, 09 기획서 AUD-16)
+ *
+ * 응답 `data` 에 `lockedAt`·`emailMasked`·`mailEnabled`·`unlockPath` 를 싣는다.
+ * 이메일 잠금 해제를 쓸 수 없으면(`mailEnabled=false`) `emailMasked` 는 싣지 않는다.
+ */
+class AccountLockedException(message: String, data: Map<String, Any?>) :
+    BusinessException(ErrorCode.AUTH_ACCOUNT_LOCKED, message, null, data)
+
+/** E-AUTH-006 : 초기 비밀번호 변경 전 허용 목록 밖 API 호출 (R-04, 01 기획서 ACC-03) */
+class PasswordChangeRequiredException :
+    BusinessException(ErrorCode.AUTH_PWD_CHANGE_REQUIRED)
+
+/** E-AUTH-007 : 이메일 잠금 해제를 지금 쓸 수 없음 (SMTP 미설정 등, R-02) */
+class UnlockUnavailableException :
+    BusinessException(ErrorCode.AUTH_UNLOCK_UNAVAILABLE)
 
 /** E-VALID-001 : 필수 항목 누락 · 잘못된 파라미터 */
 class InvalidParameterException(message: String, field: String? = null) :

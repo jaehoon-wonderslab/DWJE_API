@@ -34,12 +34,16 @@ class AlertRepository(
         to: LocalDate,
         ackState: String?,
         limit: Int,
-        offset: Int
+        offset: Int,
+        includeTest: Boolean = false,
+        condId: Int? = null,
+        alertId: Long? = null
     ): List<Map<String, Any?>> {
         val sql = StringBuilder(
             """
             SELECT
                 a.alert_id,
+                a.test_flg,
                 a.severity_cd,
                 sv.code_nm                                          AS severity_nm,
                 a.title,
@@ -76,7 +80,7 @@ class AlertRepository(
         )
 
         val params = periodParams(plantCd, from, to)
-        appendAlertFilters(sql, params, severity, eqptCd, ackState)
+        appendAlertFilters(sql, params, severity, eqptCd, ackState, includeTest, condId, alertId)
 
         sql.append(
             """
@@ -111,7 +115,8 @@ class AlertRepository(
                 "ackBy" to (rs.getString("ack_user_nm") ?: rs.getString("ack_user_id")),
                 "ackAt" to Rs.dateTime(rs, "ack_at"),
                 "escLevel" to rs.getInt("esc_level"),
-                "agent" to rs.getString("agent_nm")?.let { "${rs.getString("agent_no")} $it" }
+                "agent" to rs.getString("agent_nm")?.let { "${rs.getString("agent_no")} $it" },
+                "test" to Rs.yn(rs, "test_flg")
             )
         }
     }
@@ -123,7 +128,10 @@ class AlertRepository(
         eqptCd: String?,
         from: LocalDate,
         to: LocalDate,
-        ackState: String?
+        ackState: String?,
+        includeTest: Boolean = false,
+        condId: Int? = null,
+        alertId: Long? = null
     ): Long {
         val sql = StringBuilder(
             """
@@ -136,7 +144,7 @@ class AlertRepository(
         )
 
         val params = periodParams(plantCd, from, to)
-        appendAlertFilters(sql, params, severity, eqptCd, ackState)
+        appendAlertFilters(sql, params, severity, eqptCd, ackState, includeTest, condId, alertId)
 
         return jdbcTemplate.queryForObject(sql.toString(), params, Long::class.java) ?: 0L
     }
@@ -147,8 +155,13 @@ class AlertRepository(
         params: MapSqlParameterSource,
         severity: String?,
         eqptCd: String?,
-        ackState: String?
+        ackState: String?,
+        includeTest: Boolean,
+        condId: Int? = null,
+        alertId: Long? = null
     ) {
+        // 테스트 발송 알림(test_flg='Y')은 기본 목록에서 뺀다(05 ALC-03). 상세는 거르지 않는다 — 테스트 메일 링크가 열려야 한다.
+        if (!includeTest) sql.append(" AND a.test_flg = 'N'")
         if (!severity.isNullOrBlank()) {
             sql.append(" AND a.severity_cd = :severity")
             params.addValue("severity", severity.trim().uppercase())
@@ -160,6 +173,14 @@ class AlertRepository(
         if (!ackState.isNullOrBlank()) {
             sql.append(" AND a.ack_state_cd = :ackState")
             params.addValue("ackState", ackState.trim().uppercase())
+        }
+        if (condId != null) {
+            sql.append(" AND a.cond_id = :condIdF")
+            params.addValue("condIdF", condId)
+        }
+        if (alertId != null) {
+            sql.append(" AND a.alert_id = :alertIdF")
+            params.addValue("alertIdF", alertId)
         }
     }
 
@@ -228,6 +249,7 @@ class AlertRepository(
             FROM ax.tb_alm_alert a
             LEFT JOIN mes.tb_md_defect d ON d.plant_cd = a.plant_cd AND d.defect_cd = a.defect_cd
             WHERE a.alert_id <> :excludeAlertId
+              AND a.test_flg = 'N'
               AND (:condId::int  IS NULL OR a.cond_id = :condId)
               AND (:eqptCd::varchar IS NULL OR a.eqpt_cd = :eqptCd)
               AND a.occurred_at >= now() - interval '90 days'
@@ -377,6 +399,7 @@ class AlertRepository(
                 u.user_nm,
                 a.alert_id,
                 a.title,
+                a.test_flg,
                 c.cond_id,
                 c.cond_nm,
                 extract(epoch FROM (s.sent_at - a.occurred_at))                AS delay_sec
@@ -414,6 +437,7 @@ class AlertRepository(
                 "failReason" to rs.getString("fail_reason"),
                 "escLevel" to rs.getInt("esc_level"),
                 "proxy" to rs.getBoolean("is_proxy"),
+                "test" to Rs.yn(rs, "test_flg"),
                 "delaySec" to Rs.doubleOrNull(rs, "delay_sec")?.toInt()
             )
         }
@@ -458,55 +482,17 @@ class AlertRepository(
     }
 
     /**
-     * 발송 로그를 기록한다. (테스트 발송 · 실제 발송 공통)
+     * 테스트 발송용 알림을 생성한다. (05 ALC-03 / 06 RCP-03)
      *
-     * @return 생성된 발송 로그 ID
+     * 실제 이상 상황이 아니므로 확인 상태를 즉시 CLOSED 로 두고 `test_flg='Y'` 로 운영 알림과 가른다.
+     * `dedup_key`(`TEST|COND|id`·`TEST|GROUP|id`)는 연타 방지 판정에 쓴다 — 엔진 키(`{condId}|{scopeKey}`)와 겹치지 않는다.
      */
-    fun insertSendLog(
-        alertId: Long,
-        groupId: Int?,
-        userId: String?,
-        channelCd: String,
-        destAddr: String?,
-        resultCd: String,
-        failReason: String?,
-        escLevel: Int
-    ): Long {
-        val sql = """
-            INSERT INTO ax.tb_alm_send_log (
-                alert_id, group_id, user_id, channel_cd, dest_addr,
-                sent_at, send_result_cd, fail_reason, esc_level, is_proxy
-            ) VALUES (
-                :alertId, :groupId, :userId, :channelCd, :destAddr,
-                now(), :resultCd, :failReason, :escLevel, false
-            )
-            RETURNING send_id
-        """.trimIndent()
-
-        val params = MapSqlParameterSource()
-            .addValue("alertId", alertId)
-            .addValue("groupId", groupId)
-            .addValue("userId", userId)
-            .addValue("channelCd", channelCd)
-            .addValue("destAddr", destAddr?.take(200))
-            .addValue("resultCd", resultCd)
-            .addValue("failReason", failReason?.take(300))
-            .addValue("escLevel", escLevel)
-
-        return jdbcTemplate.queryForObject(sql, params, Long::class.java) ?: 0L
-    }
-
-    /**
-     * 테스트 발송용 알림을 생성한다. (No.156 / No.161)
-     *
-     * 실제 이상 상황이 아니므로 확인 상태를 즉시 CLOSED 로 둔다.
-     */
-    fun insertTestAlert(condId: Int?, severityCd: String, title: String, targetDesc: String?): Long {
+    fun insertTestAlert(condId: Int?, severityCd: String, title: String, targetDesc: String?, dedupKey: String): Long {
         val sql = """
             INSERT INTO ax.tb_alm_alert (
-                cond_id, severity_cd, title, occurred_at, target_desc, ack_state_cd, evidence_desc
+                cond_id, severity_cd, title, occurred_at, target_desc, ack_state_cd, evidence_desc, test_flg, dedup_key
             ) VALUES (
-                :condId, :severityCd, :title, now(), :targetDesc, 'CLOSED', '테스트 발송'
+                :condId, :severityCd, :title, now(), :targetDesc, 'CLOSED', '테스트 발송', 'Y', :dedupKey
             )
             RETURNING alert_id
         """.trimIndent()
@@ -516,8 +502,67 @@ class AlertRepository(
             .addValue("severityCd", severityCd)
             .addValue("title", title.take(200))
             .addValue("targetDesc", targetDesc?.take(200))
+            .addValue("dedupKey", dedupKey)
 
         return jdbcTemplate.queryForObject(sql, params, Long::class.java) ?: 0L
+    }
+
+    /**
+     * 테스트 발송 연타 방지 — 같은 키를 트랜잭션 잠금으로 줄 세운 뒤 60초 안의 테스트 알림이 있는지 본다.
+     *
+     * @return 60초 안에 같은 키의 테스트 알림이 있으면 true
+     */
+    fun lockAndCheckRecentTest(dedupKey: String): Boolean {
+        val params = MapSqlParameterSource("key", "alm-test:$dedupKey")
+        jdbcTemplate.queryForList("SELECT pg_advisory_xact_lock(hashtext(:key))::text AS locked", params)
+        return jdbcTemplate.queryForObject(
+            """
+            SELECT exists(
+                SELECT 1 FROM ax.tb_alm_alert
+                 WHERE test_flg = 'Y' AND dedup_key = :dedupKey
+                   AND occurred_at > now() - interval '60 seconds'
+            )
+            """.trimIndent(),
+            MapSqlParameterSource("dedupKey", dedupKey),
+            Boolean::class.java
+        ) ?: false
+    }
+
+    /**
+     * 발송 대기열에 1건 넣는다. 실제 발송·발송 로그 기록은 Alert_Engine `SendDispatcher` 가 한다.
+     *
+     * 같은 사람이 두 그룹에 있어도 `ux_alm_send_queue_once` 로 한 행만 남는다.
+     *
+     * @return 실제로 들어간 행 수(0 또는 1)
+     */
+    fun enqueueSend(
+        alertId: Long,
+        groupId: Int?,
+        userId: String,
+        channelCd: String,
+        destAddr: String,
+        subject: String,
+        body: String
+    ): Int {
+        val sql = """
+            INSERT INTO ax.tb_alm_send_queue (
+                alert_id, group_id, user_id, channel_cd, dest_addr, subject, body, esc_level, is_proxy
+            ) VALUES (
+                :alertId, :groupId, :userId, :channelCd, :destAddr, :subject, :body, 0, false
+            )
+            ON CONFLICT DO NOTHING
+        """.trimIndent()
+
+        val params = MapSqlParameterSource()
+            .addValue("alertId", alertId)
+            .addValue("groupId", groupId)
+            .addValue("userId", userId)
+            .addValue("channelCd", channelCd)
+            .addValue("destAddr", destAddr.take(200))
+            .addValue("subject", subject.take(300))
+            .addValue("body", body)
+
+        return jdbcTemplate.update(sql, params)
     }
 
     /** 조회 기간 공통 파라미터 */

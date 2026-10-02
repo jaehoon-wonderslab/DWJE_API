@@ -77,10 +77,10 @@ class DataFieldRuntimeTest {
 
     private class MemAudit : AuditLogService(mock(AuditLogRepository::class.java), mock(AuthorizationService::class.java)) {
         val perm = mutableListOf<Pair<String, String>>()
-        override fun recordPermChange(actCd: String, targetKindCd: String, targetNm: String, detail: String, targetDeptId: Int?, targetUserId: String?) {
+        override fun recordPermChange(actCd: String, targetKindCd: String, targetNm: String, detail: String, targetDeptId: Int?, targetUserId: String?, auditId: Long?) {
             perm += actCd to detail
         }
-        override fun record(logType: String, menuId: String?, fieldKey: String?, targetDesc: String?, resultCd: String, maskedCnt: Int, remark: String?) {}
+        override fun record(logType: String, menuId: String?, fieldKey: String?, targetDesc: String?, resultCd: String, maskedCnt: Int, remark: String?): Long? = null
     }
 
     private fun principal(dataPerms: Set<String>, superAdmin: Boolean = false) = UserPrincipal(
@@ -96,7 +96,11 @@ class DataFieldRuntimeTest {
         seed("lot", "로트 정보(로트번호)", "Y", "lotNo")
     }
     private val audit = MemAudit()
-    private val auth = mock(AuthorizationService::class.java).also { `when`(it.requireMenu(MenuId.SYS_DATA)).thenReturn(admin) }
+    // 편집 API 는 쓰기 권한으로 판정한다(R-06, 04 DTP-17) — 두 판정 모두 같은 관리자를 돌려준다
+    private val auth = mock(AuthorizationService::class.java).also {
+        `when`(it.requireMenu(MenuId.SYS_DATA)).thenReturn(admin)
+        `when`(it.requireWrite(MenuId.SYS_DATA)).thenReturn(admin)
+    }
     private val service = DataFieldService(repo, auth, audit, mock(CodeValidator::class.java))
 
     @Test

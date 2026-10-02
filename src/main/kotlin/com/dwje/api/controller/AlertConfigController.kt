@@ -2,11 +2,14 @@ package com.dwje.api.controller
 
 import com.dwje.api.common.response.ApiResponse
 import com.dwje.api.model.request.AlertConditionRequest
+import com.dwje.api.model.request.AlertConditionUpdateRequest
 import com.dwje.api.model.request.EscalationRuleRequest
 import com.dwje.api.model.request.RecipientGroupRequest
+import com.dwje.api.model.request.RecipientGroupUpdateRequest
 import com.dwje.api.model.request.RecipientRequest
 import com.dwje.api.model.request.StateChangeRequest
 import com.dwje.api.service.AlertConfigService
+import com.dwje.api.service.AlertTestSendService
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.Parameter
 import io.swagger.v3.oas.annotations.tags.Tag
@@ -47,11 +50,13 @@ class AlertConditionController(
         @Parameter(description = "심각도 — CRIT|WARN|LOW") @RequestParam(required = false) severity: String?,
         @Parameter(description = "채널 — MAIL|POPUP|SMS|MSG") @RequestParam(required = false) channel: String?,
         @Parameter(description = "활성 상태 — on|off") @RequestParam(required = false) state: String?,
+        @Parameter(description = "조건명·지표명·지표 설명 검색어(50자 이내)") @RequestParam(required = false) keyword: String?,
+        @Parameter(description = "이 수신 그룹을 쓰는 조건만") @RequestParam(required = false) groupId: Int?,
         @RequestParam(required = false) page: Int?,
         @RequestParam(required = false) size: Int?
     ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta) = alertConfigService.getConditions(severity, channel, state, page, size)
-        return ApiResponse.page(mapOf("items" to rows), meta)
+        val (rows, meta, masked) = alertConfigService.getConditions(severity, channel, state, page, size, keyword, groupId)
+        return ApiResponse.page(mapOf("items" to rows), meta, masked)
     }
 
     /** 발송 조건 등록 (No.153) */
@@ -60,12 +65,21 @@ class AlertConditionController(
     fun createCondition(@Valid @RequestBody request: AlertConditionRequest): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(alertConfigService.createCondition(request), "발송 조건이 등록되었습니다.")
 
+    /** 발송 조건 상세 (05 ALC-04) */
+    @Operation(summary = "발송 조건 상세", description = "수정 화면을 채울 조건 전체 값(대상 설비·그룹·고급 설정·수정 시각)을 반환한다.")
+    @GetMapping("/{condId}")
+    fun condition(@PathVariable condId: Int): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(alertConfigService.getCondition(condId))
+
     /** 발송 조건 수정 (No.154) */
-    @Operation(summary = "발송 조건 수정", description = "발송 조건을 수정한다.")
+    @Operation(
+        summary = "발송 조건 수정",
+        description = "보낸 키만 바꾼다(누락 = 유지). updatedAt 을 보내면 그 사이 다른 사람이 고쳤을 때 409."
+    )
     @PutMapping("/{condId}")
     fun updateCondition(
         @PathVariable condId: Int,
-        @Valid @RequestBody request: AlertConditionRequest
+        @Valid @RequestBody request: AlertConditionUpdateRequest
     ): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(alertConfigService.updateCondition(condId, request), "발송 조건이 수정되었습니다.")
 
@@ -83,18 +97,23 @@ class AlertConditionController(
     @PatchMapping("/{condId}/state")
     fun changeConditionState(
         @PathVariable condId: Int,
-        @Valid @RequestBody request: StateChangeRequest
+        @RequestBody(required = false) request: StateChangeRequest?
     ): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(
-            alertConfigService.changeConditionState(condId, request.on ?: (request.state == "on")),
+            alertConfigService.changeConditionState(condId, request?.on, request?.state),
             "상태가 변경되었습니다."
         )
 
     /** 발송 조건 테스트 (No.156) */
-    @Operation(summary = "발송 조건 테스트", description = "조건에 연결된 수신 그룹에 테스트 알림을 발송한다.")
+    @Operation(
+        summary = "발송 조건 테스트",
+        description = "조건의 수신 그룹·채널로 테스트 알림을 발송 대기열에 넣는다. 실제 발송은 알림 엔진이 1분 안에 한다. 같은 조건은 60초에 한 번."
+    )
     @PostMapping("/{condId}/test-send")
-    fun testSend(@PathVariable condId: Int): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(alertConfigService.testSendCondition(condId), "테스트 발송이 완료되었습니다.")
+    fun testSend(@PathVariable condId: Int): ApiResponse<Map<String, Any?>> {
+        val (data, masked) = alertConfigService.testSendCondition(condId)
+        return ApiResponse.ok(data, masked, AlertTestSendService.messageOf(data))
+    }
 }
 
 /**
@@ -108,7 +127,7 @@ class AlertRecipientController(
 ) {
 
     /** 수신자 관리 요약 (No.157) */
-    @Operation(summary = "수신자 관리 요약", description = "그룹 수, 수신/부재 인원, 야간 수신자, 활성 당번 수를 반환한다.")
+    @Operation(summary = "수신자 관리 요약", description = "그룹 수, 수신·부재 인원, 계정 상태상 받을 수 없는 인원, 야간 수신 인원·야간 구간, 대상 그룹 없는 승격 단계 수를 반환한다.")
     @GetMapping("/alert-recipients/summary")
     fun recipientSummary(): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(alertConfigService.getRecipientSummary())
@@ -116,8 +135,20 @@ class AlertRecipientController(
     /** 수신 그룹 목록 (No.158) */
     @Operation(summary = "수신 그룹 목록", description = "수신 그룹과 채널·구성원을 반환한다.")
     @GetMapping("/alert-recipient-groups")
-    fun groups(): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(alertConfigService.getRecipientGroups())
+    fun groups(
+        @Parameter(description = "사용 중지 그룹 포함 여부(기본 false)") @RequestParam(required = false) includeInactive: Boolean?
+    ): ApiResponse<Map<String, Any?>> {
+        val (data, masked) = alertConfigService.getRecipientGroups(includeInactive ?: false)
+        return ApiResponse.ok(data, masked)
+    }
+
+    /** 수신 그룹 상세 (06 RCP-02) */
+    @Operation(summary = "수신 그룹 상세", description = "그룹 편집 화면을 채울 값(멤버·수신 가능 인원·사용 조건·부서 선택지·수정 시각)을 반환한다.")
+    @GetMapping("/alert-recipient-groups/{groupId}")
+    fun group(@PathVariable groupId: Int): ApiResponse<Map<String, Any?>> {
+        val (data, masked) = alertConfigService.getRecipientGroup(groupId)
+        return ApiResponse.ok(data, masked)
+    }
 
     /** 수신 그룹 등록 (No.159) */
     @Operation(summary = "수신 그룹 등록", description = "수신 그룹을 등록하고 채널·구성원을 지정한다.")
@@ -130,26 +161,52 @@ class AlertRecipientController(
     @PutMapping("/alert-recipient-groups/{groupId}")
     fun updateGroup(
         @PathVariable groupId: Int,
-        @Valid @RequestBody request: RecipientGroupRequest
+        @Valid @RequestBody request: RecipientGroupUpdateRequest
     ): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(alertConfigService.updateRecipientGroup(groupId, request), "수신 그룹이 수정되었습니다.")
+
+    /** 수신 그룹 사용/중지 (06 RCP-08) */
+    @Operation(summary = "수신 그룹 사용/중지", description = "본문 {on}. 사용 중 발송 조건·승격 규칙이 쓰는 그룹을 중지하면 409(data 에 conds·escStages).")
+    @PatchMapping("/alert-recipient-groups/{groupId}/state")
+    fun changeGroupState(
+        @PathVariable groupId: Int,
+        @RequestBody(required = false) request: StateChangeRequest?
+    ): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(alertConfigService.changeRecipientGroupState(groupId, request?.on), "수신 그룹 상태가 변경되었습니다.")
 
     /** 수신 그룹 테스트 발송 (No.161) */
     @Operation(summary = "수신 그룹 테스트 발송", description = "그룹 구성원에게 테스트 알림을 발송한다.")
     @PostMapping("/alert-recipient-groups/{groupId}/test-send")
-    fun testSendGroup(@PathVariable groupId: Int): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(alertConfigService.testSendGroup(groupId), "테스트 발송이 완료되었습니다.")
+    fun testSendGroup(@PathVariable groupId: Int): ApiResponse<Map<String, Any?>> {
+        val (data, masked) = alertConfigService.testSendGroup(groupId)
+        return ApiResponse.ok(data, masked, AlertTestSendService.messageOf(data))
+    }
 
     /** 수신자 목록 (No.162) */
     @Operation(summary = "수신자 목록", description = "수신자 연락처와 수신 상태를 조회한다.")
     @GetMapping("/alert-recipients")
     fun recipients(
-        @Parameter(description = "수신 상태 — 수신|부재") @RequestParam(required = false) state: String?,
+        @Parameter(description = "수신 상태 — RECV|ABSENT(수신|부재)") @RequestParam(required = false) state: String?,
+        @Parameter(description = "이름·사번·부서 검색어(50자 이내)") @RequestParam(required = false) keyword: String?,
+        @Parameter(description = "이 수신 그룹의 멤버만") @RequestParam(required = false) groupId: Int?,
+        @Parameter(description = "계정 상태 — ACTIVE|SUSPENDED|PENDING|LOCKED") @RequestParam(required = false) userState: String?,
         @RequestParam(required = false) page: Int?,
         @RequestParam(required = false) size: Int?
     ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta) = alertConfigService.getRecipients(state, page, size)
-        return ApiResponse.page(mapOf("items" to rows), meta)
+        val (rows, meta, masked) = alertConfigService.getRecipients(state, page, size, keyword, groupId, userState)
+        return ApiResponse.page(mapOf("items" to rows), meta, masked)
+    }
+
+    /** 수신자 등록 후보 (06 RCP-05) — 아직 수신자가 아닌 사용 중 계정, 미배정 제외 */
+    @Operation(summary = "수신자 등록 후보", description = "수신자로 등록할 계정을 찾는다. 미배정 계정은 나오지 않는다(R-14). 메일 주소는 worker 권한이 없으면 null.")
+    @GetMapping("/alert-recipients/candidates")
+    fun recipientCandidates(
+        @RequestParam(required = false) keyword: String?,
+        @RequestParam(required = false) deptId: Int?,
+        @Parameter(description = "최대 건수(1~100, 기본 20)") @RequestParam(required = false) size: Int?
+    ): ApiResponse<Map<String, Any?>> {
+        val (data, masked) = alertConfigService.getRecipientCandidates(keyword, deptId, size)
+        return ApiResponse.ok(data, masked)
     }
 
     /** 수신자 등록 (No.163) */
@@ -172,12 +229,30 @@ class AlertRecipientController(
     @PatchMapping("/alert-recipients/{recipientId}/state")
     fun changeRecipientState(
         @PathVariable recipientId: String,
-        @Valid @RequestBody request: StateChangeRequest
+        @RequestBody(required = false) request: StateChangeRequest?
     ): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(
-            alertConfigService.changeRecipientState(recipientId, request.state ?: "RECV"),
+            alertConfigService.changeRecipientState(recipientId, request?.state, request?.reason),
             "수신 상태가 변경되었습니다."
         )
+
+    /** 수신자를 빼면 생기는 영향 (06 RCP-08) */
+    @Operation(summary = "수신자 삭제 영향", description = "이 수신자를 빼면 그룹별 남는 수신 가능 인원, 받는 사람이 없어지는 그룹, 그 그룹을 쓰는 발송 조건·승격 단계.")
+    @GetMapping("/alert-recipients/{recipientId}/impact")
+    fun recipientImpact(@PathVariable recipientId: String): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(alertConfigService.getRecipientImpact(recipientId))
+
+    /** 수신자 삭제 (06 RCP-08) */
+    @Operation(
+        summary = "수신자 삭제",
+        description = "받는 사람이 없어지는 수신 그룹이 생기면 force=true 없이는 409(data 에 zeroGroups·affectedConds). 그룹 멤버십도 함께 지운다. 지난 발송 로그는 남는다."
+    )
+    @DeleteMapping("/alert-recipients/{recipientId}")
+    fun deleteRecipient(
+        @PathVariable recipientId: String,
+        @RequestParam(required = false) force: Boolean?
+    ): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(alertConfigService.deleteRecipient(recipientId, force ?: false), "수신자를 삭제했습니다.")
 
     /**
      * 승격 규칙 조회 (No.169)
@@ -196,3 +271,4 @@ class AlertRecipientController(
     fun updateEscalationRules(@Valid @RequestBody request: EscalationRuleRequest): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(alertConfigService.updateEscalationRules(request), "승격 규칙이 수정되었습니다.")
 }
+

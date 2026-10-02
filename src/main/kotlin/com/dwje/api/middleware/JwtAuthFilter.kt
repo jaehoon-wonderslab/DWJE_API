@@ -26,6 +26,7 @@ import org.springframework.web.filter.OncePerRequestFilter
  * 2. `Authorization: Bearer <token>` 헤더에서 토큰 추출
  * 3. 서명·만료 검증 후 사번 확보
  * 4. 부서 기준 메뉴/데이터 권한을 조회해 [UserContext] 에 바인딩
+ * 5. 초기 비밀번호를 바꾸기 전인 계정은 허용 목록([PWD_CHANGE_ALLOWED]) 밖 요청을 403 E-AUTH-006 으로 끝낸다 (R-04)
  */
 @Component
 @Order(30)
@@ -39,6 +40,24 @@ class JwtAuthFilter(
 
     companion object {
         private const val BEARER_PREFIX = "Bearer "
+
+        /**
+         * 초기 비밀번호 변경 전에도 부를 수 있는 API — 메서드와 경로가 **정확히** 같아야 한다(접두사 일치 금지, 01 ACC-03).
+         *
+         * 로그인·토큰 갱신·비밀번호 찾기·잠금 해제 같은 비로그인 경로는 화이트리스트라 이 판정에 오지 않는다.
+         * `/auth/me` 는 최소 정보만 돌려준다(AuthService.getMyInfo).
+         */
+        val PWD_CHANGE_ALLOWED: Set<Pair<String, String>> = setOf(
+            "POST" to "/api/v1/auth/login",
+            "POST" to "/api/v1/auth/refresh",
+            "POST" to "/api/v1/auth/logout",
+            "GET" to "/api/v1/auth/me",
+            "POST" to "/api/v1/auth/password"
+        )
+
+        /** 비밀번호 변경 전 계정이 이 요청을 부를 수 있는지 */
+        fun allowedBeforePasswordChange(method: String, path: String): Boolean =
+            (method.uppercase() to path.trimEnd('/')) in PWD_CHANGE_ALLOWED
     }
 
     override fun doFilterInternal(
@@ -67,7 +86,14 @@ class JwtAuthFilter(
                 // 4. 최신 권한을 DB 에서 조회해 컨텍스트에 바인딩한다.
                 //    (토큰 발급 이후 관리자가 권한을 변경한 경우를 즉시 반영하기 위함)
                 val impersonated = claims[JwtTokenProvider.CLAIM_IMPERSONATED] as? Boolean ?: false
-                val principal = authorizationService.loadPrincipal(claims.subject, impersonated)
+                val impersonatedBy = claims[JwtTokenProvider.CLAIM_IMPERSONATED_BY] as? String
+                val principal = authorizationService.loadPrincipal(claims.subject, impersonated, impersonatedBy)
+
+                // 5. 초기 비밀번호 변경 전 차단 — 컨트롤러까지 가지 않으므로 화면별 누락이 없다.
+                //    매 요청 DB 를 읽으므로 비밀번호를 바꾸면 토큰 재발급 없이 다음 요청부터 풀린다.
+                if (principal.pwdChangeRequired && !allowedBeforePasswordChange(request.method, request.requestURI)) {
+                    return reject(response, ErrorCode.AUTH_PWD_CHANGE_REQUIRED, ErrorCode.AUTH_PWD_CHANGE_REQUIRED.defaultMessage)
+                }
                 UserContext.set(principal)
             } catch (e: BusinessException) {
                 return reject(response, e.errorCode, e.message)

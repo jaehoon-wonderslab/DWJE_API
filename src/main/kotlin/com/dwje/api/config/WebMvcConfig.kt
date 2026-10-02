@@ -15,7 +15,7 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer
  * - CORS 는 인증 필터의 401 응답에도 헤더가 실려야 하므로 [CorsConfig] 의 필터에서 처리한다.
  */
 @Configuration
-@EnableConfigurationProperties(JwtProperties::class, AppProperties::class, PasswordProperties::class, EmailVerificationProperties::class)
+@EnableConfigurationProperties(JwtProperties::class, AppProperties::class, PasswordProperties::class, EmailVerificationProperties::class, AccountUnlockProperties::class)
 class WebMvcConfig : WebMvcConfigurer {
 
     /**

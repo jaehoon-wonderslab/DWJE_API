@@ -1,5 +1,6 @@
 package com.dwje.api.service
 
+import com.dwje.api.common.util.AuditType
 import com.dwje.api.common.exception.BusinessRuleException
 import com.dwje.api.common.exception.ResourceNotFoundException
 import com.dwje.api.common.exception.SystemErrorException
@@ -43,16 +44,21 @@ class AlertService(
         period: String?,
         ackState: String?,
         page: Int?,
-        size: Int?
+        size: Int?,
+        includeTest: Boolean = false,
+        condId: Int? = null,
+        alertId: Long? = null
     ): Pair<List<Map<String, Any?>>, PageMeta> {
         authorizationService.requireMenu(MenuId.ALERT_LIST)
 
-        val (from, to) = resolvePeriod(period)
+        // alertId 는 알림 메일·팝업 링크로 들어온다 — 기간·테스트 여부와 무관하게 그 한 건을 보여 준다(05 메인 10-13)
+        val (from, to) = if (alertId != null) LocalDate.of(2000, 1, 1) to LocalDate.now().plusDays(1) else resolvePeriod(period)
+        val withTest = includeTest || alertId != null
         val paging = PageRequestParam.of(page, size)
         val plantCd = appProperties.defaultPlantCd
 
-        val total = alertRepository.countAlerts(plantCd, type, eqptCd, from, to, ackState)
-        val rows = alertRepository.findAlerts(plantCd, type, eqptCd, from, to, ackState, paging.limit, paging.offset)
+        val total = alertRepository.countAlerts(plantCd, type, eqptCd, from, to, ackState, withTest, condId, alertId)
+        val rows = alertRepository.findAlerts(plantCd, type, eqptCd, from, to, ackState, paging.limit, paging.offset, withTest, condId, alertId)
 
         return rows to PageMeta.of(paging.page, paging.size, total)
     }
@@ -103,7 +109,7 @@ class AlertService(
         }
 
         auditLogService.record(
-            logType = "AUTO_GEN",
+            logType = AuditType.AUTO_GEN,
             menuId = MenuId.ALERT_LIST,
             targetDesc = "이상 알림 확인 [${alert["title"]}]",
             remark = "alertId=$alertId, 조치=${actionNote ?: "-"}"

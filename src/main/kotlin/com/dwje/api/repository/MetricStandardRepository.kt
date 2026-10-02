@@ -85,8 +85,11 @@ class MetricStandardRepository(
         params: MapSqlParameterSource,
         category: String?,
         applied: Boolean?,
-        level: String?
+        level: String?,
+        alertOnly: Boolean? = null
     ) {
+        // 알림에 쓰는 지표만 — 발송 조건의 감지 지표 선택지 (05 ALC-10)
+        if (alertOnly == true) sql.append(" AND ms.apply_alert")
         if (!category.isNullOrBlank()) {
             sql.append(" AND ms.cat_cd = :category")
             params.addValue("category", category.trim())
@@ -395,7 +398,8 @@ class MetricStandardRepository(
         applied: Boolean?,
         level: String?,
         limit: Int,
-        offset: Int
+        offset: Int,
+        alertOnly: Boolean? = null
     ): List<Map<String, Any?>> {
         val sql = StringBuilder(
             """
@@ -418,12 +422,16 @@ class MetricStandardRepository(
                 u.user_nm       AS upd_user_nm,
                 d.dept_nm       AS owner_dept_nm,
                 cur.metric_value AS current_value,
-                cur.judge_cd     AS current_judge
+                cur.judge_cd     AS current_judge,
+                cur.measured_at  AS last_value_at,
+                un.code_nm       AS unit_nm,
+                EXISTS (SELECT 1 FROM ax.tb_met_metric_collect mc WHERE mc.metric_id = ms.metric_id AND mc.use_flg = 'Y') AS collecting
             FROM ax.tb_met_metric_std ms
+            LEFT JOIN ax.tb_sys_code un ON un.group_cd = 'MET_UNIT' AND un.code = ms.unit_cd
             LEFT JOIN ax.tb_sys_user u ON u.user_id = ms.upd_user
             LEFT JOIN ax.tb_sys_dept d ON d.dept_id = ms.owner_dept_id
             LEFT JOIN LATERAL (
-                SELECT mv.metric_value, mv.judge_cd
+                SELECT mv.metric_value, mv.judge_cd, mv.measured_at
                 FROM ax.tb_met_metric_value mv
                 WHERE mv.metric_id = ms.metric_id
                 ORDER BY mv.measured_at DESC
@@ -434,7 +442,7 @@ class MetricStandardRepository(
         )
 
         val params = MapSqlParameterSource()
-        appendStandardFilters(sql, params, category, applied, level)
+        appendStandardFilters(sql, params, category, applied, level, alertOnly)
 
         sql.append("\nORDER BY ms.cat_cd, ms.metric_nm\nLIMIT :limit OFFSET :offset")
         params.addValue("limit", limit).addValue("offset", offset)
@@ -446,6 +454,10 @@ class MetricStandardRepository(
                 "category" to rs.getString("cat_cd"),
                 "name" to rs.getString("metric_nm"),
                 "unit" to rs.getString("unit_cd"),
+                "unitNm" to rs.getString("unit_nm"),
+                // 수집 정의 사용 여부 · 최근 측정 시각 — 엔진의 수집 중단 판정과 같은 원천 (05 ALC-10)
+                "collecting" to rs.getBoolean("collecting"),
+                "lastValueAt" to Rs.dateTime(rs, "last_value_at"),
                 "currentValue" to Rs.rate(rs, "current_value", 4),
                 "normal" to Rs.rate(rs, "std_val", 4),
                 "warn" to Rs.rate(rs, "warn_val", 4),
@@ -466,7 +478,7 @@ class MetricStandardRepository(
         }
     }
 
-    fun countStandards(category: String?, applied: Boolean?, level: String?): Long {
+    fun countStandards(category: String?, applied: Boolean?, level: String?, alertOnly: Boolean? = null): Long {
         val sql = StringBuilder(
             """
             SELECT count(*)
@@ -483,7 +495,7 @@ class MetricStandardRepository(
         )
 
         val params = MapSqlParameterSource()
-        appendStandardFilters(sql, params, category, applied, level)
+        appendStandardFilters(sql, params, category, applied, level, alertOnly)
 
         return jdbcTemplate.queryForObject(sql.toString(), params, Long::class.java) ?: 0L
     }

@@ -31,8 +31,43 @@ data class DataFieldAttrRequest(
 /**
  * 적용 스위치 요청 — PATCH /api/v1/system/data-fields/{fieldKey}/apply
  *
- * @param on true = 적용(마스킹이 걸린다) · false = 미적용. 반영은 재로그인 때
+ * @param on true = 적용(마스킹이 걸린다) · false = 미적용. 서버 응답에는 다음 조회부터, 다른 사용자 화면 표시는 그 화면을 다시 열 때
  */
 data class DataFieldApplyRequest(
     val on: Boolean = true
 )
+
+/**
+ * 화면 열 매핑 일괄 저장 — PUT /api/v1/system/data-fields/mapping (04 DTP-02)
+ *
+ * 새 종류 만들기 · 열(응답 필드명) 옮기기 · 풀기 · 적용 켜기를 **한 트랜잭션**으로 한다. 하나라도 틀리면 아무것도 바뀌지 않는다.
+ *
+ * @param newFields 이번에 새로 만들 종류
+ * @param moves     열마다 옮길 종류. `toFieldKey=null` 이면 그 열을 어느 종류에서도 뺀다
+ * @param screenId  매핑을 고친 화면 ID — 이력 문구용
+ */
+data class DataFieldMappingRequest(
+    val newFields: List<NewField>? = null,
+    val moves: List<Move>? = null,
+    val screenId: String? = null
+) {
+    /**
+     * @param grantAllDepts true(기본) 면 통합관리자·미배정을 뺀 사용 중 부서 전부에 열람을 허용한 채 만든다
+     * @param apply         true 면 만들면서 적용을 켠다(기본 false — 명시한 것만 켠다)
+     */
+    data class NewField(
+        val fieldKey: String? = null,
+        val name: String? = null,
+        val desc: String? = null,
+        val category: String? = null,
+        val grantAllDepts: Boolean = true,
+        val apply: Boolean = false
+    )
+
+    /** @param remark 어느 화면·열인지 메모(200자 이내). 형식 권장 「{화면명} · {열 이름}」 */
+    data class Move(
+        val attrName: String? = null,
+        val toFieldKey: String? = null,
+        val remark: String? = null
+    )
+}

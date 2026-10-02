@@ -212,4 +212,43 @@ class DataFieldRepository(
             )
         }.first()
     }
+
+    /**
+     * 응답 필드명을 다른 항목으로 옮긴다. 없으면 새로 붙인다 (04 DTP-02).
+     * attr_name 이 전역 UNIQUE 라 UPDATE 로 옮겨도 충돌하지 않는다. 메모는 새 값이 있을 때만 바꾼다.
+     */
+    fun moveAttr(attrName: String, toFieldKey: String, remark: String?, actor: String): Int {
+        val params = MapSqlParameterSource().addValue("attrName", attrName).addValue("to", toFieldKey)
+            .addValue("remark", remark).addValue("actor", actor)
+        val moved = jdbcTemplate.update(
+            "UPDATE ax.tb_sys_data_field_attr SET field_key = :to, remark = coalesce(:remark, remark) WHERE attr_name = :attrName",
+            params
+        )
+        if (moved > 0) return moved
+        return jdbcTemplate.update(
+            "INSERT INTO ax.tb_sys_data_field_attr (field_key, attr_name, remark, ins_user) VALUES (:to, :attrName, :remark, :actor)",
+            params
+        )
+    }
+
+    /** 응답 필드명을 어느 항목에서도 뺀다 */
+    fun releaseAttr(attrName: String): Int =
+        jdbcTemplate.update(
+            "DELETE FROM ax.tb_sys_data_field_attr WHERE attr_name = :attrName",
+            MapSqlParameterSource("attrName", attrName)
+        )
+
+    /** 새 항목의 열람을 사용 중 부서 전부에 허용한다 — 통합관리자(전 권한)·미배정(0건 고정)은 뺀다 */
+    fun grantFieldToDepts(fieldKey: String, unassignedDeptName: String, actor: String): Int =
+        jdbcTemplate.update(
+            """
+            INSERT INTO ax.tb_sys_dept_data_perm (dept_id, field_key, is_allowed, ins_user, upd_user)
+            SELECT d.dept_id, :fieldKey, true, :actor, :actor
+              FROM ax.tb_sys_dept d
+             WHERE d.use_flg = 'Y' AND NOT d.is_super_admin AND d.dept_nm <> :unassigned
+            ON CONFLICT DO NOTHING
+            """.trimIndent(),
+            MapSqlParameterSource().addValue("fieldKey", fieldKey).addValue("unassigned", unassignedDeptName).addValue("actor", actor)
+        )
+
 }

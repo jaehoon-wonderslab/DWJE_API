@@ -35,6 +35,7 @@ import org.springframework.validation.annotation.Validated
  * @param llm                    사내 LLM 채팅 프록시 설정
  * @param unassignedDeptName     그룹웨어 자동 가입의 미배정 부서 이름 — MES 이관 엔진
  *                               `migration.groupware.ax-join.default-dept-name` 과 같은 값이어야 한다
+ * @param trustedProxies         접속 IP 판정에서 믿는 앞단 프록시 주소 — 이 주소가 넘긴 요청만 X-Real-IP·X-Forwarded-For 를 본다
  */
 @Validated
 @ConfigurationProperties(prefix = "app")
@@ -52,6 +53,27 @@ data class AppProperties(
     @field:Min(value = 1, message = "다운로드 이력 보존 연수는 1년 이상이어야 합니다.")
     @field:Max(value = 10, message = "다운로드 이력 보존 연수는 10년 이하로 설정하세요.")
     val downloadRetentionYears: Int = 3,
+
+    /** 감사 로그(감사·권한 변경·로그인) 보존 연수 (09 AUD-11) — 지나면 아카이브 표로 옮긴다 */
+    @field:Min(value = 1, message = "감사 로그 보존 연수는 1년 이상이어야 합니다.")
+    @field:Max(value = 10, message = "감사 로그 보존 연수는 10년 이하로 설정하세요.")
+    val auditRetentionYears: Int = 3,
+
+    /**
+     * 감사·다운로드 기록 아카이브 배치 사용 여부 (09 AUD-11 · 10 DLG-07).
+     * 보존 기간·원본 삭제가 결정되기 전(공통 D-08)이라 모든 환경에서 기본 꺼짐이다.
+     */
+    val auditArchiveEnabled: Boolean = false,
+
+    /** 아카이브 실행 주기(cron) — 기본 매월 1일 03:00 */
+    val auditArchiveCron: String = "0 0 3 1 * *",
+
+    /** 아카이브 cron 시간대 */
+    val auditArchiveZone: String = "Asia/Seoul",
+
+    /** 아카이브 한 트랜잭션에서 옮기는 최대 행 수 — 묶음이 작아야 잠금이 짧다 */
+    @field:Min(value = 1, message = "아카이브 묶음 크기는 1 이상이어야 합니다.")
+    val auditArchiveBatchSize: Int = 50_000,
 
     /**
      * 프레스 작업장 코드 — 일일 생산현황 보고는 공정을 지정하지 않으면 이 범위만 집계한다.
@@ -117,5 +139,68 @@ data class AppProperties(
      * 한쪽만 바꾸면 그룹웨어 부서 매핑 화면의 미배정 목록이 비어 보인다.
      */
     @field:NotBlank(message = "미배정 부서 이름(app.unassigned-dept-name)은 비워 둘 수 없습니다.")
-    val unassignedDeptName: String = "미배정"
+    val unassignedDeptName: String = "미배정",
+
+    /**
+     * 접속 IP 판정에서 믿는 앞단 프록시 주소 (09 기획서 AUD-03).
+     *
+     * 요청을 넘긴 주소(`remoteAddr`)가 이 목록에 있을 때만 프록시가 채운 `X-Real-IP`·`X-Forwarded-For` 를 본다.
+     * 목록 밖에서 온 요청의 헤더는 브라우저가 마음대로 적을 수 있으므로 무시하고 `remoteAddr` 를 쓴다.
+     * 기본은 같은 서버의 프록시(루프백)뿐이다. 앞단 구성이 바뀌면 yml 을 고친다.
+     */
+    val trustedProxies: List<String> = listOf("127.0.0.1", "::1", "0:0:0:0:0:0:0:1"),
+
+    /** 다운로드 이력 기록 — [DownloadLogProperties] (10 기획서 DLG-05) */
+    val downloadLog: DownloadLogProperties = DownloadLogProperties(),
+
+    /** 데이터 연동 상태 판정 — [SyncHealthProperties] (12 기획서 SYN-03) */
+    val sync: SyncHealthProperties = SyncHealthProperties(),
+
+    /** 알림 테스트 발송·수신 대상 판정 — [AlertProperties] (05 ALC-03, 06 RCP-03·04) */
+    val alert: AlertProperties = AlertProperties()
+)
+
+/**
+ * 알림 테스트 발송·수신 대상 판정 설정 (`app.alert.*`)
+ *
+ * 값은 Alert_Engine 설정(`alert.night`, 웹 주소)과 같아야 한다 — 테스트 발송(API)과 실발송(엔진)의
+ * 대상이 어긋나지 않게 하기 위함이다.
+ *
+ * @param webBaseUrl            메일 본문 알림 링크의 웹 주소. 비어 있으면 링크 줄을 넣지 않는다(환경변수 AX_WEB_BASE_URL)
+ * @param nightFrom             야간 시작(포함, HH:mm)
+ * @param nightTo               야간 끝(제외, HH:mm). 시작보다 이르면 자정을 넘긴다
+ * @param receivableUserStates  알림을 받을 수 있는 계정 상태(SYS_USER_STATE). 잠긴 계정(LOCKED)은 로그인만 막혔으므로 받는다
+ *                              (2026-10-01 3단계 결정). 엔진 RCP-04(E-1)와 같은 값이어야 한다
+ */
+data class AlertProperties(
+    val webBaseUrl: String = "",
+    val nightFrom: String = "22:00",
+    val nightTo: String = "06:00",
+    val receivableUserStates: List<String> = listOf("ACTIVE", "LOCKED"),
+    /** 지표 수집 중단 판정 배수 — 최근 측정값이 max(평가 주기 × 배수, 600초) 보다 오래되면 중단. 엔진 stale-factor 와 같은 값 (05 ALC-08) */
+    val staleFactor: Int = 3
+)
+
+/**
+ * 데이터 연동 상태 줄 판정 기준 (`app.sync.*`) — 실서버 배치 주기를 확인한 뒤 조정한다.
+ *
+ * @param staleWarnMin    마지막 정상 이관 후 이 분 이상이면 주의(WARN)
+ * @param staleDownMin    이 분 이상이면 중단(DOWN)
+ * @param stalePendingMin 예약 시각이 이 분 넘게 지난 PENDING 작업을 「오래된 예약」 으로 센다
+ */
+data class SyncHealthProperties(
+    val staleWarnMin: Long = 30,
+    val staleDownMin: Long = 120,
+    val stalePendingMin: Long = 10
+)
+
+/**
+ * 다운로드 이력 기록 설정 (`app.download-log.*`)
+ *
+ * @param requireMenuId 브라우저 내려받기 신고에 화면 ID(menuId)·범위 코드(scopeCd)를 필수로 받을지.
+ *                      새 WEB 이 모든 화면에서 menuId 를 보내는 것을 확인한 뒤 켠다. 그 전에는 menuId 가 없는
+ *                      옛 신고도 기록한다(menuId 가 있으면 존재·조회 권한을 항상 확인한다).
+ */
+data class DownloadLogProperties(
+    val requireMenuId: Boolean = false
 )

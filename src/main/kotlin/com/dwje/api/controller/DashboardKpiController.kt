@@ -2,6 +2,7 @@ package com.dwje.api.controller
 
 import com.dwje.api.common.response.ApiResponse
 import com.dwje.api.common.util.MenuId
+import com.dwje.api.common.util.ReportFormat
 import com.dwje.api.model.request.ExportFormatRequest
 import com.dwje.api.service.DashboardKpiService
 import com.dwje.api.service.DownloadLogService
@@ -148,7 +149,9 @@ class DashboardKpiController(
         val (rows, mask) = dashboardKpiService.getEvidenceRows(yearMonth)
 
         // 파일을 먼저 만든다 — 크기를 이력에 남기고, 만들다 실패하면 'DONE' 기록도 막는다.
+        val blind = exportService.blindCells()
         val response = exportService.export(
+            blind = blind,
             format = format,
             fileName = "kpi_evidence_${exportService.timestamp()}",
             headers = listOf("지표코드", "지표명", "측정일시", "측정값", "판정", "사업장", "공정", "설비", "품목", "원천", "비고"),
@@ -161,11 +164,12 @@ class DashboardKpiController(
             reportId = null,
             reportNm = "KPI 산출 증빙",
             menuId = MenuId.DASH_AI,
-            format = format,
+            // 실제로 만든 파일 기준 형식(DLG-02), 비공개 건수는 셀 수(DLG-15)
+            format = ReportFormat.ofServerExport(format),
             scope = "yearMonth=${yearMonth ?: "전월"}",
             rowCnt = rows.size,
-            blindCnt = mask.maskedCount(),
-            blindCells = mask.maskedKeys().associateWith { rows.size },
+            blindCnt = blind.total,
+            blindCells = blind.counts(),
             params = mapOf("yearMonth" to yearMonth, "format" to format),
             fileSize = response.body?.contentLength()
         )

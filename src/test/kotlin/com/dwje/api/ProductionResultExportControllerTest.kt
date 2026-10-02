@@ -61,7 +61,8 @@ class ProductionResultExportControllerTest {
 
         override fun record(
             reportId: String?, reportNm: String, menuId: String?, format: String, scope: String?, rowCnt: Int, blindCnt: Int,
-            blindCells: Map<String, Int>, fileNm: String?, params: Map<String, Any?>?, fileSize: Long?
+            blindCells: Map<String, Int>, fileNm: String?, params: Map<String, Any?>?, fileSize: Long?,
+            scopeCd: String, condSummary: String?
         ): Long {
             calls += Call(reportNm, menuId, format, scope, rowCnt, blindCnt, blindCells, fileNm, params, fileSize)
             return calls.size.toLong()
@@ -92,11 +93,12 @@ class ProductionResultExportControllerTest {
     private val screenData = ResultScreenExport(
         from = LocalDate.parse("2026-09-04"), to = LocalDate.parse("2026-09-11"),
         summary = mapOf("inputQty" to 1500L),
-        dayRows = listOf(mapOf("period" to "2026-09-11", "inputQty" to 1500L, "ngQty" to 50L, "defectRate" to 3.33)),
+        // 수율(yield) 권한이 없는 사용자 — 서비스가 비율 값을 null 로 가려 넘긴다
+        dayRows = listOf(mapOf("period" to "2026-09-11", "inputQty" to 1500L, "ngQty" to 50L, "defectRate" to null)),
         rows = listOf(
-            ResultScreenExportRow(1, "2026-09-11", inputQty = 1500, okQty = 1450, ngQty = 50, defectRate = 3.33),
-            ResultScreenExportRow(2, "2026-09-11", productCd = "D63A", inputQty = 1500, okQty = 1450, ngQty = 50, defectRate = 3.33),
-            ResultScreenExportRow(3, "2026-09-11", productCd = "D63A", eqptCd = "MT-007", eqptNm = "프레스 7호", inputQty = 1500, okQty = 1450, ngQty = 50, defectRate = 3.33)
+            ResultScreenExportRow(1, "2026-09-11", inputQty = 1500, okQty = 1450, ngQty = 50, defectRate = null),
+            ResultScreenExportRow(2, "2026-09-11", productCd = "D63A", inputQty = 1500, okQty = 1450, ngQty = 50, defectRate = null),
+            ResultScreenExportRow(3, "2026-09-11", productCd = "D63A", eqptCd = "MT-007", eqptNm = "프레스 7호", inputQty = 1500, okQty = 1450, ngQty = 50, defectRate = null)
         ),
         maskedFields = listOf(DataField.YIELD),
         downloadedBy = "관리자(10000)"
@@ -106,8 +108,21 @@ class ProductionResultExportControllerTest {
     private val downloadLog = RecordingDownloadLog()
     private val controller = ProductionController(
         production, mock(DailyReportService::class.java), mock(DayTargetService::class.java), mock(DowntimeService::class.java),
-        ExportService(), downloadLog, ProductionResultScreenWorkbook()
+        ExportService().also { export ->
+            export.dataFieldService = mock(com.dwje.api.service.DataFieldService::class.java).also {
+                org.mockito.Mockito.doReturn(mapOf("defectRate" to DataField.YIELD, "yield" to DataField.YIELD, "inputQty" to DataField.QTY))
+                    .`when`(it).attrFieldMap()
+            }
+        }, downloadLog, ProductionResultScreenWorkbook()
     )
+
+    @org.junit.jupiter.api.BeforeEach
+    fun login() = com.dwje.api.common.security.UserContext.set(
+        com.dwje.api.common.security.UserPrincipal("10003", "제조", 4, "제조팀", null, null, null, false, dataPerms = setOf(DataField.QTY))
+    )
+
+    @org.junit.jupiter.api.AfterEach
+    fun logout() = com.dwje.api.common.security.UserContext.clear()
 
     @Test
     @DisplayName("scope=screen — xlsx 바이너리 · 파일명 · 3장짜리 문서, 다운로드 이력에 조건과 크기가 남는다")
@@ -129,18 +144,23 @@ class ProductionResultExportControllerTest {
         val bytes = res.body!!.byteArray
         assertEquals(bytes.size.toLong(), res.headers.contentLength)
         XSSFWorkbook(ByteArrayInputStream(bytes)).use { wb ->
-            assertEquals(3, wb.numberOfSheets)
+            // 요약·추이·트리 3장 + 가린 칸이 있어 「안내」 (R-10)
+            assertEquals(4, wb.numberOfSheets)
             assertEquals(ProductionResultScreenWorkbook.SHEET_TREE, wb.getSheetName(2))
+            assertEquals("비공개 처리 6건(데이터 접근 권한 기준)", wb.getSheet("안내").getRow(0).getCell(0).stringCellValue)
             assertEquals(3, wb.getSheetAt(2).lastRowNum, "트리 행 3개")
+            assertEquals("비공개", wb.getSheetAt(2).getRow(1).getCell(9).stringCellValue, "가린 불량률 칸")
+            assertEquals(1500.0, wb.getSheetAt(2).getRow(1).getCell(6).numericCellValue, "볼 수 있는 수량은 그대로")
         }
 
         val call = downloadLog.calls.single()
         assertEquals("생산 실적 집계(화면 전체)", call.reportNm)
         assertEquals(MenuId.PROD_RESULT, call.menuId)
-        assertEquals("xlsx", call.format)
+        assertEquals("XLSX", call.format)
         assertEquals(3, call.rowCnt)
-        assertEquals(1, call.blindCnt)
-        assertEquals(mapOf(DataField.YIELD to 3), call.blindCells)
+        // 「비공개」 로 실제 채운 칸 — 트리 불량률 3 + 일별 추이 불량률 1 + 요약 불량률·수율 2 (R-10)
+        assertEquals(6, call.blindCnt, "비공개 건수는 실제로 채운 칸 수")
+        assertEquals(mapOf(DataField.YIELD to 6), call.blindCells)
         assertEquals("실적_집계_전체_2026-09-04_2026-09-11.xlsx", call.fileNm)
         assertEquals(bytes.size.toLong(), call.fileSize)
         assertTrue((call.scope ?: "").length <= 100, "scope_desc 컬럼은 100자다")
@@ -162,7 +182,12 @@ class ProductionResultExportControllerTest {
         )
         assertEquals(200, res.statusCode.value())
         assertEquals(1, production.legacyCalls)
-        XSSFWorkbook(ByteArrayInputStream(res.body!!.byteArray)).use { wb -> assertEquals(1, wb.numberOfSheets) }
+        XSSFWorkbook(ByteArrayInputStream(res.body!!.byteArray)).use { wb ->
+            // 표 1장 + 가린 칸 안내 — 수율 권한이 없어 불량률·수율 열이 「비공개」(R-10)
+            assertEquals(listOf("Sheet1", "안내"), (0 until wb.numberOfSheets).map { wb.getSheetName(it) })
+            assertEquals("비공개", wb.getSheetAt(0).getRow(1).getCell(4).stringCellValue)
+        }
+        assertEquals(2, downloadLog.calls.single().blindCnt, "불량률·수율 1행씩")
         assertEquals("생산 실적 집계", downloadLog.calls.single().reportNm)
     }
 

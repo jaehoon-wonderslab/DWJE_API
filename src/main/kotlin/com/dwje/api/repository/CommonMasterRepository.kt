@@ -448,4 +448,14 @@ class CommonMasterRepository(
             )
         }.firstOrNull() ?: mapOf("fromDate" to null, "toDate" to null)
     }
+
+    /** 설비 마스터에 없는 설비 코드 — 알림 조건의 개별 설비 대상 검증(05 ALC-05) */
+    fun findUnknownEqptCodes(plantCd: String, eqptCds: List<String>): List<String> {
+        if (eqptCds.isEmpty()) return emptyList()
+        val known = jdbcTemplate.query(
+            "SELECT eqpt_cd FROM mes.tb_md_eqpt WHERE plant_cd = :plantCd AND eqpt_cd IN (:cds)",
+            MapSqlParameterSource().addValue("plantCd", plantCd).addValue("cds", eqptCds)
+        ) { rs, _ -> rs.getString("eqpt_cd") }.toSet()
+        return eqptCds.filterNot { it in known }
+    }
 }

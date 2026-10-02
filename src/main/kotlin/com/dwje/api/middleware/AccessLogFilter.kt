@@ -1,6 +1,7 @@
 package com.dwje.api.middleware
 
 import com.dwje.api.common.security.UserContext
+import com.dwje.api.common.util.ClientIpResolver
 import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
@@ -20,7 +21,9 @@ import org.springframework.web.filter.OncePerRequestFilter
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
-class AccessLogFilter : OncePerRequestFilter() {
+class AccessLogFilter(
+    private val clientIpResolver: ClientIpResolver = ClientIpResolver()
+) : OncePerRequestFilter() {
 
     private val log = LoggerFactory.getLogger("com.dwje.api.access")
 
@@ -55,27 +58,12 @@ class AccessLogFilter : OncePerRequestFilter() {
                 request.requestURI,
                 response.status,
                 elapsed,
-                clientIp(request),
+                clientIpResolver.resolve(request) ?: "-",
                 actor,
                 maskedParams(request),
                 request.getHeader("User-Agent")?.take(120) ?: "-"
             )
         }
-    }
-
-    /**
-     * 프록시/로드밸런서를 경유한 실제 클라이언트 IP 를 추출한다.
-     */
-    private fun clientIp(request: HttpServletRequest): String {
-        val headers = listOf("X-Forwarded-For", "X-Real-IP", "Proxy-Client-IP", "WL-Proxy-Client-IP")
-        for (h in headers) {
-            val v = request.getHeader(h)
-            if (!v.isNullOrBlank() && !"unknown".equals(v, ignoreCase = true)) {
-                // X-Forwarded-For 는 "client, proxy1, proxy2" 형태이므로 첫 값을 취한다.
-                return v.split(",").first().trim()
-            }
-        }
-        return request.remoteAddr ?: "-"
     }
 
     /**

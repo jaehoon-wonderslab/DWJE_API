@@ -71,7 +71,9 @@ data class PasswordChangeRequest(
  */
 data class SignupApprovalRequest(
     val approve: Boolean = true,
-    val reason: String? = null
+    val reason: String? = null,
+    /** 승인과 함께 배정할 부서(선택, 01 ACC-07). 반려면 무시한다 */
+    val deptId: Int? = null
 )
 
 /**
@@ -131,6 +133,55 @@ data class PasswordForgotRequest(
  * @param newPasswordConfirm 새 비밀번호 확인
  */
 data class PasswordResetRequest(
+    @field:NotBlank(message = "이메일 인증을 먼저 완료해 주세요.")
+    val verificationToken: String,
+
+    @field:NotBlank(message = "새 비밀번호를 입력해 주세요.")
+    val newPassword: String,
+
+    @field:NotBlank(message = "새 비밀번호 확인을 입력해 주세요.")
+    val newPasswordConfirm: String
+)
+
+
+// =====================================================================================
+// 계정 잠금 해제 (결정 R-02, 09 기획서 AUD-16) — 로그인 전 경로
+// =====================================================================================
+
+/**
+ * 잠금 해제 코드 요청 — POST /api/v1/auth/unlock/request
+ *
+ * @param empNo 사번. 잠긴 계정이면 등록 이메일로 코드를 보낸다(응답은 대상 여부와 무관하게 같다)
+ */
+data class UnlockCodeRequest(
+    @field:NotBlank(message = "사번을 입력해 주세요.")
+    val empNo: String
+)
+
+/**
+ * 잠금 해제 코드 검증 — POST /api/v1/auth/unlock/verify
+ *
+ * @param empNo 사번 (화면은 이메일 원문을 모르므로 사번으로 찾는다)
+ * @param code  메일로 받은 인증 코드
+ */
+data class UnlockVerifyRequest(
+    @field:NotBlank(message = "사번을 입력해 주세요.")
+    val empNo: String,
+
+    @field:NotBlank(message = "인증 코드를 입력해 주세요.")
+    val code: String
+)
+
+/**
+ * 잠금 해제 완료 — POST /api/v1/auth/unlock/complete
+ *
+ * 5회 실패는 대입 시도일 수 있으므로 새 비밀번호 설정이 필수다(D-21).
+ *
+ * @param verificationToken  잠금 해제 인증으로 받은 1회용 토큰
+ * @param newPassword        새 비밀번호
+ * @param newPasswordConfirm 새 비밀번호 확인
+ */
+data class UnlockCompleteRequest(
     @field:NotBlank(message = "이메일 인증을 먼저 완료해 주세요.")
     val verificationToken: String,
 

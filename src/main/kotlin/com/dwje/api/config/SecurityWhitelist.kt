@@ -27,6 +27,10 @@ object SecurityWhitelist {
         "/api/v1/auth/email/verify-code",
         "/api/v1/auth/password/forgot",
         "/api/v1/auth/password/reset",
+        // 계정 잠금 해제(R-02)도 로그인 전에 쓴다. 응답을 대상 여부와 무관하게 같게 두고 발송 제한으로 남용을 막는다.
+        "/api/v1/auth/unlock/request",
+        "/api/v1/auth/unlock/verify",
+        "/api/v1/auth/unlock/complete",
         "/api/v1/health",
         // 사내 LLM 헬스체크 — 모델 태그만 알려 준다. 채팅(/api/ai/chat)은 로그인이 필요하다.
         "/api/ai/health",

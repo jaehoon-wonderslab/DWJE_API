@@ -5,6 +5,7 @@ import com.dwje.api.common.response.ApiResponse
 import com.dwje.api.common.security.UserContext
 import com.dwje.api.common.util.DateUtils
 import com.dwje.api.common.util.MenuId
+import com.dwje.api.common.util.ReportFormat
 import com.dwje.api.model.request.EvidenceImageRequest
 import com.dwje.api.model.request.ExportFormatRequest
 import com.dwje.api.model.request.QualityDefectExportRequest
@@ -168,11 +169,12 @@ class QualityController(
         val (data, mask) = qualityDefectService.getByType(req.from, req.to, req.processId)
         val items = itemsOf(data)
 
-        val bytes = defectWorkbook.byType(conditionsOf(req, fromDate, toDate, mask.maskedKeys()), items)
+        val blind = exportService.blindCells()
+        val bytes = defectWorkbook.byType(conditionsOf(req, fromDate, toDate, mask.maskedKeys()), items, blind)
         val fileName = "불량_유형별_분포_${fromDate}_${toDate}.xlsx"
         val response = exportService.xlsx(bytes, fileName)
 
-        recordDefectExport("불량 유형별 분포", req, fromDate, toDate, items.size, mask, fileName, bytes.size)
+        recordDefectExport("불량 유형별 분포", req, fromDate, toDate, items.size, blind, fileName, bytes.size)
         return response
     }
 
@@ -196,13 +198,14 @@ class QualityController(
         val levels = DefectTreeLevel.parse(req.levels)
         val (tree, _) = qualityDefectService.getDefectTree(req.from, req.to, req.processId, req.levels)
 
+        val blind = exportService.blindCells()
         val bytes = defectWorkbook.byLine(
-            conditionsOf(req, fromDate, toDate, mask.maskedKeys()), items, levels, itemsOf(tree)
+            conditionsOf(req, fromDate, toDate, mask.maskedKeys()), items, levels, itemsOf(tree), blind
         )
         val fileName = "설비별_불량률_${fromDate}_${toDate}.xlsx"
         val response = exportService.xlsx(bytes, fileName)
 
-        recordDefectExport("설비별 불량률", req, fromDate, toDate, items.size, mask, fileName, bytes.size)
+        recordDefectExport("설비별 불량률", req, fromDate, toDate, items.size, blind, fileName, bytes.size)
         return response
     }
 
@@ -238,7 +241,7 @@ class QualityController(
         fromDate: java.time.LocalDate,
         toDate: java.time.LocalDate,
         rowCnt: Int,
-        mask: com.dwje.api.common.util.MaskingSupport,
+        blind: com.dwje.api.service.BlindCells,
         fileName: String,
         fileSize: Int
     ) {
@@ -246,12 +249,13 @@ class QualityController(
             reportId = null,
             reportNm = reportNm,
             menuId = MenuId.QC_DEFECT,
-            format = "xlsx",
+            format = ReportFormat.XLSX,
             // scope_desc 는 100자 컬럼이다 — 조건 전문은 params 에 있다.
             scope = "from=$fromDate, to=$toDate, processId=${req.processId ?: "전체"}".take(100),
             rowCnt = rowCnt,
-            blindCnt = mask.maskedCount(),
-            blindCells = mask.maskedKeys().associateWith { rowCnt },
+            // 비공개 건수 = 파일에 실제로 「비공개」 를 채운 칸 수 (DLG-15, R-10)
+            blindCnt = blind.total,
+            blindCells = blind.counts(),
             fileNm = fileName,
             params = mapOf(
                 "from" to fromDate.toString(),
