@@ -25,6 +25,8 @@ import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.multipart.MultipartFile
+import org.springframework.http.MediaType
 
 /**
  * 용어 사전 관리 컨트롤러 (SY-06)
@@ -128,6 +130,45 @@ class GlossaryController(
             condSummary = export.condSummary
         )
         return exportService.withExportTotals(file, export.total, export.rows.size)
+    }
+
+    /** 용어 사전 업로드용 템플릿 — 내려받기 이력은 서버가 남긴다 */
+    @Operation(
+        summary = "용어 사전 업로드 템플릿",
+        description = "업로드용 xlsx. 「용어」 시트(머리글 공식 용어*·뜻*·분류·유사어 + 예시 2행) · 「안내」 시트(규칙·글자 수·분류 목록). " +
+            "권한 sys-gloss. 다운로드 이력은 서버가 기록한다."
+    )
+    @GetMapping("/import/template")
+    fun importTemplate(): ResponseEntity<ByteArrayResource> {
+        val bytes = glossaryService.importTemplate()
+        val fileName = "glossary_import_template.xlsx"
+        downloadLogService.record(
+            reportId = null, reportNm = "용어 사전 업로드 템플릿", menuId = com.dwje.api.common.util.MenuId.SYS_GLOSS,
+            format = ReportFormat.XLSX, scope = "템플릿", rowCnt = 0, blindCnt = 0, fileNm = fileName,
+            fileSize = bytes.size.toLong(), scopeCd = "ALL", condSummary = "업로드 템플릿"
+        )
+        return exportService.xlsx(bytes, fileName)
+    }
+
+    /** 용어 사전 엑셀 업로드 — dryRun=true(기본) 는 미리보기만 */
+    @Operation(
+        summary = "용어 사전 엑셀 업로드",
+        description = "multipart: file(xlsx, 5MB · 1,000행 이하) · dryRun(기본 true). 기존 용어에는 유사어만 더하고 뜻·분류는 바꾸지 않는다. " +
+            "새 공식 용어는 통합관리자만(그 밖은 그 행 ERROR). dryRun=false 는 ERROR 행을 빼고 등록한다. 머리글이 템플릿과 다르면 400. " +
+            "권한 sys-gloss 쓰기(미배정 아님)."
+    )
+    @PostMapping("/import", consumes = [MediaType.MULTIPART_FORM_DATA_VALUE])
+    fun importTerms(
+        @Parameter(description = "xlsx 파일") @RequestParam("file", required = false) file: MultipartFile?,
+        @Parameter(description = "true 면 미리보기만(기본)") @RequestParam("dryRun", required = false) dryRun: Boolean?
+    ): ApiResponse<Map<String, Any?>> {
+        val dry = dryRun ?: true
+        // 5MB 를 넘는 파일은 메모리에 읽기 전에 끊는다
+        if (file != null && file.size > com.dwje.api.service.GlossaryImportWorkbook.MAX_BYTES) {
+            throw InvalidParameterException("파일이 너무 큽니다. 최대 5MB 입니다.", "file")
+        }
+        val result = glossaryService.importTerms(file?.takeUnless { it.isEmpty }?.bytes, file?.originalFilename, dry)
+        return ApiResponse.ok(result, if (dry) "미리보기입니다. 아직 등록하지 않았습니다." else "용어 사전을 등록했습니다.")
     }
 
     /** 위험 유사어 점검 목록 (07 GLS-03) — 통합관리자 */

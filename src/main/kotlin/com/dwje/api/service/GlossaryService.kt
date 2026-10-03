@@ -682,6 +682,159 @@ class GlossaryService(
         return ExportRows(menuId, scopeCd ?: "VIEW", headers, keys, rows, total, cond.take(500), blindedRows * cellsPerRow)
     }
 
+    /** 업로드용 템플릿 — sys-gloss 접근이면 누구나. 분류 목록은 지금 쓰는 분류 이름 */
+    @Transactional(readOnly = true)
+    fun importTemplate(): ByteArray {
+        authorizationService.requireMenu(MenuId.SYS_GLOSS)
+        val domains = glossaryRepository.findDomains().map { it["name"] as String }
+        return GlossaryImportWorkbook.template(domains, TERM_MAX, DEFINITION_MAX, VARIANT_MAX)
+    }
+
+    /** 같은 파일 앞 행에서 정한 용어 — 뒤 행의 같은 용어는 기존 용어처럼 유사어만 더한다 */
+    private data class FileTerm(val termId: Int?, val term: String, val row: Int)
+
+    /**
+     * 용어 사전 엑셀 업로드 — 권한 sys-gloss 쓰기(미배정 아님)
+     *
+     * - 공식 용어가 이미 있으면 유사어만 더하고 뜻·분류는 바꾸지 않는다. 삭제된 같은 이름은 새 용어 등록처럼 되살린다([createTerm] 과 같다).
+     * - 새 공식 용어는 통합관리자만 — 그 밖의 계정이 올린 새 용어 행은 ERROR.
+     * - 유사어는 개별 등록과 같은 규칙. 어긋나거나 이미 있거나 같은 파일 안에서 겹치면 그 낱말만 건너뛴다(variantsSkipped).
+     * - [dryRun] 이면 아무것도 쓰지 않는다. 아니면 ERROR 행을 빼고 행 단위로 등록하고, 변경 이력·감사를 개별 등록과 같게 남긴다.
+     *   미리보기와 등록이 같은 판정을 하도록 한 번의 순회에서 판정하고, 등록일 때만 그 자리에서 쓴다.
+     */
+    @Transactional
+    fun importTerms(bytes: ByteArray?, fileName: String?, dryRun: Boolean): Map<String, Any?> {
+        val principal = authorizationService.requireWrite(MenuId.SYS_GLOSS)
+        val original = java.nio.file.Paths.get(fileName ?: "upload.xlsx").fileName.toString()
+        if (bytes == null || bytes.isEmpty()) throw InvalidParameterException("업로드할 엑셀 파일이 없습니다.", "file")
+        if (bytes.size > GlossaryImportWorkbook.MAX_BYTES) {
+            throw InvalidParameterException("파일이 너무 큽니다. 최대 ${GlossaryImportWorkbook.MAX_BYTES / 1024 / 1024}MB 입니다.", "file")
+        }
+        if (!original.endsWith(".xlsx", ignoreCase = true)) throw InvalidParameterException("xlsx 파일만 올릴 수 있습니다. [$original]", "file")
+        XlsxUploadGuard.assertPlainXlsx(bytes, original)
+        val rows = GlossaryImportWorkbook.parse(bytes)
+
+        val hidden = hiddenDomainsOf(principal)
+        val domains = glossaryRepository.findDomains().associate { (it["name"] as String).lowercase() to (it["name"] as String to it["domainId"] as Int) }
+        val fileTerms = mutableMapOf<String, FileTerm>()
+        val fileVariants = mutableMapOf<String, Int>()
+        var termNew = 0; var termExisting = 0; var variantNew = 0; var variantSkipped = 0; var errorCnt = 0
+
+        val results = rows.map { r ->
+            val errors = mutableListOf<Map<String, String>>()
+            fun error(field: String, message: String) { errors += mapOf("field" to field, "message" to message) }
+            val notes = mutableListOf<String>()
+            val key = r.term.lowercase()
+
+            // 1. 용어 판정 — 같은 파일 앞 행 → DB 순
+            val prior = fileTerms[key]
+            val stored = if (prior == null && r.term.isNotEmpty()) glossaryRepository.findTermByName(r.term) else null
+            var termId: Int? = prior?.termId ?: (stored?.takeIf { it["active"] == true }?.get("termId") as Int?)
+            val existing = prior != null || stored?.get("active") == true
+            var domainNm: String? = null
+            when {
+                r.term.isEmpty() -> error("term", "공식 용어를 입력해 주세요.")
+                r.term.length > TERM_MAX -> error("term", "공식 용어는 ${TERM_MAX}자 이하로 입력해 주세요.")
+                existing -> {
+                    notes += if (prior != null) "같은 파일 ${prior.row}행의 용어 — 유사어만 더함" else "기존 용어 — 뜻·분류는 바꾸지 않음"
+                    if (termId != null && hidden.ids.isNotEmpty() && glossaryRepository.findTermDomainId(termId) in hidden.ids) {
+                        error("term", "데이터 접근 권한이 없는 분류의 용어라 고칠 수 없습니다.")
+                    }
+                }
+                !principal.superAdmin -> error("term", "공식 용어 등록은 통합관리자만 할 수 있습니다.")
+                else -> {
+                    if (r.definition.isEmpty()) error("definition", "용어 정의를 입력해 주세요.")
+                    else if (r.definition.length > DEFINITION_MAX) error("definition", "뜻은 ${DEFINITION_MAX}자 이하로 입력해 주세요.")
+                    if (r.domain.isEmpty()) error("domain", "새 공식 용어는 분류를 입력해 주세요.")
+                    else domainNm = domains[r.domain.lowercase()]?.first ?: run { error("domain", "분류를 찾을 수 없습니다. [${r.domain}]"); null }
+                    if (stored != null) notes += "삭제된 용어를 되살림 — 예전 유사어 ${glossaryRepository.countVariantsByTerm(stored["termId"] as Int)}건이 함께 돌아옴"
+                }
+            }
+            if (errors.isNotEmpty()) {
+                errorCnt++
+                return@map mapOf("row" to r.row, "term" to r.term, "action" to "ERROR", "variantsAdded" to emptyList<String>(),
+                    "variantsSkipped" to emptyList<Map<String, String>>(), "errors" to errors, "notes" to notes)
+            }
+
+            // 2. 새 용어 등록 (등록일 때만 쓴다)
+            val isNew = !existing
+            if (isNew) {
+                termNew++
+                if (!dryRun) termId = writeImportedTerm(r.term, r.definition, domainNm!!, domains[domainNm.lowercase()]!!.second, stored, principal.userId)
+            } else termExisting++
+            fileTerms.putIfAbsent(key, FileTerm(termId, prior?.term ?: (stored?.get("term") as String? ?: r.term), prior?.row ?: r.row))
+
+            // 3. 유사어 — 개별 등록과 같은 규칙, 어긋나면 그 낱말만 건너뛴다
+            val added = mutableListOf<String>()
+            val skipped = mutableListOf<Map<String, String>>()
+            val warnings = mutableListOf<String>()
+            val revivedId = if (isNew) stored?.get("termId") as Int? else null
+            r.variants.forEach { w ->
+                val lw = w.lowercase()
+                val reason = fileVariants[lw]?.let { "같은 파일 ${it}행과 중복" }
+                    ?: fileTerms[lw]?.let { "공식 용어 [${it.term}] 와 같은 낱말 (같은 파일 ${it.row}행)" }
+                    ?: try { checkVariantRules(w); null } catch (e: InvalidParameterException) { e.message }
+                    ?: glossaryRepository.findVariantByWord(w)?.let {
+                        if (it["termId"] == revivedId) "되살리는 용어에 이미 있는 유사어" else duplicatedVariant(it, w).message
+                    }
+                if (reason != null) { skipped += mapOf("word" to w, "reason" to reason); return@forEach }
+                fileVariants[lw] = r.row
+                added += w
+                if (!dryRun) {
+                    val id = termId!!
+                    val variantId = try {
+                        glossaryRepository.insertVariant(id, w, principal.userId, principal.deptName)
+                    } catch (e: DuplicateKeyException) {
+                        throw duplicatedVariant(null, w)
+                    }
+                    changeLog("VARIANT", "CREATE", id, variantId, null, mapOf("word" to w))
+                }
+                warnings += variantWarnings(w, termId ?: 0)
+            }
+            variantNew += added.size
+            variantSkipped += skipped.size
+
+            buildMap<String, Any?> {
+                put("row", r.row); put("term", r.term); put("termId", termId)
+                put("action", if (isNew) "NEW_TERM" else "EXISTING_TERM")
+                if (isNew) { put("definition", r.definition); put("domain", domainNm); put("restored", stored != null) }
+                put("variantsAdded", added); put("variantsSkipped", skipped)
+                put("errors", emptyList<Map<String, String>>()); put("notes", notes); put("warnings", warnings)
+            }
+        }
+
+        if (!dryRun) log.info("용어 사전 업로드 : file={} 새 용어={} 기존 용어={} 새 유사어={} 건너뜀={} 오류 행={}",
+            original, termNew, termExisting, variantNew, variantSkipped, errorCnt)
+        return mapOf(
+            "dryRun" to dryRun, "fileName" to original, "totalRows" to rows.size,
+            "termNew" to termNew, "termExisting" to termExisting,
+            "variantNew" to variantNew, "variantSkipped" to variantSkipped, "errorCnt" to errorCnt,
+            "rows" to results
+        )
+    }
+
+    /** 업로드의 새 공식 용어 1건 — [createTerm] 과 같게 쓰고 이력을 남긴다(삭제된 같은 이름은 되살림) */
+    private fun writeImportedTerm(
+        term: String, def: String, domainNm: String, domainId: Int, stored: Map<String, Any?>?, actor: String
+    ): Int {
+        val revivedId = stored?.get("termId") as Int?
+        if (revivedId != null) {
+            val restoredVariants = glossaryRepository.countVariantsByTerm(revivedId)
+            val before = glossaryRepository.findTermSnapshot(revivedId)
+            glossaryRepository.reviveTerm(revivedId, def, domainId, actor)
+            changeLog("TERM", "RESTORE", revivedId, null, before,
+                mapOf("term" to stored["term"], "termDef" to def, "domainNm" to domainNm, "restoredVariants" to restoredVariants))
+            return revivedId
+        }
+        val termId = try {
+            glossaryRepository.insertTerm(term, def, domainId, actor)
+        } catch (e: DuplicateKeyException) {
+            throw duplicatedTerm(null, term)
+        }
+        changeLog("TERM", "CREATE", termId, null, null, mapOf("term" to term, "termDef" to def, "domainNm" to domainNm))
+        return termId
+    }
+
     /**
      * 용어 임베딩 재생성 (No.178) — 통합관리자만 (07 GLS-05, 공통 9.7)
      *
