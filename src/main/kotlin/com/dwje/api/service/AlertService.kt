@@ -124,23 +124,6 @@ class AlertService(
     }
 
     /**
-     * 승격 대상 조회 (No.105)
-     */
-    @Transactional(readOnly = true)
-    fun getEscalationTargets(): Map<String, Any?> {
-        authorizationService.requireMenu(MenuId.ALERT_LIST)
-
-        val stages = alertRepository.findEscalationTargets().map { stage ->
-            val groupId = stage["targetGroupId"] as? Int
-            stage + mapOf(
-                "targets" to (groupId?.let { alertRepository.findEscalationRecipients(it) } ?: emptyList<Any>())
-            )
-        }
-
-        return mapOf("stages" to stages)
-    }
-
-    /**
      * 알림 발송 로그 조회 (No.106)
      *
      * 알림 조건(`alert-cond`) 또는 수신자 관리(`sys-recip`) 화면 권한이 있어야 한다. 알림 목록(`alert-list`)은

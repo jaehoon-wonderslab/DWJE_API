@@ -102,12 +102,11 @@ class AlertConfigDbTest {
     @DisplayName("ALC-04 수정 — 이름만 보내면 나머지 유지, updatedAt 불일치 409, 채널·그룹 빈 배열 400")
     fun updateKeeps() {
         val condId = newCond()
-        jdbc.update("UPDATE ax.tb_alm_cond SET scope_dim_cd = 'EQPT' WHERE cond_id = $condId", MapSqlParameterSource())
         val before = service.getCondition(condId)
         val res = service.updateCondition(condId, AlertConditionUpdateRequest(name = "ZT 알림 시험 조건2", updatedAt = before["updatedAt"] as String))
         val after = service.getCondition(condId)
         assertEquals("ZT 알림 시험 조건2", after["name"])
-        listOf("msgTemplate", "thresholdUnit", "targetScope", "scopeDim", "op", "channels", "groupIds", "target").forEach {
+        listOf("thresholdUnit", "targetScope", "op", "channels", "groupIds", "target").forEach {
             assertEquals(before[it], after[it], it)
         }
         assertEquals(after["updatedAt"], res["updatedAt"])

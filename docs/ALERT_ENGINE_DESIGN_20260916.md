@@ -28,7 +28,7 @@
 | `tb_alm_cond_channel` / `tb_alm_cond_group` / `tb_alm_cond_escalation` | 조건 ↔ 채널·수신그룹·에스컬레이션 규칙 | 0 |
 | `tb_alm_recip_group` (+`_member`, `_channel`) · `tb_alm_recipient` | 수신 그룹·멤버·연락처(`night_recv`, `recv_state_cd`) | 0 |
 | `tb_alm_duty` | 당직·대리 수신 (`main_user_id` / `sub_user_id`) | 0 |
-| `tb_alm_escalation_rule` | `after_min` 경과 후 `to_group_id` 로 승격 | 3 |
+| `tb_alm_escalation_rule` | `after_min` 경과 후 `to_group_id` 로 승격 — **제거됨(2026-10-03)**, V73 에서 표 삭제(행은 `_bak` 보관) | 3 |
 | `tb_alm_alert` | 발생한 알림 (`dedup_key`, `esc_level`, `ack_state_cd` 컬럼 보유) | 0 |
 | `tb_alm_send_log` | 발송 기록 (`is_proxy`, `proxy_of_user_id`, `esc_level` 보유) | 0 |
 | `tb_met_metric_std` | 지표 기준(SY-13) — `std/warn/crit_val`, `apply_alert` | 3 |
@@ -369,6 +369,7 @@ tick(60s):
 > 엔진은 부재자를 그냥 제외한다. `tb_alm_send_log` · `tb_alm_send_queue` 의 `is_proxy` · `proxy_of_user_id`
 > 컬럼은 남아 있지만 지금은 항상 `false` · `null` 이다 — 당번이 다시 생기면 수신자 질의만 고치면 된다.
 > 승격 규칙(`tb_alm_escalation_rule`)은 그대로 살아 있어 §5-7 은 유효하다.
+> → 2026-10-03 승격 기능 전체 제거로 이 문장은 더 이상 맞지 않는다. §5-7 참고.
 
 ### 5-6. 메시지 생성과 마스킹
 
@@ -376,7 +377,14 @@ tick(60s):
 - `{{link}}` 는 `/alert/list?alertId=…` 딥링크.
 - **마스킹은 수신자마다 다르다.** `tb_alm_cond.blind_field_key` 가 걸린 조건은 수신자의 부서 데이터 권한(`vw_user_data_perm`)을 확인해 본문 값을 가린다. 메일은 화면과 달리 권한 검사를 통과해서 나가는 경로가 아니므로, 여기서 안 가리면 **데이터 접근 권한 설계가 메일로 새어 나간다.**
 
-### 5-7. 에스컬레이션
+### 5-7. 에스컬레이션 — 제거됨(2026-10-03)
+
+> 알림 엔진은 승격을 하지 않는다. `EscalationRunner` 를 지웠고, 조건별 승격 표 `tb_alm_cond_escalation` 과
+> 승격 규칙 표 `tb_alm_escalation_rule` 은 V73 에서 삭제한다(행은 `tb_alm_cond_escalation_bak` ·
+> `tb_alm_escalation_rule_bak` 에 보관, 되돌리기는 `rollback/V73__down.sql`). API 의 승격 규칙 조회·수정
+> (`GET`·`PUT /alert-escalation-rules`)과 승격 대상(`GET /alerts/escalation-targets`)도 함께 지웠다.
+> `tb_alm_alert` · `tb_alm_send_queue` · `tb_alm_send_log` 의 `esc_level` 컬럼은 이력으로 남고 엔진은 0 만 쓴다.
+> 아래는 당시 설계 기록이다.
 
 ```sql
 -- 승격 대상: 확인되지 않은 채 after_min 이 지났고, 아직 그 단계로 안 올라간 알림
@@ -410,7 +418,7 @@ com.dwje.api.
 │   ├─ ConditionEvaluator.kt       ② 대상 전개 · 비교 · 지속 판정 · 상태 UPSERT
 │   ├─ AlertRaiser.kt              ③ 시간대 · 억제 · alert INSERT · 대기열 적재
 │   ├─ SendDispatcher.kt           ④ SKIP LOCKED 워커 · 재시도 · send_log 확정
-│   ├─ EscalationRunner.kt         ⑤ 승격
+│   ├─ EscalationRunner.kt         ⑤ 승격 (제거됨 2026-10-03)
 │   ├─ AlertMessageRenderer.kt     템플릿 치환 + 수신자별 마스킹
 │   └─ channel/{MailChannel,PopupChannel,SmsChannel,MessengerChannel}.kt
 ├─ repository/AlertEngineRepository.kt     (JdbcTemplate — 기존 규칙대로 Native SQL)

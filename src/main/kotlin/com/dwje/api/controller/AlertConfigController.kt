@@ -3,7 +3,6 @@ package com.dwje.api.controller
 import com.dwje.api.common.response.ApiResponse
 import com.dwje.api.model.request.AlertConditionRequest
 import com.dwje.api.model.request.AlertConditionUpdateRequest
-import com.dwje.api.model.request.EscalationRuleRequest
 import com.dwje.api.model.request.RecipientGroupRequest
 import com.dwje.api.model.request.RecipientGroupUpdateRequest
 import com.dwje.api.model.request.RecipientRequest
@@ -166,7 +165,7 @@ class AlertRecipientController(
         ApiResponse.ok(alertConfigService.updateRecipientGroup(groupId, request), "수신 그룹이 수정되었습니다.")
 
     /** 수신 그룹 사용/중지 (06 RCP-08) */
-    @Operation(summary = "수신 그룹 사용/중지", description = "본문 {on}. 사용 중 발송 조건·승격 규칙이 쓰는 그룹을 중지하면 409(data 에 conds·escStages).")
+    @Operation(summary = "수신 그룹 사용/중지", description = "본문 {on}. 사용 중 발송 조건이 쓰는 그룹을 중지하면 409(data 에 conds).")
     @PatchMapping("/alert-recipient-groups/{groupId}/state")
     fun changeGroupState(
         @PathVariable groupId: Int,
@@ -253,22 +252,5 @@ class AlertRecipientController(
         @RequestParam(required = false) force: Boolean?
     ): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(alertConfigService.deleteRecipient(recipientId, force ?: false), "수신자를 삭제했습니다.")
-
-    /**
-     * 승격 규칙 조회 (No.169)
-     *
-     * 수신자 관리 화면에서는 걷어냈다(2026-09-16). 규칙 자체는 알림 현황의
-     * 「승격 대상」(GET /alerts/escalation-targets)이 그대로 읽으므로 조회·수정 API 는 남긴다.
-     */
-    @Operation(summary = "승격 규칙 조회", description = "승격 단계별 대기 시간과 승격 대상 그룹을 반환한다.")
-    @GetMapping("/alert-escalation-rules")
-    fun escalationRules(): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(alertConfigService.getEscalationRules())
-
-    /** 승격 규칙 수정 (No.169) */
-    @Operation(summary = "승격 규칙 수정", description = "승격 단계별 대기 시간과 대상 그룹을 수정한다.")
-    @PutMapping("/alert-escalation-rules")
-    fun updateEscalationRules(@Valid @RequestBody request: EscalationRuleRequest): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(alertConfigService.updateEscalationRules(request), "승격 규칙이 수정되었습니다.")
 }
 

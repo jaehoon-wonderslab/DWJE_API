@@ -10,7 +10,7 @@ import java.time.LocalDate
  * 이상 알림 Repository (AL-01)
  *
  * 참조 테이블 : ax.tb_alm_alert, ax.tb_alm_send_log, ax.tb_alm_cond,
- *              ax.tb_alm_escalation_rule, ax.tb_alm_cond_escalation, ax.tb_ai_agent
+ *              ax.tb_ai_agent
  */
 @Repository
 class AlertRepository(
@@ -190,7 +190,7 @@ class AlertRepository(
     fun findAlert(alertId: Long): Map<String, Any?>? {
         val sql = """
             SELECT
-                a.alert_id, a.cond_id, c.cond_nm, c.metric_desc, c.msg_template,
+                a.alert_id, a.cond_id, c.cond_nm, c.metric_desc,
                 a.metric_id, ms.metric_nm, a.severity_cd, a.title, a.occurred_at,
                 a.metric_value, a.threshold_val, a.evidence_desc, a.target_desc,
                 a.plant_cd, a.wc_cd, a.eqpt_cd, e.eqpt_nm, a.mold_cd, a.item_cd,
@@ -297,78 +297,6 @@ class AlertRepository(
             .addValue("actor", actor)
 
         return jdbcTemplate.update(sql, params)
-    }
-
-    /**
-     * 승격 대상을 조회한다. (No.105)
-     *
-     * 승격 규칙과 미확인 알림 현황을 결합해 단계별 대상을 구성한다.
-     */
-    fun findEscalationTargets(): List<Map<String, Any?>> {
-        val sql = """
-            SELECT
-                r.esc_rule_id,
-                r.esc_level,
-                r.level_nm,
-                r.after_min,
-                r.to_target_desc,
-                r.to_group_id,
-                g.group_nm,
-                r.severity_filter,
-                r.note,
-                (
-                    SELECT count(*)
-                      FROM ax.tb_alm_alert a
-                     WHERE a.ack_state_cd = 'OPEN'
-                       AND a.occurred_at <= now() - make_interval(mins => r.after_min)
-                       AND (r.severity_filter IS NULL OR a.severity_cd = r.severity_filter)
-                ) AS pending_cnt
-            FROM ax.tb_alm_escalation_rule r
-            LEFT JOIN ax.tb_alm_recip_group g ON g.group_id = r.to_group_id
-            WHERE r.use_flg = 'Y'
-            ORDER BY r.esc_level
-        """.trimIndent()
-
-        return jdbcTemplate.query(sql, MapSqlParameterSource()) { rs, _ ->
-            mapOf(
-                "escRuleId" to rs.getInt("esc_rule_id"),
-                "stage" to rs.getInt("esc_level"),
-                "stageNm" to rs.getString("level_nm"),
-                "waitMin" to rs.getInt("after_min"),
-                "targetDesc" to rs.getString("to_target_desc"),
-                "targetGroupId" to Rs.intOrNull(rs, "to_group_id"),
-                "targetGroupNm" to rs.getString("group_nm"),
-                "severityFilter" to rs.getString("severity_filter"),
-                "pendingCnt" to rs.getLong("pending_cnt"),
-                "note" to rs.getString("note")
-            )
-        }
-    }
-
-    /**
-     * 승격 단계별 실제 수신 대상자를 조회한다. (No.105 — targets)
-     */
-    fun findEscalationRecipients(groupId: Int): List<Map<String, Any?>> {
-        val sql = """
-            SELECT u.user_id, u.user_nm, d.dept_nm, r.email, r.mobile_no, r.recv_state_cd
-            FROM ax.tb_alm_recip_group_member m
-            INNER JOIN ax.tb_alm_recipient r ON r.user_id = m.user_id
-            INNER JOIN ax.tb_sys_user      u ON u.user_id = m.user_id
-            LEFT  JOIN ax.tb_sys_dept      d ON d.dept_id = u.dept_id
-            WHERE m.group_id = :groupId
-            ORDER BY u.user_nm
-        """.trimIndent()
-
-        return jdbcTemplate.query(sql, MapSqlParameterSource("groupId", groupId)) { rs, _ ->
-            mapOf(
-                "empNo" to rs.getString("user_id"),
-                "name" to rs.getString("user_nm"),
-                "dept" to rs.getString("dept_nm"),
-                "mail" to rs.getString("email"),
-                "hp" to rs.getString("mobile_no"),
-                "state" to rs.getString("recv_state_cd")
-            )
-        }
     }
 
     /**

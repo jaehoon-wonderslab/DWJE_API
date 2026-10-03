@@ -12,16 +12,16 @@ import java.math.BigDecimal
  * 이상 알림 발송 조건 · 수신자 관리 Repository (SY-04, SY-05)
  *
  * 참조 테이블 : ax.tb_alm_cond, ax.tb_alm_cond_channel, ax.tb_alm_cond_group,
- *              ax.tb_alm_cond_escalation, ax.tb_alm_recip_group, ax.tb_alm_recip_group_channel,
- *              ax.tb_alm_recip_group_member, ax.tb_alm_recipient,
- *              ax.tb_alm_escalation_rule
+ *              ax.tb_alm_recip_group, ax.tb_alm_recip_group_channel,
+ *              ax.tb_alm_recip_group_member, ax.tb_alm_recipient
  */
 /**
  * 지표 수집 중단 판정 (05 ALC-08) — 엔진 ConditionEvaluator 와 같다: 최근 측정값이 max(평가 주기 × 배수, 600초) 보다 오래됐거나 없음.
  * mv 는 LATERAL 로 붙는 최근 측정 시각·수집 정의 사용 여부다. `:staleFactor` 는 엔진 stale-factor 와 같은 값.
+ * 평가 주기는 고급 설정을 없앤 뒤(2026-10-03) 엔진 틱 60초로 고정이다 — 컬럼(eval_interval_sec)을 읽지 않는다.
  */
 private const val STALE_SQL = "(c.metric_id IS NULL OR mv.last_value_at IS NULL OR " +
-    "now() - mv.last_value_at > make_interval(secs => greatest(c.eval_interval_sec * :staleFactor, 600)))"
+    "now() - mv.last_value_at > make_interval(secs => greatest(60 * :staleFactor, 600)))"
 
 @Repository
 class AlertConfigRepository(
@@ -160,7 +160,6 @@ class AlertConfigRepository(
                 "validWindow" to rs.getString("window_cd"),
                 "dedupMin" to rs.getString("dedup_cd"),
                 "blindFieldKey" to rs.getString("blind_field_key"),
-                "msgTemplate" to rs.getString("msg_template"),
                 "channels" to (rs.getString("channels")?.split(",") ?: emptyList()),
                 "groupNames" to (rs.getString("group_names")?.split(",") ?: emptyList()),
                 "groupIds" to (rs.getString("group_ids")?.split(",")?.map { it.toInt() } ?: emptyList<Int>()),
@@ -218,7 +217,7 @@ class AlertConfigRepository(
             c.cond_id, c.cond_nm, c.severity_cd, c.metric_id, ms.metric_nm, c.metric_desc,
             c.op_cd, c.threshold_val, c.threshold_text, c.threshold_unit,
             c.duration_cd, c.target_scope_cd, c.target_desc, c.window_cd, c.dedup_cd,
-            c.blind_field_key, c.msg_template, c.use_flg, c.upd_date,
+            c.blind_field_key, c.use_flg, c.upd_date,
             (
                 SELECT string_agg(cc.channel_cd, ',' ORDER BY cc.channel_cd)
                   FROM ax.tb_alm_cond_channel cc WHERE cc.cond_id = c.cond_id
@@ -312,14 +311,12 @@ class AlertConfigRepository(
             INSERT INTO ax.tb_alm_cond (
                 cond_nm, severity_cd, metric_id, metric_desc, op_cd,
                 threshold_val, threshold_text, threshold_unit, duration_cd,
-                target_scope_cd, target_desc, window_cd, dedup_cd, msg_template,
-                scope_dim_cd, window_time, eval_interval_sec, ignore_window_flg, auto_close_flg, blind_field_key,
+                target_scope_cd, target_desc, window_cd, dedup_cd, blind_field_key,
                 use_flg, ins_user, upd_user
             ) VALUES (
                 :condNm, :severityCd, :metricId, :metricDesc, :opCd,
                 :thresholdVal, :thresholdText, :thresholdUnit, :durationCd,
-                :targetScopeCd, :targetDesc, :windowCd, :dedupCd, :msgTemplate,
-                :scopeDim, CAST(:windowTime AS time), :evalIntervalSec, :ignoreWindow, :autoClose, :blindFieldKey,
+                :targetScopeCd, :targetDesc, :windowCd, :dedupCd, :blindFieldKey,
                 'Y', :actor, :actor
             )
             RETURNING cond_id
@@ -344,12 +341,6 @@ class AlertConfigRepository(
                    target_desc       = :targetDesc,
                    window_cd         = :windowCd,
                    dedup_cd          = :dedupCd,
-                   msg_template      = :msgTemplate,
-                   scope_dim_cd      = :scopeDim,
-                   window_time       = CAST(:windowTime AS time),
-                   eval_interval_sec = :evalIntervalSec,
-                   ignore_window_flg = :ignoreWindow,
-                   auto_close_flg    = :autoClose,
                    blind_field_key   = :blindFieldKey,
                    upd_date          = now(),
                    upd_user          = :actor
@@ -373,12 +364,6 @@ class AlertConfigRepository(
         .addValue("targetDesc", v.targetDesc)
         .addValue("windowCd", v.validWindow)
         .addValue("dedupCd", v.dedupMin)
-        .addValue("msgTemplate", v.msgTemplate)
-        .addValue("scopeDim", v.scopeDim)
-        .addValue("windowTime", v.windowTime)
-        .addValue("evalIntervalSec", v.evalIntervalSec)
-        .addValue("ignoreWindow", if (v.ignoreWindow) "Y" else "N")
-        .addValue("autoClose", if (v.autoClose) "Y" else "N")
         .addValue("blindFieldKey", v.blindFieldKey)
         .addValue("actor", actor)
 
@@ -388,24 +373,6 @@ class AlertConfigRepository(
             "SELECT blind_field_key FROM ax.tb_met_metric_std WHERE metric_id = :id",
             MapSqlParameterSource("id", metricId)
         ) { rs, _ -> true to rs.getString("blind_field_key") }.firstOrNull()
-
-    /** 승격 규칙 단계 → 대상 그룹 (05 ALC-09) */
-    fun findEscalationTargets(): Map<Int, Int?> =
-        jdbcTemplate.query(
-            "SELECT esc_level, to_group_id FROM ax.tb_alm_escalation_rule ORDER BY esc_level", MapSqlParameterSource()
-        ) { rs, _ -> rs.getInt("esc_level") to Rs.intOrNull(rs, "to_group_id") }.toMap()
-
-    /** 조건별 승격 단계 켬/끔 저장 — 보낸 단계만 (05 ALC-09) */
-    fun replaceConditionEscalation(condId: Int, stages: List<Pair<Int, Boolean>>) {
-        val sql = """
-            INSERT INTO ax.tb_alm_cond_escalation (cond_id, esc_rule_id, is_on)
-            SELECT :condId, r.esc_rule_id, :on FROM ax.tb_alm_escalation_rule r WHERE r.esc_level = :stage
-            ON CONFLICT (cond_id, esc_rule_id) DO UPDATE SET is_on = EXCLUDED.is_on
-        """.trimIndent()
-        stages.forEach { (stage, on) ->
-            jdbcTemplate.update(sql, MapSqlParameterSource().addValue("condId", condId).addValue("stage", stage).addValue("on", on))
-        }
-    }
 
     /** 수신 그룹의 이름·사용 여부 (05 ALC-06 — 저장 전 확인) */
     fun findGroupsUse(groupIds: Collection<Int>): Map<Int, Pair<String, String>> {
@@ -489,7 +456,12 @@ class AlertConfigRepository(
      */
     fun deleteCondition(condId: Int): Int {
         val params = MapSqlParameterSource("condId", condId)
-        listOf("tb_alm_cond_channel", "tb_alm_cond_group", "tb_alm_cond_escalation").forEach {
+        // 조건별 승격 표(tb_alm_cond_escalation)는 V73 에서 지운다. 그 전(V72)에 옛 화면이 남긴 행이 있으면 FK 로 삭제가 막히므로
+        // 표가 있을 때만 그 조건의 행을 함께 지운다 — 읽지는 않는다(2026-10-03 고급 설정 제거)
+        val escalationTable = jdbcTemplate.queryForObject(
+            "SELECT to_regclass('ax.tb_alm_cond_escalation') IS NOT NULL", MapSqlParameterSource(), Boolean::class.java
+        ) == true
+        (listOf("tb_alm_cond_channel", "tb_alm_cond_group") + if (escalationTable) listOf("tb_alm_cond_escalation") else emptyList()).forEach {
             jdbcTemplate.update("DELETE FROM ax.$it WHERE cond_id = :condId", params)
         }
         return jdbcTemplate.update("DELETE FROM ax.tb_alm_cond WHERE cond_id = :condId", params)
@@ -567,9 +539,7 @@ class AlertConfigRepository(
                     AND (r.night_recv OR EXISTS (
                          SELECT 1 FROM ax.tb_alm_recip_group_member m
                            JOIN ax.tb_alm_recip_group g ON g.group_id = m.group_id AND g.use_flg = 'Y' AND g.night_recv
-                          WHERE m.user_id = r.user_id)))                                  AS night_cnt,
-                (SELECT count(*) FROM ax.tb_alm_escalation_rule
-                  WHERE use_flg = 'Y' AND to_group_id IS NULL)                            AS esc_no_target_cnt
+                          WHERE m.user_id = r.user_id)))                                  AS night_cnt
         """.trimIndent()
 
         val params = MapSqlParameterSource("states", receivableStates.toTypedArray())
@@ -583,8 +553,7 @@ class AlertConfigRepository(
                 ),
                 "nightCnt" to rs.getLong("night_cnt"),
                 // 예전 의미(개인 야간 수신 설정 수) — 한 릴리스 함께 보낸다
-                "nightPersonalCnt" to rs.getLong("night_personal_cnt"),
-                "escNoTargetCnt" to rs.getLong("esc_no_target_cnt")
+                "nightPersonalCnt" to rs.getLong("night_personal_cnt")
             )
         } ?: emptyMap()
     }
@@ -945,53 +914,6 @@ class AlertConfigRepository(
     }
 
     /**
-     * 승격 규칙을 조회한다. (No.169)
-     */
-    fun findEscalationRules(): List<Map<String, Any?>> {
-        val sql = """
-            SELECT r.esc_rule_id, r.esc_level, r.level_nm, r.after_min, r.to_target_desc,
-                   r.to_group_id, g.group_nm, r.severity_filter, r.note, r.use_flg
-            FROM ax.tb_alm_escalation_rule r
-            LEFT JOIN ax.tb_alm_recip_group g ON g.group_id = r.to_group_id
-            ORDER BY r.esc_level
-        """.trimIndent()
-
-        return jdbcTemplate.query(sql, MapSqlParameterSource()) { rs, _ ->
-            mapOf(
-                "escRuleId" to rs.getInt("esc_rule_id"),
-                "stage" to rs.getInt("esc_level"),
-                "stageNm" to rs.getString("level_nm"),
-                "waitMin" to rs.getInt("after_min"),
-                "targetDesc" to rs.getString("to_target_desc"),
-                "targetGroupId" to Rs.intOrNull(rs, "to_group_id"),
-                "targetGroupNm" to rs.getString("group_nm"),
-                "severityFilter" to rs.getString("severity_filter"),
-                "note" to rs.getString("note"),
-                "on" to Rs.yn(rs, "use_flg")
-            )
-        }
-    }
-
-    /**
-     * 승격 규칙을 수정한다. (No.169)
-     */
-    fun updateEscalationRule(escLevel: Int, waitMin: Int?, targetGroupId: Int?): Int {
-        val sql = """
-            UPDATE ax.tb_alm_escalation_rule
-               SET after_min   = coalesce(:waitMin, after_min),
-                   to_group_id = coalesce(:targetGroupId, to_group_id)
-             WHERE esc_level = :escLevel
-        """.trimIndent()
-
-        val params = MapSqlParameterSource()
-            .addValue("escLevel", escLevel)
-            .addValue("waitMin", waitMin)
-            .addValue("targetGroupId", targetGroupId)
-
-        return jdbcTemplate.update(sql, params)
-    }
-
-    /**
      * 수신 그룹 구성원의 발송 대상 정보를 조회한다. (테스트 발송용)
      */
     fun findGroupRecipients(groupId: Int): List<Map<String, Any?>> {
@@ -1092,17 +1014,6 @@ class AlertConfigRepository(
             """.trimIndent(), MapSqlParameterSource("ids", groupIds)
         ) { rs, _ ->
             rs.getInt("group_id") to mapOf<String, Any?>("condId" to rs.getInt("cond_id"), "name" to rs.getString("cond_nm"), "on" to Rs.yn(rs, "use_flg"))
-        }.groupBy({ it.first }, { it.second })
-    }
-
-    /** 그룹별 승격 단계 (그룹 ID → [{stage, stageNm}]) */
-    fun findEscStagesByGroups(groupIds: Collection<Int>): Map<Int, List<Map<String, Any?>>> {
-        if (groupIds.isEmpty()) return emptyMap()
-        return jdbcTemplate.query(
-            "SELECT to_group_id, esc_level, level_nm FROM ax.tb_alm_escalation_rule WHERE to_group_id IN (:ids) ORDER BY esc_level",
-            MapSqlParameterSource("ids", groupIds)
-        ) { rs, _ ->
-            rs.getInt("to_group_id") to mapOf<String, Any?>("stage" to rs.getInt("esc_level"), "stageNm" to rs.getString("level_nm"))
         }.groupBy({ it.first }, { it.second })
     }
 
@@ -1216,21 +1127,21 @@ class AlertConfigRepository(
     }
 
     /**
-     * 발송 조건 상세 (ALC-04) — 고급 설정까지 한 번에 읽는다. 그룹·대상 설비는 따로 붙인다.
+     * 발송 조건 상세 (ALC-04) — 그룹·대상 설비는 따로 붙인다.
+     * 고급 설정 7가지는 읽지 않는다(2026-10-03 제거 — V72·V73 어느 쪽에서도 같은 응답). `c.*` 대신 쓰는 열만 고른다.
      */
     fun findConditionDetail(condId: Int): Map<String, Any?>? {
         val sql = """
-            SELECT c.*, ms.metric_nm, ms.unit_cd, un.code_nm AS unit_nm,
+            SELECT c.cond_id, c.cond_nm, c.use_flg, c.metric_id, c.metric_desc, c.op_cd, c.threshold_val, c.threshold_text,
+                   c.threshold_unit, c.duration_cd, c.target_scope_cd, c.target_desc, c.severity_cd, c.window_cd, c.dedup_cd,
+                   c.blind_field_key, c.upd_date,
+                   ms.metric_nm, ms.unit_cd, un.code_nm AS unit_nm,
                    opc.code_nm AS op_nm, sv.code_nm AS severity_nm,
                    (SELECT string_agg(cc.channel_cd, ',' ORDER BY cc.channel_cd)
                       FROM ax.tb_alm_cond_channel cc WHERE cc.cond_id = c.cond_id) AS channels,
                    (SELECT string_agg(ct.target_cd, ',' ORDER BY ct.target_cd)
                       FROM ax.tb_alm_cond_target ct
-                     WHERE ct.cond_id = c.cond_id AND ct.target_dim_cd = 'EQPT') AS pick_targets,
-                   (SELECT string_agg(r.esc_level || ':' || coalesce(ce.is_on, false), ',' ORDER BY r.esc_level)
-                      FROM ax.tb_alm_escalation_rule r
-                      LEFT JOIN ax.tb_alm_cond_escalation ce
-                        ON ce.esc_rule_id = r.esc_rule_id AND ce.cond_id = c.cond_id) AS escalation
+                     WHERE ct.cond_id = c.cond_id AND ct.target_dim_cd = 'EQPT') AS pick_targets
               FROM ax.tb_alm_cond c
               LEFT JOIN ax.tb_met_metric_std ms ON ms.metric_id = c.metric_id
               LEFT JOIN ax.tb_sys_code un  ON un.group_cd  = 'MET_UNIT'     AND un.code  = ms.unit_cd
@@ -1261,18 +1172,8 @@ class AlertConfigRepository(
                 "severityNm" to rs.getString("severity_nm"),
                 "channels" to (rs.getString("channels")?.split(",") ?: emptyList()),
                 "validWindow" to rs.getString("window_cd"),
-                "windowTime" to rs.getString("window_time")?.take(5),
                 "dedupMin" to rs.getString("dedup_cd"),
-                "scopeDim" to rs.getString("scope_dim_cd"),
-                "evalIntervalSec" to rs.getInt("eval_interval_sec"),
-                "ignoreWindow" to Rs.yn(rs, "ignore_window_flg"),
-                "autoClose" to Rs.yn(rs, "auto_close_flg"),
                 "blindFieldKey" to rs.getString("blind_field_key"),
-                "msgTemplate" to rs.getString("msg_template"),
-                "escalation" to (rs.getString("escalation")?.split(",")?.map {
-                    val (stage, on) = it.split(":")
-                    mapOf<String, Any?>("stage" to stage.toInt(), "on" to (on == "true"))
-                } ?: emptyList<Map<String, Any?>>()),
                 "updatedAt" to Rs.dateTime(rs, "upd_date")
             )
         }.firstOrNull()
@@ -1315,13 +1216,6 @@ class AlertConfigRepository(
             """.trimIndent(),
             MapSqlParameterSource("groupId", groupId)
         ) { rs, _ -> mapOf("condId" to rs.getInt("cond_id"), "name" to rs.getString("cond_nm"), "on" to Rs.yn(rs, "use_flg")) }
-
-    /** 그룹 상세 — 이 그룹이 승격 대상인 단계 */
-    fun findGroupEscStages(groupId: Int): List<Map<String, Any?>> =
-        jdbcTemplate.query(
-            "SELECT esc_level, level_nm FROM ax.tb_alm_escalation_rule WHERE to_group_id = :groupId ORDER BY esc_level",
-            MapSqlParameterSource("groupId", groupId)
-        ) { rs, _ -> mapOf("stage" to rs.getInt("esc_level"), "stageNm" to rs.getString("level_nm")) }
 
     /** 그룹 담당 부서 선택지 — 사용 중 부서(미배정 제외) */
     fun findDeptOptions(unassignedDeptName: String): List<Map<String, Any?>> =
@@ -1379,11 +1273,5 @@ data class AlertCondValues(
     val targetDesc: String,
     val validWindow: String,
     val dedupMin: String,
-    val msgTemplate: String,
-    val scopeDim: String,
-    val windowTime: String?,
-    val evalIntervalSec: Int,
-    val ignoreWindow: Boolean,
-    val autoClose: Boolean,
     val blindFieldKey: String?
 )

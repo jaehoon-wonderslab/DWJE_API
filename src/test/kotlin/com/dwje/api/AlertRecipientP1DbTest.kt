@@ -70,7 +70,6 @@ class AlertRecipientP1DbTest {
         assertEquals("duration", field(req().copy(duration = "X")).field)
         assertEquals("validWindow", field(req().copy(validWindow = "X")).field)
         assertEquals("dedupMin", field(req().copy(dedupMin = "X")).field)
-        assertEquals("scopeDim", field(req().copy(scopeDim = "X")).field)
         assertEquals("thresholdVal", field(req().copy(threshold = "3.0 %")).field)
         assertEquals("thresholdVal", field(req().copy(threshold = null)).field)
         assertEquals("조건명은 100자까지 입력할 수 있습니다.", field(req(name = "가".repeat(101))).message)
@@ -82,7 +81,7 @@ class AlertRecipientP1DbTest {
     }
 
     @Test
-    @DisplayName("ALC-06·09 — 도달(reach), 고급 설정 저장(평가 단위·지정 시각·주기·승격), ONCE 는 시각 필수, 지표 민감 항목 복사, 경고")
+    @DisplayName("ALC-06·09 — 도달(reach), 고급 설정은 받고 버림(2026-10-03), ONCE 는 400, 지표 민감 항목 복사, 경고 없음")
     fun advancedAndReach() {
         val r = service.createCondition(req(channels = listOf("POPUP"), groupIds = listOf(11)))
         @Suppress("UNCHECKED_CAST")
@@ -91,25 +90,32 @@ class AlertRecipientP1DbTest {
         @Suppress("UNCHECKED_CAST")
         assertEquals(emptyList<String>(), (reach["byGroup"] as List<Map<String, Any?>>).single()["channelMatch"])
 
-        assertEquals("windowTime", assertThrows(InvalidParameterException::class.java) {
-            service.createCondition(req(name = "ZT P1 once").copy(validWindow = "ONCE"))
-        }.field)
-        assertEquals("evalIntervalSec", assertThrows(InvalidParameterException::class.java) {
-            service.createCondition(req(name = "ZT P1 iv").copy(evalIntervalSec = 61))
-        }.field)
+        val once = assertThrows(InvalidParameterException::class.java) {
+            service.createCondition(req(name = "ZT P1 once").copy(validWindow = "ONCE", windowTime = "07:30"))
+        }
+        assertEquals("validWindow", once.field); assertEquals(AlertConfigService.MSG_ONCE_REMOVED, once.message)
 
+        // 고급 설정 7가지를 옛 화면처럼 보내도(엉뚱한 값까지) 400 없이 저장되고 값은 버린다
         exec("UPDATE ax.tb_met_metric_std SET blind_field_key = 'price' WHERE metric_id = 3")
         val adv = service.createCondition(req(name = "ZT P1 adv").copy(
-            metricStdId = 3, scopeDim = "EQPT", validWindow = "ONCE", windowTime = "07:30", evalIntervalSec = 300,
-            autoClose = true, escalation = listOf(CondEscalationInput(1, true)), msgTemplate = "{{condNm}} {{nope}}"
+            metricStdId = 3, scopeDim = "X", windowTime = "99:99", evalIntervalSec = 61,
+            ignoreWindow = true, autoClose = true, escalation = listOf(CondEscalationInput(9, true)), msgTemplate = "{{condNm}} {{nope}}"
         ))
         val id = adv["condId"] as Int
-        assertEquals("EQPT|07:30|300|Y|price", str("SELECT scope_dim_cd || '|' || to_char(window_time, 'HH24:MI') || '|' || eval_interval_sec || '|' || auto_close_flg || '|' || blind_field_key FROM ax.tb_alm_cond WHERE cond_id = $id"))
-        assertEquals(1L, long("SELECT count(*) FROM ax.tb_alm_cond_escalation ce JOIN ax.tb_alm_escalation_rule r ON r.esc_rule_id = ce.esc_rule_id WHERE ce.cond_id = $id AND r.esc_level = 1 AND ce.is_on"))
-        @Suppress("UNCHECKED_CAST")
-        val warnings = adv["warnings"] as List<String>
-        assertTrue(warnings.any { it.contains("{{nope}}") })
-        assertTrue(warnings.any { it.startsWith("승격 1차") })
+        assertEquals("price", str("SELECT blind_field_key FROM ax.tb_alm_cond WHERE cond_id = $id"))
+        if (long("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'ax' AND table_name = 'tb_alm_cond_escalation'") > 0) {
+            assertEquals(0L, long("SELECT count(*) FROM ax.tb_alm_cond_escalation WHERE cond_id = $id"), "조건별 승격을 쓰지 않는다")
+        }
+        assertEquals(emptyList<String>(), adv["warnings"])
+        val detail = service.getCondition(id)
+        listOf("scopeDim", "evalIntervalSec", "windowTime", "ignoreWindow", "autoClose", "msgTemplate", "escalation").forEach {
+            assertFalse(detail.containsKey(it), it)
+        }
+        // 수정도 받고 버린다 · ONCE 로 바꾸면 400
+        service.updateCondition(id, AlertConditionUpdateRequest(scopeDim = "X", evalIntervalSec = 7, msgTemplate = "x", windowTime = java.util.Optional.of("bad")))
+        assertEquals("validWindow", assertThrows(InvalidParameterException::class.java) {
+            service.updateCondition(id, AlertConditionUpdateRequest(validWindow = "ONCE"))
+        }.field)
 
         // ALC-14 — 임계만 바꾸면 감사 remark 는 「임계 10 → 12」 하나
         org.mockito.Mockito.clearInvocations(audit)
@@ -223,7 +229,8 @@ class AlertRecipientP1DbTest {
         }.field)
         @Suppress("UNCHECKED_CAST")
         val summary = service.getRecipientSummary()
-        assertTrue("nightWindow" in summary && "nightPersonalCnt" in summary && "escNoTargetCnt" in summary)
+        assertTrue("nightWindow" in summary && "nightPersonalCnt" in summary)
+        assertFalse("escNoTargetCnt" in summary, "승격 규칙 제거(2026-10-03) — 대상 그룹 없는 승격 단계 수는 보내지 않는다")
     }
 
     @Test

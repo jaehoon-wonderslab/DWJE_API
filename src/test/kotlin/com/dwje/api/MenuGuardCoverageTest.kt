@@ -64,7 +64,7 @@ class MenuGuardCoverageTest {
     companion object {
         /** 점검 대상 경로 — 시스템관리 13개 화면 · 이상 알림 설정 · 연동 · 감사 · 업로드 · 덕반장 AI */
         private val TARGET_PREFIXES = listOf(
-            "/api/v1/system/", "/api/v1/alert-conditions", "/api/v1/alert-recipient", "/api/v1/alert-escalation-rules",
+            "/api/v1/system/", "/api/v1/alert-conditions", "/api/v1/alert-recipient",
             "/api/v1/glossary", "/api/v1/ai/chat", "/api/v1/sync", "/api/v1/audit-logs", "/api/v1/download-logs",
             "/api/v1/metrics/standards", "/api/v1/dashboard/uploads", "/api/ai/"
         )

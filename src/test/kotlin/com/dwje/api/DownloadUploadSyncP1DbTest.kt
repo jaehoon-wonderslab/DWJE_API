@@ -200,8 +200,8 @@ class DownloadUploadSyncP1DbTest {
 
         val metricId = long("SELECT metric_id FROM ax.tb_met_metric_std WHERE metric_cd = 'SYNC_STALE_MIN'")
         exec(
-            "INSERT INTO ax.tb_alm_cond (cond_nm, severity_cd, metric_desc, op_cd, threshold_text, duration_cd, target_scope_cd, target_desc, window_cd, dedup_cd, msg_template, metric_id) " +
-                "SELECT 'ZT 지연 조건', severity_cd, metric_desc, op_cd, threshold_text, duration_cd, target_scope_cd, target_desc, window_cd, dedup_cd, msg_template, $metricId FROM ax.tb_alm_cond ORDER BY cond_id LIMIT 1"
+            "INSERT INTO ax.tb_alm_cond (cond_nm, severity_cd, metric_desc, op_cd, threshold_text, duration_cd, target_scope_cd, target_desc, window_cd, dedup_cd, metric_id) " +
+                "SELECT 'ZT 지연 조건', severity_cd, metric_desc, op_cd, threshold_text, duration_cd, target_scope_cd, target_desc, window_cd, dedup_cd, $metricId FROM ax.tb_alm_cond ORDER BY cond_id LIMIT 1"
         )
         assertEquals(long("SELECT cond_id FROM ax.tb_alm_cond WHERE cond_nm = 'ZT 지연 조건'").toInt(), sync.getPolicy()["failAlertCondId"])
 

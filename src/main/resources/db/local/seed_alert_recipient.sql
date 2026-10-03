@@ -39,15 +39,16 @@ BEGIN;
 --    이 줄이 없으면 이미 시드를 돌린 DB 에서 옛 그룹이 그대로 남아 6개가 된다.
 --
 --    지우는 것은 **시드가 만든 것(ins_user='SEED')뿐**이다. 사람이 화면에서 만든 그룹은
---    ins_user 가 사번이라 그대로 남는다. 발송 조건·승격 규칙이 물고 있는 그룹도 건드리지 않는다
+--    ins_user 가 사번이라 그대로 남는다. 발송 조건이 물고 있는 그룹도 건드리지 않는다
 --    (그쪽 FK 는 ON DELETE RESTRICT 라, 걸러 두지 않으면 시드 전체가 실패한다).
+--    승격 규칙 표(tb_alm_escalation_rule)는 V73 에서 지웠으므로 더는 거르지 않는다(2026-10-03).
+--    V73 이전 DB 에서 승격 규칙이 시드 그룹을 물고 있으면 이 DELETE 가 FK 로 실패한다 — V73 부터 적용한다.
 --    채널·멤버는 ON DELETE CASCADE 로 함께 빠진다.
 -- -------------------------------------------------------------------------------------
 DELETE FROM ax.tb_alm_recip_group g
  WHERE g.ins_user = 'SEED'
    AND g.group_nm NOT IN ('엔진 가동', '생산 이슈')
-   AND NOT EXISTS (SELECT 1 FROM ax.tb_alm_cond_group cg WHERE cg.group_id = g.group_id)
-   AND NOT EXISTS (SELECT 1 FROM ax.tb_alm_escalation_rule r WHERE r.to_group_id = g.group_id);
+   AND NOT EXISTS (SELECT 1 FROM ax.tb_alm_cond_group cg WHERE cg.group_id = g.group_id);
 
 -- -------------------------------------------------------------------------------------
 -- 1. 수신 그룹 — 발송 조건(SY-04)이 이름으로 참조하는 단위

@@ -16,8 +16,13 @@ import java.util.Optional
  * @param severity     심각도 (ALM_SEVERITY)
  * @param channels     발송 채널 목록 (ALM_CHANNEL)
  * @param groupIds     수신 그룹 ID 목록
- * @param validWindow  유효 시간대 (ALM_WINDOW)
+ * @param validWindow  유효 시간대 (ALM_WINDOW) — `ONCE`(지정 시각 1회)는 400
  * @param dedupMin     중복 억제 (ALM_DEDUP)
+ *
+ * 고급 설정 7가지(msgTemplate · scopeDim · windowTime · evalIntervalSec · ignoreWindow · autoClose · escalation)는
+ * 2026-10-03 에 없앴다. 옛 화면이 보내도 400 이 나지 않게 키는 남겨 받기만 하고 버린다(FAIL_ON_UNKNOWN_PROPERTIES).
+ * 모든 조건은 고정값으로 동작한다 — 평가 단위 지표 수집 단위 · 평가 주기 60초 · 시간대 지킴 · 자동 해제 없음 ·
+ * 메시지는 서버 기본 틀 · 조건별 승격 없음. 지속 조건 일 마감(DAY_CLOSE) · 일 1회(DAY_ONCE)는 항상 08:00 기준이다.
  */
 data class AlertConditionRequest(
     @field:NotBlank(message = "조건명을 입력해 주세요.")
@@ -42,24 +47,32 @@ data class AlertConditionRequest(
     val groupIds: List<Int> = emptyList(),
     val validWindow: String = "ALWAYS",
     val dedupMin: String = "NONE",
+    @Deprecated("고급 설정 제거(2026-10-03) — 옛 WEB 번들 호환으로 받기만 하고 값은 무시. 모든 WEB 배포 뒤 삭제")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(발송 조건 고급 설정 제거, 2026-10-03)")
     val msgTemplate: String? = null,
     /** 개별 설비 선택(targetScope=PICK)일 때 설비 코드 1~500개 (ALC-05) */
     val pickTargets: List<String>? = null,
-    /** 고급 설정 (05 ALC-09) — 평가 단위(ALM_SCOPE_DIM) */
-    val scopeDim: String = "NONE",
-    /** 지정 시각 HH:mm — 유효 시간대 ONCE 면 필수 */
+    @Deprecated("고급 설정 제거(2026-10-03) — 옛 WEB 번들 호환으로 받기만 하고 값은 무시. 모든 WEB 배포 뒤 삭제")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(발송 조건 고급 설정 제거, 2026-10-03)")
+    val scopeDim: String? = null,
+    @Deprecated("고급 설정 제거(2026-10-03) — 옛 WEB 번들 호환으로 받기만 하고 값은 무시. 모든 WEB 배포 뒤 삭제")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(발송 조건 고급 설정 제거, 2026-10-03)")
     val windowTime: String? = null,
-    /** 평가 주기(초) 60·300·600·1800·3600 */
-    val evalIntervalSec: Int = 60,
-    /** 유효 시간대 무시 */
-    val ignoreWindow: Boolean = false,
-    /** 정상으로 돌아오면 자동 해제 */
-    val autoClose: Boolean = false,
-    /** 승격 단계별 켬/끔 */
+    @Deprecated("고급 설정 제거(2026-10-03) — 옛 WEB 번들 호환으로 받기만 하고 값은 무시. 모든 WEB 배포 뒤 삭제")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(발송 조건 고급 설정 제거, 2026-10-03)")
+    val evalIntervalSec: Int? = null,
+    @Deprecated("고급 설정 제거(2026-10-03) — 옛 WEB 번들 호환으로 받기만 하고 값은 무시. 모든 WEB 배포 뒤 삭제")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(발송 조건 고급 설정 제거, 2026-10-03)")
+    val ignoreWindow: Boolean? = null,
+    @Deprecated("고급 설정 제거(2026-10-03) — 옛 WEB 번들 호환으로 받기만 하고 값은 무시. 모든 WEB 배포 뒤 삭제")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(발송 조건 고급 설정 제거, 2026-10-03)")
+    val autoClose: Boolean? = null,
+    @Deprecated("고급 설정 제거(2026-10-03) — 옛 WEB 번들 호환으로 받기만 하고 값은 무시. 모든 WEB 배포 뒤 삭제")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(발송 조건 고급 설정 제거, 2026-10-03)")
     val escalation: List<CondEscalationInput>? = null
 )
 
-/** 조건의 승격 단계 켬/끔 (05 ALC-09) */
+/** 조건의 승격 단계 켬/끔 — 사용 중지(2026-10-03, 받고 버림). 옛 본문을 그대로 읽을 수 있게 모양만 남긴다 */
 data class CondEscalationInput(
     val stage: Int,
     val on: Boolean
@@ -74,6 +87,7 @@ data class CondEscalationInput(
  * - `thresholdUnit` 은 JSON null 을 보내면 비운다(Optional — 키 없음 = 유지, null = 비우기)
  * - `threshold`(문자열)는 임계 표기, `thresholdVal`(숫자)은 값. 표기가 숫자뿐이고 값이 없으면 표기를 값으로도 쓴다
  * - `updatedAt` 을 보내면 저장된 수정 시각과 다를 때 409(다른 사용자가 먼저 수정)
+ * - 고급 설정 7가지는 받고 버린다(등록 요청 설명 참고)
  */
 data class AlertConditionUpdateRequest(
     val name: String? = null,
@@ -94,16 +108,27 @@ data class AlertConditionUpdateRequest(
     val groupIds: List<Int>? = null,
     val validWindow: String? = null,
     val dedupMin: String? = null,
+    @Deprecated("고급 설정 제거(2026-10-03) — 옛 WEB 번들 호환으로 받기만 하고 값은 무시. 모든 WEB 배포 뒤 삭제")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(발송 조건 고급 설정 제거, 2026-10-03)")
     val msgTemplate: String? = null,
     val updatedAt: String? = null,
-    /** 고급 설정 (05 ALC-09) — 키 없음 = 유지 */
+    @Deprecated("고급 설정 제거(2026-10-03) — 옛 WEB 번들 호환으로 받기만 하고 값은 무시. 모든 WEB 배포 뒤 삭제")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(발송 조건 고급 설정 제거, 2026-10-03)")
     val scopeDim: String? = null,
-    /** 지정 시각 HH:mm — JSON null = 비우기 */
+    @Deprecated("고급 설정 제거(2026-10-03) — 옛 WEB 번들 호환으로 받기만 하고 값은 무시. 모든 WEB 배포 뒤 삭제")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(발송 조건 고급 설정 제거, 2026-10-03)")
     val windowTime: Optional<String>? = null,
+    @Deprecated("고급 설정 제거(2026-10-03) — 옛 WEB 번들 호환으로 받기만 하고 값은 무시. 모든 WEB 배포 뒤 삭제")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(발송 조건 고급 설정 제거, 2026-10-03)")
     val evalIntervalSec: Int? = null,
+    @Deprecated("고급 설정 제거(2026-10-03) — 옛 WEB 번들 호환으로 받기만 하고 값은 무시. 모든 WEB 배포 뒤 삭제")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(발송 조건 고급 설정 제거, 2026-10-03)")
     val ignoreWindow: Boolean? = null,
+    @Deprecated("고급 설정 제거(2026-10-03) — 옛 WEB 번들 호환으로 받기만 하고 값은 무시. 모든 WEB 배포 뒤 삭제")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(발송 조건 고급 설정 제거, 2026-10-03)")
     val autoClose: Boolean? = null,
-    /** 보낸 단계만 바꾼다 */
+    @Deprecated("고급 설정 제거(2026-10-03) — 옛 WEB 번들 호환으로 받기만 하고 값은 무시. 모든 WEB 배포 뒤 삭제")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(발송 조건 고급 설정 제거, 2026-10-03)")
     val escalation: List<CondEscalationInput>? = null
 )
 
@@ -162,24 +187,3 @@ data class RecipientRequest(
     val night: Boolean? = null
 )
 
-/**
- * 승격 규칙 수정 요청 — PUT /api/v1/alert-escalation-rules
- *
- * @param stages 단계별 설정 목록
- */
-data class EscalationRuleRequest(
-    val stages: List<EscalationStageInput> = emptyList()
-)
-
-/**
- * 승격 단계 입력
- *
- * @param stage         승격 단계 (1~3)
- * @param waitMin       대기 시간(분)
- * @param targetGroupId 승격 대상 수신 그룹 ID
- */
-data class EscalationStageInput(
-    val stage: Int,
-    val waitMin: Int? = null,
-    val targetGroupId: Int? = null
-)

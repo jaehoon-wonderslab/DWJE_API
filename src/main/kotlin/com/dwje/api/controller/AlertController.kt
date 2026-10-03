@@ -51,16 +51,6 @@ class AlertController(
     }
 
     /**
-     * 승격 대상 조회 (No.105)
-     *
-     * 경로 충돌을 피하기 위해 {alertId} 매핑보다 먼저 선언한다.
-     */
-    @Operation(summary = "승격 대상 조회", description = "승격 단계별 대기 건수와 수신 대상자를 반환한다.")
-    @GetMapping("/escalation-targets")
-    fun escalationTargets(): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(alertService.getEscalationTargets())
-
-    /**
      * 알림 발송 로그 조회 (No.106) — 화면 권한 alert-cond 또는 sys-recip 필요 (알림 목록 권한만으로는 403)
      */
     @Operation(summary = "알림 발송 로그 조회", description = "채널·조건별 발송 결과와 지연 시간을 조회한다. 알림 조건(alert-cond) 또는 수신자 관리(sys-recip) 화면 권한이 필요하다.")

@@ -25,6 +25,9 @@ class WebMvcConfig : WebMvcConfigurer {
     fun objectMapper(): ObjectMapper =
         jacksonObjectMapper().apply {
             registerModule(JavaTimeModule())
+            // 요청 DTO 의 Optional 필드(키 없음 = 유지, JSON null = 비우기 — 발송 조건 thresholdUnit·수신 그룹 deptId 등)를 읽는다.
+            // 이 모듈 없이 자체 ObjectMapper 를 쓰면 그 DTO 를 받는 PUT 이 본문을 읽다 500(InvalidDefinitionException)이었다(2026-10-03 발견)
+            registerModule(com.fasterxml.jackson.datatype.jdk8.Jdk8Module())
             // 타임스탬프 숫자 대신 ISO-8601 문자열로 출력한다.
             disable(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
             // 선언되지 않은 요청 필드는 400 으로 막는다.

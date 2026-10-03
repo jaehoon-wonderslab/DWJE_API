@@ -6,6 +6,7 @@ import com.dwje.api.common.util.DataField
 import com.dwje.api.common.util.MaskingSupport
 import com.dwje.api.common.util.PageRequestParam
 import com.dwje.api.common.util.SortResolver
+import com.dwje.api.common.util.WorkcenterNames
 import com.dwje.api.config.AppProperties
 import com.dwje.api.repository.CommonMasterRepository
 import org.springframework.stereotype.Service
@@ -56,8 +57,8 @@ class CommonMasterService(
      * @param keyword   설비코드/설비명 검색어
      */
     @Transactional(readOnly = true)
-    fun getEquipments(processId: String?, keyword: String?): List<Map<String, Any?>> =
-        commonMasterRepository.findEquipments(appProperties.defaultPlantCd, processId, keyword)
+    fun getEquipments(processId: String?, keyword: String?, factory: String? = null): List<Map<String, Any?>> =
+        mergeEquipments(commonMasterRepository.findEquipments(appProperties.defaultPlantCd, processId, keyword), factory)
 
     /**
      * 제품 목록 조회 (No.10) — 제품 선택 팝업의 검색·필터·정렬을 지원한다.
@@ -152,5 +153,21 @@ class CommonMasterService(
             "fromDate" to range["fromDate"],
             "toDate" to range["toDate"]
         )
+    }
+
+    /**
+     * 설비 목록 정리 (2026-10-03)
+     * 1. [factory] 를 주면 작업장 이름의 공장 표기([WorkcenterNames.plantOf])가 같은 행만 남긴다 — 표기 없는 작업장·작업장 없는 설비는 빠진다
+     * 2. 설비코드 기준 한 행으로 합친다 — 작업장 2곳에 걸린 설비가 두 행으로 와서 화면이 같은 key 로 그리다 오류가 났다(로컬 21대).
+     *    wcCd·wcNm 은 첫 작업장(작업장 코드순), wcCds·wcNms 에 걸린 작업장 전부.
+     */
+    internal fun mergeEquipments(rows: List<Map<String, Any?>>, factory: String?): List<Map<String, Any?>> {
+        val plant = factory?.trim()?.takeIf { it.isNotEmpty() }
+        val kept = if (plant == null) rows else rows.filter { WorkcenterNames.plantOf(it["wcNm"] as String?) == plant }
+        return kept.groupBy { it["eqptCd"] }.values.map { same ->
+            val first = same.first()
+            if (same.size == 1) first + mapOf("wcCds" to listOfNotNull(first["wcCd"]), "wcNms" to listOfNotNull(first["wcNm"]))
+            else first + mapOf("wcCds" to same.mapNotNull { it["wcCd"] }.distinct(), "wcNms" to same.mapNotNull { it["wcNm"] }.distinct())
+        }
     }
 }

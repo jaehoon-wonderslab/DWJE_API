@@ -18,7 +18,6 @@ import com.dwje.api.common.validation.CodeValidator
 import com.dwje.api.config.AppProperties
 import com.dwje.api.model.request.AlertConditionRequest
 import com.dwje.api.model.request.AlertConditionUpdateRequest
-import com.dwje.api.model.request.EscalationRuleRequest
 import com.dwje.api.model.request.RecipientGroupRequest
 import com.dwje.api.model.request.RecipientGroupUpdateRequest
 import com.dwje.api.model.request.RecipientRequest
@@ -126,8 +125,9 @@ class AlertConfigService(
     /**
      * 발송 조건 등록 (No.153)
      *
-     * 검증 순서(05 ALC-12) — 조건명·중복 → 코드 6종 → 지표 → 임계 → 대상 범위·설비·설명 → 채널 → 수신 그룹 →
-     * 지정 시각·평가 주기·승격 → 메시지 틀 길이. 첫 오류에서 멈추고 아무것도 저장하지 않는다.
+     * 검증 순서(05 ALC-12) — 조건명·중복 → 코드 5종 → 지표 → 임계 → 대상 범위·설비·설명 → 채널 → 수신 그룹.
+     * 첫 오류에서 멈추고 아무것도 저장하지 않는다.
+     * 고급 설정 7가지(메시지 틀·평가 단위·지정 시각·평가 주기·시간대 무시·자동 해제·승격)는 2026-10-03 에 없앴다 — 요청에 와도 버린다.
      * 지표의 민감 항목(blind_field_key)은 화면 입력 없이 지표에서 복사한다(ALC-09).
      */
     @Transactional
@@ -150,29 +150,19 @@ class AlertConfigService(
             duration = requireCode("ALM_DURATION", request.duration, "duration", "지속 조건"),
             targetScope = targetScope,
             targetDesc = resolveTargetDesc(request.target, targetScope, currentDesc = null, currentScope = null),
-            validWindow = requireCode("ALM_WINDOW", request.validWindow, "validWindow", "유효 시간대"),
+            validWindow = requireValidWindow(request.validWindow),
             dedupMin = requireCode("ALM_DEDUP", request.dedupMin, "dedupMin", "중복 억제"),
-            msgTemplate = request.msgTemplate?.takeIf { it.isNotBlank() } ?: defaultMessageTemplate(),
-            scopeDim = requireCode("ALM_SCOPE_DIM", request.scopeDim, "scopeDim", "평가 단위"),
-            windowTime = request.windowTime?.trim()?.ifEmpty { null }?.let { requireWindowTime(it) },
-            evalIntervalSec = requireEvalInterval(request.evalIntervalSec),
-            ignoreWindow = request.ignoreWindow,
-            autoClose = request.autoClose,
             blindFieldKey = metricBlind?.second
         )
-        // 코드 순서는 문서 표대로 — 위 생성자 인자 순서가 검사 순서다(심각도 → 비교 → 지속 → 유효 시간대 → 중복 억제 → 평가 단위)
+        // 코드 순서는 문서 표대로 — 위 생성자 인자 순서가 검사 순서다(심각도 → 비교 → 지속 → 유효 시간대 → 중복 억제)
         val picks = resolvePicks(targetScope, request.pickTargets, current = null)
         val channels = requireChannels(request.channels)
         val groupIds = requireGroupIds(request.groupIds)
-        requireOnceTime(v.validWindow, v.windowTime)
-        val escalation = request.escalation?.let { requireEscalation(it) }
-        requireLength(v.msgTemplate, 4000, "msgTemplate", "메시지 틀")
 
         val condId = alertConfigRepository.insertCondition(v, principal.userId)
         alertConfigRepository.replaceConditionChannels(condId, channels)
         alertConfigRepository.replaceConditionGroups(condId, groupIds)
         alertConfigRepository.replaceConditionTargets(condId, picks)
-        escalation?.let { alertConfigRepository.replaceConditionEscalation(condId, it) }
 
         auditLogService.record(
             logType = AuditType.CONFIG_CHANGE,
@@ -186,7 +176,8 @@ class AlertConfigService(
         return mapOf(
             "condId" to condId,
             "reach" to targetResolver.reach(groupIds, channels),
-            "warnings" to warningsOf(v.msgTemplate, escalation)
+            // 메시지 틀·승격 경고가 있던 자리 — 고급 설정을 없애 늘 빈 목록이다(응답 키는 호환으로 남김)
+            "warnings" to emptyList<String>()
         )
     }
 
@@ -213,7 +204,7 @@ class AlertConfigService(
      * 발송 조건 수정 (No.154, 05 ALC-04)
      *
      * 보낸 키만 바꾼다. 예전에는 빠진 키를 DTO 기본값(op=GE, 대상=전체 설비 등)으로 덮어 써서
-     * 이름만 고쳐도 메시지 틀·대상 범위가 초기화됐다. 검증 순서는 등록과 같다(ALC-12).
+     * 이름만 고쳐도 메시지 틀·대상 범위가 초기화됐다. 검증 순서는 등록과 같다(ALC-12). 고급 설정은 받고 버린다.
      * 감사에는 바뀐 필드만 한국어 이름으로 「임계 10 → 12」 처럼 남긴다(ALC-14). 바뀐 것이 없으면 남기지 않는다.
      */
     @Transactional
@@ -233,9 +224,9 @@ class AlertConfigService(
         val severity = request.severity?.let { requireCode("ALM_SEVERITY", it, "severity", "심각도") } ?: cur["severity"] as String
         val op = request.op?.let { requireCode("ALM_OP", it, "op", "비교") } ?: cur["op"] as String
         val duration = request.duration?.let { requireCode("ALM_DURATION", it, "duration", "지속 조건") } ?: cur["duration"] as String
-        val validWindow = request.validWindow?.let { requireCode("ALM_WINDOW", it, "validWindow", "유효 시간대") } ?: cur["validWindow"] as String
+        // 저장된 값이 ONCE 여도 그대로 저장할 수 없다 — 지정 시각이 없어 뜻이 없다(V72 가 ONCE 조건을 중지로 바꿨다)
+        val validWindow = requireValidWindow(request.validWindow ?: cur["validWindow"] as String)
         val dedupMin = request.dedupMin?.let { requireCode("ALM_DEDUP", it, "dedupMin", "중복 억제") } ?: cur["dedupMin"] as String
-        val scopeDim = request.scopeDim?.let { requireCode("ALM_SCOPE_DIM", it, "scopeDim", "평가 단위") } ?: cur["scopeDim"] as String
 
         val curMetric = cur["metricStdId"] as Int?
         val metricId = request.metricStdId ?: curMetric
@@ -258,28 +249,12 @@ class AlertConfigService(
 
         val channels = request.channels?.let { requireChannels(it) }
         val groupIds = request.groupIds?.let { requireGroupIds(it) }
-        val windowTime = when (val w = request.windowTime) {
-            null -> cur["windowTime"] as String?
-            else -> w.orElse(null)?.trim()?.ifEmpty { null }?.let { requireWindowTime(it) }
-        }
-        val evalIntervalSec = request.evalIntervalSec?.let { requireEvalInterval(it) } ?: cur["evalIntervalSec"] as Int
-        requireOnceTime(validWindow, windowTime)
-        val escalation = request.escalation?.let { requireEscalation(it) }
-        val msgTemplate = when {
-            request.msgTemplate == null -> cur["msgTemplate"] as String
-            request.msgTemplate.isBlank() -> defaultMessageTemplate()
-            else -> request.msgTemplate
-        }
-        requireLength(msgTemplate, 4000, "msgTemplate", "메시지 틀")
 
         val v = AlertCondValues(
             name = name, severity = severity, metricId = metricId,
             metricDesc = request.metricDesc?.trim()?.let { requireLength(it.ifEmpty { name }, 100, "metricDesc", "지표 설명") } ?: cur["metricDesc"] as String,
             op = op, thresholdVal = thresholdVal, thresholdText = thresholdText, thresholdUnit = thresholdUnit,
             duration = duration, targetScope = targetScope, targetDesc = targetDesc, validWindow = validWindow, dedupMin = dedupMin,
-            msgTemplate = msgTemplate, scopeDim = scopeDim, windowTime = windowTime, evalIntervalSec = evalIntervalSec,
-            ignoreWindow = request.ignoreWindow ?: (cur["ignoreWindow"] as Boolean),
-            autoClose = request.autoClose ?: (cur["autoClose"] as Boolean),
             blindFieldKey = blindFieldKey
         )
 
@@ -304,24 +279,11 @@ class AlertConfigService(
         groupIds?.let { if (it.sorted() != groupsBefore) changes += "수신 그룹 $groupsBefore → $it" }
         diff("유효 시간대", cur["validWindow"], v.validWindow)
         diff("중복 억제", cur["dedupMin"], v.dedupMin)
-        diff("평가 단위", cur["scopeDim"], v.scopeDim)
-        diff("지정 시각", cur["windowTime"], v.windowTime)
-        diff("평가 주기", cur["evalIntervalSec"], v.evalIntervalSec)
-        diff("시간대 무시", cur["ignoreWindow"], v.ignoreWindow)
-        diff("자동 해제", cur["autoClose"], v.autoClose)
-        @Suppress("UNCHECKED_CAST")
-        escalation?.let { e ->
-            val before = (cur["escalation"] as List<Map<String, Any?>>).associate { it["stage"] as Int to it["on"] as Boolean }
-            e.filter { (stage, on) -> before[stage] != on }.takeIf { it.isNotEmpty() }
-                ?.let { changes += "승격 " + it.joinToString(", ") { (st, on) -> "${st}차 ${if (on) "켬" else "끔"}" } }
-        }
-        if (msgTemplate != cur["msgTemplate"]) changes += "메시지 틀 변경"
 
         alertConfigRepository.updateCondition(condId, v, principal.userId)
         channels?.let { alertConfigRepository.replaceConditionChannels(condId, it) }
         groupIds?.let { alertConfigRepository.replaceConditionGroups(condId, it) }
         alertConfigRepository.replaceConditionTargets(condId, picks)
-        escalation?.let { alertConfigRepository.replaceConditionEscalation(condId, it) }
 
         if (changes.isNotEmpty()) {
             auditLogService.record(
@@ -337,7 +299,7 @@ class AlertConfigService(
         return mapOf(
             "success" to true, "condId" to condId, "updatedAt" to updatedAt,
             "reach" to targetResolver.reach(groupIds ?: groupsBefore, channels ?: (cur["channels"] as List<String>)),
-            "warnings" to warningsOf(msgTemplate, escalation)
+            "warnings" to emptyList<String>()
         )
     }
 
@@ -449,7 +411,7 @@ class AlertConfigService(
 
     /**
      * 수신자 관리 요약 (No.157) — 수신 불가 계정 수(inactiveAccountCnt, RCP-04),
-     * 야간에 실제로 받는 사람 수(nightCnt)와 야간 구간(nightWindow, RCP-10), 대상 그룹 없는 승격 단계 수
+     * 야간에 실제로 받는 사람 수(nightCnt)와 야간 구간(nightWindow, RCP-10)
      */
     @Transactional(readOnly = true)
     fun getRecipientSummary(): Map<String, Any?> {
@@ -479,7 +441,6 @@ class AlertConfigService(
         val ids = groups.map { it["groupId"] as Int }
         val members = alertConfigRepository.findTargetMembers(ids).groupBy { it.groupId }
         val conds = alertConfigRepository.findConditionsByGroups(ids)
-        val escs = alertConfigRepository.findEscStagesByGroups(ids)
 
         val items = groups.map { g ->
             val id = g["groupId"] as Int
@@ -493,7 +454,6 @@ class AlertConfigService(
             row["receivableCnt"] = receivable
             row["conds"] = conds[id].orEmpty()
             row["condCnt"] = conds[id].orEmpty().count { it["on"] == true }
-            row["escStages"] = escs[id].orEmpty()
             if (full) {
                 row["members"] = ms.map { memberObject(it, mask) }
                 row["memberEmpNos"] = ms.map { it.userId }
@@ -521,7 +481,6 @@ class AlertConfigService(
         @Suppress("UNCHECKED_CAST")
         data["receivableCnt"] = ms.count { targetResolver.isReceivable(it, g["channels"] as List<String>) }
         data["conds"] = alertConfigRepository.findGroupConditions(groupId)
-        data["escStages"] = alertConfigRepository.findGroupEscStages(groupId)
         data["deptOptions"] = alertConfigRepository.findDeptOptions(appProperties.unassignedDeptName)
         return data to mask.maskedKeys()
     }
@@ -610,7 +569,7 @@ class AlertConfigService(
     }
 
     /**
-     * 수신 그룹 사용/중지 (06 RCP-08) — 사용 중 발송 조건이나 승격 규칙이 쓰는 그룹은 중지하지 않는다(409).
+     * 수신 그룹 사용/중지 (06 RCP-08) — 사용 중 발송 조건이 쓰는 그룹은 중지하지 않는다(409).
      */
     @Transactional
     fun changeRecipientGroupState(groupId: Int, on: Boolean?): Map<String, Any?> {
@@ -622,12 +581,11 @@ class AlertConfigService(
 
         if (!next) {
             val conds = alertConfigRepository.findGroupConditions(groupId).filter { it["on"] == true }
-            val escs = alertConfigRepository.findGroupEscStages(groupId)
-            if (conds.isNotEmpty() || escs.isNotEmpty()) {
+            if (conds.isNotEmpty()) {
                 throw BusinessException(
                     ErrorCode.RULE_VIOLATION,
-                    "발송 조건 ${conds.size}건·승격 규칙 ${escs.size}단계가 이 그룹을 씁니다. 먼저 연결을 바꿔 주십시오.",
-                    null, mapOf("conds" to conds.map { mapOf("condId" to it["condId"], "name" to it["name"]) }, "escStages" to escs)
+                    "발송 조건 ${conds.size}건이 이 그룹을 씁니다. 먼저 연결을 바꿔 주십시오.",
+                    null, mapOf("conds" to conds.map { mapOf("condId" to it["condId"], "name" to it["name"]) })
                 )
             }
         }
@@ -815,7 +773,7 @@ class AlertConfigService(
 
     /**
      * 수신자를 빼면 생기는 영향 (06 RCP-08) — 그룹별 남는 수신 가능 인원, 받는 사람이 없어지는 그룹,
-     * 그 그룹을 쓰는 사용 중 발송 조건·승격 단계.
+     * 그 그룹을 쓰는 사용 중 발송 조건.
      */
     @Transactional(readOnly = true)
     fun getRecipientImpact(recipientId: String): Map<String, Any?> {
@@ -864,42 +822,12 @@ class AlertConfigService(
         }
         val zero = rows.filter { (_, before, after) -> before > 0 && after == 0 }.map { it.first.groupId }
         val conds = alertConfigRepository.findConditionsByGroups(zero)
-        val escs = alertConfigRepository.findEscStagesByGroups(zero)
         return mapOf(
             "groups" to rows.map { (g, _, after) -> mapOf("groupId" to g.groupId, "name" to g.groupNm, "receivableCntAfter" to after) },
             "zeroGroups" to rows.filter { it.first.groupId in zero }.map { mapOf("groupId" to it.first.groupId, "name" to it.first.groupNm) },
             "affectedConds" to conds.values.flatten().filter { it["on"] == true }.distinctBy { it["condId"] }
-                .map { mapOf("condId" to it["condId"], "name" to it["name"]) },
-            "affectedEscStages" to escs.values.flatten()
+                .map { mapOf("condId" to it["condId"], "name" to it["name"]) }
         )
-    }
-
-    /** 승격 규칙 조회 (No.169) */
-    @Transactional(readOnly = true)
-    fun getEscalationRules(): Map<String, Any?> {
-        authorizationService.requireAnyMenu(MenuId.SYS_RECIP, MenuId.ALERT_COND)
-        return mapOf("stages" to alertConfigRepository.findEscalationRules())
-    }
-
-    /** 승격 규칙 수정 (No.169) */
-    @Transactional
-    fun updateEscalationRules(request: EscalationRuleRequest): Map<String, Any?> {
-        // 두 화면 중 하나의 쓰기 권한(R-06, 06 RCP-15)
-        authorizationService.requireAnyWrite(MenuId.SYS_RECIP, MenuId.ALERT_COND)
-
-        var updated = 0
-        request.stages.forEach { stage ->
-            updated += alertConfigRepository.updateEscalationRule(stage.stage, stage.waitMin, stage.targetGroupId)
-        }
-
-        auditLogService.record(
-            logType = AuditType.CONFIG_CHANGE,
-            menuId = MenuId.SYS_RECIP,
-            targetDesc = "알림 승격 규칙 수정",
-            remark = "변경 ${updated}단계"
-        )
-
-        return mapOf("success" to true, "updatedCnt" to updated)
     }
 
     // ---------------------------------------------------------------------------------
@@ -964,43 +892,15 @@ class AlertConfigService(
         return value to requireLength(text, 50, "thresholdText", "임계 표기")
     }
 
-    private fun requireWindowTime(value: String): String {
-        if (!Regex("^([01]\\d|2[0-3]):[0-5]\\d$").matches(value)) {
-            throw InvalidParameterException("지정 시각은 HH:mm 형식입니다.", "windowTime")
+    /**
+     * 유효 시간대 — 지정 시각 1회(ONCE)는 지정 시각을 없애면서 함께 없앴다(2026-10-03). 공통코드가 사용 중지라도
+     * 이유를 알 수 있게 코드 검사보다 먼저 막는다.
+     */
+    private fun requireValidWindow(value: String): String {
+        if (value.trim().equals("ONCE", ignoreCase = true)) {
+            throw InvalidParameterException(MSG_ONCE_REMOVED, "validWindow")
         }
-        return value
-    }
-
-    private fun requireOnceTime(validWindow: String, windowTime: String?) {
-        if (validWindow == "ONCE" && windowTime == null) {
-            throw InvalidParameterException("지정 시각 1회는 시각(HH:mm)이 필요합니다.", "windowTime")
-        }
-    }
-
-    private fun requireEvalInterval(sec: Int): Int {
-        if (sec !in EVAL_INTERVALS) throw InvalidParameterException("평가 주기는 60·300·600·1800·3600초 중에서 고릅니다.", "evalIntervalSec")
-        return sec
-    }
-
-    /** 승격 단계 켬/끔 — 없는 단계는 400 */
-    private fun requireEscalation(items: List<com.dwje.api.model.request.CondEscalationInput>): List<Pair<Int, Boolean>> {
-        val levels = alertConfigRepository.findEscalationTargets()
-        return items.map {
-            if (it.stage !in levels) throw InvalidParameterException("없는 승격 단계입니다. [${it.stage}]", "escalation")
-            it.stage to it.on
-        }
-    }
-
-    /** 저장은 막지 않는 경고 — 대상 그룹 없는 승격 단계 · 정의되지 않은 메시지 변수 (ALC-09) */
-    private fun warningsOf(template: String, escalation: List<Pair<Int, Boolean>>?): List<String> {
-        val warnings = mutableListOf<String>()
-        val targets = alertConfigRepository.findEscalationTargets()
-        escalation.orEmpty().filter { (stage, on) -> on && targets[stage] == null }.forEach { (stage, _) ->
-            warnings += "승격 ${stage}차 규칙에 대상 그룹이 없습니다 — 승격해도 아무도 받지 못합니다"
-        }
-        Regex("\\{\\{\\s*(\\w+)\\s*}}").findAll(template).map { it.groupValues[1] }.distinct()
-            .filterNot { it in TEMPLATE_VARS }.forEach { warnings += "정의되지 않은 변수입니다: {{$it}}" }
-        return warnings
+        return requireCode("ALM_WINDOW", value, "validWindow", "유효 시간대")
     }
 
     /** 그룹별 멤버 수·수신 가능 인원 */
@@ -1148,28 +1048,20 @@ class AlertConfigService(
         }
     }
 
-    /**
-     * 기본 메시지 템플릿 — 단가·수율 등 민감정보는 본문에 포함하지 않는다.
-     *
-     * 조건에 틀을 주지 않았을 때의 기본 틀. 치환은 Alert_Engine(MessageRenderer)이 `{{변수}}` 꼴만 한다 —
-     * 예전 기본값(`{심각도}` 꼴)은 치환되지 않고 글자 그대로 나갔다(2026-09-23 수정).
-     * 쓸 수 있는 변수: severity · condNm · scope · eqptNm · target · metricNm · metricDesc · value · unit · op · threshold · evidence · occurredAt · link
-     */
-    private fun defaultMessageTemplate(): String =
-        "[{{severity}}] {{condNm}} — {{scope}} {{metricNm}} {{value}}{{unit}} ({{op}} {{threshold}}{{unit}}) {{link}}"
-
     companion object {
+        /**
+         * 알림 메시지 기본 틀 — 조건별 메시지 틀(고급 설정)을 없앤 뒤(2026-10-03) 모든 조건이 이 한 문장을 쓴다.
+         * 실제 치환·발송은 Alert_Engine(MessageRenderer)이 같은 문장의 상수로 한다 — 바꿀 때는 엔진과 함께 바꾼다.
+         * 단가·수율 등 민감정보는 본문에 넣지 않는다. 테스트 발송은 이 틀을 쓰지 않는다(측정값이 없다 — [AlertTestSendService.conditionBodyLines]).
+         */
+        const val DEFAULT_MESSAGE_TEMPLATE =
+            "[{{severity}}] {{condNm}} — {{scope}} {{metricNm}} {{value}}{{unit}} ({{op}} {{threshold}}{{unit}}) {{link}}"
+
+        const val MSG_ONCE_REMOVED = "지정 시각 1회는 더 이상 쓰지 않습니다. 다른 유효 시간대를 고르십시오."
+
         /** 개별 설비 선택 상한 */
         const val PICK_MAX = 500
 
-        /** 평가 주기(초) 선택지 — 엔진이 받는 값 (05 ALC-09) */
-        private val EVAL_INTERVALS = setOf(60, 300, 600, 1800, 3600)
-
-        /** 메시지 틀 변수 — 엔진 MessageRenderer 가 치환하는 이름 */
-        private val TEMPLATE_VARS = setOf(
-            "severity", "condNm", "scope", "eqptNm", "target", "metricNm", "metricDesc", "value", "unit", "op",
-            "threshold", "evidence", "occurredAt", "link"
-        )
 
         /** 전량 조회(size=0) 상한 — 발송 조건 · 수신자 */
         const val CONDITION_ALL_MAX = 1_000

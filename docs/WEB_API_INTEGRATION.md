@@ -67,7 +67,7 @@ MES 실적 데이터는 충분하다 — 라벨 실적 749만행 / 불량 899만
 | `metrics` | 10 | 2026-09-15 제거 → **2026-09-22 복원**(지표 측정 데이터 관리 화면) + 수집 정의·산출 근거·측정값 |
 | `products` | 2 | 제품군·랭킹 — **2026-09-15 제거**(제품군 순위 관리 화면) |
 | `ai/*` | 31 | chat + **2026-09-22 복원**(agents · model-config · defect-tags · model-releases · assets · corpus-snapshots · serving-routes). **2026-09-23**: defect-tags · model-releases · assets · corpus-snapshots · serving-routes 제거(웹 미호출, V42 표 삭제) — agents · model-config 만 남음. vector-builds·finetune-builds 는 vec 스키마 소관이라 아직 없다. `dashboard/ai/agents` 는 별개로 유지 |
-| `alerts`, `alert-escalation-rules` | 2 | |
+| `alerts`, `alert-escalation-rules` | 2 | **2026-10-03**: 승격 규칙 조회·수정(`alert-escalation-rules` GET·PUT)과 승격 대상(`alerts/escalation-targets`) 제거됨 — 알림 엔진이 승격을 하지 않아 V73 에서 `ax.tb_alm_escalation_rule` 표를 지움 |
 | `menus`, `audit-logs`, `download-logs`, `health` | 4 | |
 
 ### 빈 상태 UI 가 필요한 도메인 — API 는 정상, 데이터가 없음
