@@ -18,6 +18,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
@@ -111,7 +112,9 @@ class GlossaryPermissionTest {
         login(setOf("sys-gloss"))
         val m = service.getSummary()
         assertEquals(1L, m["myVariantCnt"]); assertEquals(false, m["canEditTerm"]); assertEquals(true, m["canWriteVariant"])
-        assertTrue(service.exportTerms(GlossaryExportRequest(menuId = "sys-gloss")).headers.contains("유사어 등록자"))
+        // 등록자 열은 2026-10-04 에 뺐다 — 관리 화면 파일도 공식 용어 · 뜻 · 유사어 · 등록일 · 최근 수정
+        val headers = service.exportTerms(GlossaryExportRequest(menuId = "sys-gloss")).headers
+        assertFalse(headers.contains("유사어 등록자")); assertTrue(headers.contains("등록일"))
     }
 
     @Test

@@ -104,7 +104,7 @@ class Phase5DecisionsDbTest {
 
         val export = glossary.exportTerms(GlossaryExportRequest(menuId = "sys-gloss", scopeCd = "ALL"))
         assertTrue(export.rows.none { it["term"] == name })
-        assertEquals(hiddenCnt.toInt() * 3, export.blindedCells)
+        assertEquals(hiddenCnt.toInt() * 2, export.blindedCells) // 뜻 · 유사어 (등록자 열은 2026-10-04 에 뺐다)
 
         UserContext.set(quality)
         assertTrue(glossary.getTerms(name, 1, 50).first.any { it["termId"] == termId && it["blinded"] == false })

@@ -621,7 +621,7 @@ class GlossaryService(
     data class ExportRows(
         val menuId: String, val scopeCd: String?, val headers: List<String>, val keys: List<String>,
         val rows: List<Map<String, Any?>>, val total: Long, val condSummary: String,
-        /** 가린 칸 수 — 가린 용어 행의 뜻·유사어(+등록자) 칸 (R-18). 파일 안내·다운로드 이력 blindCnt 에 더한다 */
+        /** 가린 칸 수 — 가린 용어 행의 뜻·유사어 칸 (R-18). 파일 안내·다운로드 이력 blindCnt 에 더한다 */
         val blindedCells: Int = 0
     )
 
@@ -629,7 +629,7 @@ class GlossaryService(
      * 용어 사전 내려받기 (07 GLS-12 · 13 GLV-05) — 조회 권한으로 판정한다(공통 9.8, R-10).
      *
      * - `scopeCd=ALL` 이면 검색 조건을 무시하고 사용 중 용어 전체(상한 [EXPORT_MAX]).
-     * - 열은 부르는 화면에 따라 다르다. 용어 사전 조회 화면에는 등록자 열이 없고, 어느 쪽에도 사번 열은 없다.
+     * - 열은 부르는 화면에 따라 다르다(관리 화면은 등록일 열이 더 있다). 등록자 · 사번 열은 어느 쪽에도 없다(2026-10-04).
      * - 기록 화면은 요청의 menuId 를 쓰되, 그 화면 권한이 없으면 가진 화면으로 바꾼다(사칭 방지).
      */
     @Transactional(readOnly = true)
@@ -667,16 +667,17 @@ class GlossaryService(
         }
         val blindedRows = terms.count { hidden.hides(it) }
         val (headers, keys) = if (menuId == MenuId.SYS_GLOSS) {
-            listOf("공식 용어", "뜻", "유사어", "유사어 등록자", "등록일", "최근 수정") to
-                listOf("term", "definition", "variants", "byName", "createdAt", "updatedAt")
+            // 유사어 등록자 열은 뺐다(2026-10-04) — 유사어 등록은 관리자만 하므로 화면 · 파일 모두 등록자를 싣지 않는다
+            listOf("공식 용어", "뜻", "유사어", "등록일", "최근 수정") to
+                listOf("term", "definition", "variants", "createdAt", "updatedAt")
         } else {
             listOf("공식 용어", "뜻", "유사어", "최근 수정") to listOf("term", "definition", "variants", "updatedAt")
         }
         val cond = req?.condSummary?.takeIf { it.isNotBlank() }
             ?: if (all) "전체" else "검색=${keyword ?: ""}" + (if (mineOnly != null) ", 내 유사어" else "")
         auditBlind(blindedRows, hidden, menuId, "용어 사전 내려받기 가림")
-        // 가린 칸 = 행마다 뜻·유사어(관리 화면 파일은 등록자 열도)
-        val cellsPerRow = if (menuId == MenuId.SYS_GLOSS) 3 else 2
+        // 가린 칸 = 행마다 뜻·유사어 (등록자 열은 2026-10-04 에 뺐다)
+        val cellsPerRow = 2
         return ExportRows(menuId, scopeCd ?: "VIEW", headers, keys, rows, total, cond.take(500), blindedRows * cellsPerRow)
     }
 
