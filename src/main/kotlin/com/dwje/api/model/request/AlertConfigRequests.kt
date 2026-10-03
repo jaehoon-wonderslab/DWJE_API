@@ -138,8 +138,10 @@ data class AlertConditionUpdateRequest(
  * @param name          그룹명
  * @param channels      발송 채널 목록
  * @param validWindow   유효 시간대
- * @param night         야간 수신 여부
  * @param memberEmpNos  구성원 사번 목록
+ *
+ * 야간 수신(`night`)은 2026-10-03 에 없앴다(V74). 옛 화면이 보내도 400 이 나지 않게 키는 남겨 받기만 하고 버린다
+ * (FAIL_ON_UNKNOWN_PROPERTIES). 그룹 멤버는 시각과 관계없이 받는다 — 유효 시간대만 지킨다.
  */
 data class RecipientGroupRequest(
     @field:NotBlank(message = "그룹명을 입력해 주세요.")
@@ -147,9 +149,11 @@ data class RecipientGroupRequest(
 
     val channels: List<String> = emptyList(),
     val validWindow: String = "ALWAYS",
-    val night: Boolean = false,
     val deptId: Int? = null,
-    val memberEmpNos: List<String> = emptyList()
+    val memberEmpNos: List<String> = emptyList(),
+    @Deprecated("야간 수신 제거(2026-10-03, V74) — 옛 WEB 번들 호환으로 받기만 하고 값은 무시. 모든 WEB 배포 뒤 삭제")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(야간 수신 제거, 2026-10-03)")
+    val night: Boolean? = null
 )
 
 /**
@@ -159,31 +163,47 @@ data class RecipientGroupRequest(
  * - `memberEmpNos: []` 는 전원 제외, `channels: []` 는 400
  * - `deptId` 는 JSON null 이면 담당 부서를 비운다(Optional — 키 없음 = 유지)
  * - `updatedAt` 을 보내면 저장된 수정 시각과 다를 때 409
+ * - `night`(야간 수신)는 2026-10-03 에 없앴다 — 받기만 하고 버린다
  */
 data class RecipientGroupUpdateRequest(
     val name: String? = null,
     val channels: List<String>? = null,
     val validWindow: String? = null,
-    val night: Boolean? = null,
     val deptId: Optional<Int>? = null,
     val memberEmpNos: List<String>? = null,
-    val updatedAt: String? = null
+    val updatedAt: String? = null,
+    @Deprecated("야간 수신 제거(2026-10-03, V74) — 옛 WEB 번들 호환으로 받기만 하고 값은 무시. 모든 WEB 배포 뒤 삭제")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(야간 수신 제거, 2026-10-03)")
+    val night: Boolean? = null
 )
 
 /**
  * 수신자 등록·수정 요청 — POST/PUT /api/v1/alert-recipients
  *
  * @param empNo     사번
- * @param mail      메일 주소
+ * @param mail      사용 중지 — 메일은 계정 메일(`tb_sys_user.email`)이 기준이다(2026-10-03).
+ *                  등록 때 계정 메일이 비었을 때만 대체 주소로 쓰고, 수정에서는 보내도 무시한다.
  * @param hp        휴대전화 번호
  * @param messenger 메신저 ID
- * @param night     야간 수신 여부
+ *
+ * 야간 수신(`night`) · 수신/부재(`state` · `reason`)는 2026-10-03 에 없앴다(V74). 옛 화면이 보내도 400 이 나지 않게
+ * 키는 남겨 받기만 하고 버린다(FAIL_ON_UNKNOWN_PROPERTIES). 그룹에 든 수신자는 모두 받는다(계정 상태만 본다).
  */
 data class RecipientRequest(
     val empNo: String? = null,
+    @Deprecated("계정 메일 단일 기준(2026-10-03) — 등록은 계정 메일이 비었을 때만 쓰고 수정은 무시한다. 계정 관리에서 바꾼다")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 메일은 계정 메일이 기준. 등록 때 계정 메일이 비었을 때만 대체 주소로 쓰고 수정은 무시한다(2026-10-03)")
     val mail: String? = null,
     val hp: String? = null,
     val messenger: String? = null,
-    val night: Boolean? = null
+    @Deprecated("야간 수신 제거(2026-10-03, V74) — 옛 WEB 번들 호환으로 받기만 하고 값은 무시. 모든 WEB 배포 뒤 삭제")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(야간 수신 제거, 2026-10-03)")
+    val night: Boolean? = null,
+    @Deprecated("수신/부재 제거(2026-10-03, V74) — 옛 WEB 번들 호환으로 받기만 하고 값은 무시. 모든 WEB 배포 뒤 삭제")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(수신/부재 제거, 2026-10-03)")
+    val state: String? = null,
+    @Deprecated("수신/부재 제거(2026-10-03, V74) — 옛 WEB 번들 호환으로 받기만 하고 값은 무시. 모든 WEB 배포 뒤 삭제")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(수신/부재 제거, 2026-10-03)")
+    val reason: String? = null
 )
 

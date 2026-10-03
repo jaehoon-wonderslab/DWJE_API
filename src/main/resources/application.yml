@@ -71,8 +71,6 @@ app:
   # 알림 테스트 발송(ALC-03·RCP-03)과 수신 대상 판정(RCP-04). 엔진 설정과 같은 값을 쓴다.
   alert:
     web-base-url: ${AX_WEB_BASE_URL:}   # 메일 본문 알림 링크. 비우면 링크 줄을 넣지 않는다
-    night-from: "22:00"                 # 야간 시작(포함)
-    night-to: "06:00"                   # 야간 끝(제외)
     receivable-user-states: ACTIVE,LOCKED  # 수신 가능한 계정 상태. 잠금은 로그인만 막는 일시 조치라 알림은 받는다(3단계 결정). 정지·승인 대기는 받지 않는다
     stale-factor: 3                     # 지표 수집 중단 판정 배수 — 엔진 alert.stale-factor 와 같은 값이어야 한다(05 ALC-08)
   # 데이터 연동 상태 줄(SYN-03) 판정 기준 — 실서버 정기 배치 주기를 확인한 뒤 조정한다.

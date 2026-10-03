@@ -521,39 +521,28 @@ class AlertConfigRepository(
 
     /**
      * 수신자 관리 요약을 조회한다. (No.157)
+     *
+     * 수신/부재 구분과 야간 수신 인원은 2026-10-03 에 없앴다(V74). 받는 사람은 계정 상태로만 가린다.
      */
     fun findRecipientSummary(receivableStates: List<String>): Map<String, Any?> {
         val sql = """
             SELECT
-                (SELECT count(*) FROM ax.tb_alm_recip_group WHERE use_flg = 'Y')          AS group_cnt,
-                (SELECT count(*) FROM ax.tb_alm_recipient r
-                   JOIN ax.tb_sys_user u ON u.user_id = r.user_id
-                  WHERE u.user_state_cd <> ALL(:states))                                  AS inactive_cnt,
-                (SELECT count(*) FROM ax.tb_alm_recipient WHERE recv_state_cd = 'RECV')   AS receiving_cnt,
-                (SELECT count(*) FROM ax.tb_alm_recipient WHERE recv_state_cd = 'ABSENT') AS absent_cnt,
-                (SELECT count(*) FROM ax.tb_alm_recipient WHERE night_recv)               AS night_personal_cnt,
-                -- 야간에 실제로 받는 사람 — 개인 또는 소속 그룹(사용 중) 야간 수신, 수신 상태 · 수신 가능 계정 (06 RCP-10)
-                (SELECT count(DISTINCT r.user_id) FROM ax.tb_alm_recipient r
-                   JOIN ax.tb_sys_user u ON u.user_id = r.user_id
-                  WHERE r.recv_state_cd = 'RECV' AND u.user_state_cd = ANY(:states)
-                    AND (r.night_recv OR EXISTS (
-                         SELECT 1 FROM ax.tb_alm_recip_group_member m
-                           JOIN ax.tb_alm_recip_group g ON g.group_id = m.group_id AND g.use_flg = 'Y' AND g.night_recv
-                          WHERE m.user_id = r.user_id)))                                  AS night_cnt
+                (SELECT count(*) FROM ax.tb_alm_recip_group WHERE use_flg = 'Y') AS group_cnt,
+                count(*)                                                          AS recipient_cnt,
+                count(*) FILTER (WHERE u.user_state_cd = ANY(:states))            AS receivable_cnt,
+                count(*) FILTER (WHERE u.user_state_cd <> ALL(:states))           AS inactive_cnt
+              FROM ax.tb_alm_recipient r
+              JOIN ax.tb_sys_user u ON u.user_id = r.user_id
         """.trimIndent()
 
         val params = MapSqlParameterSource("states", receivableStates.toTypedArray())
         return jdbcTemplate.queryForObject(sql, params) { rs, _ ->
             mapOf(
                 "groupCnt" to rs.getLong("group_cnt"),
-                "inactiveAccountCnt" to rs.getLong("inactive_cnt"),
-                "recipientCnt" to mapOf(
-                    "receiving" to rs.getLong("receiving_cnt"),
-                    "absent" to rs.getLong("absent_cnt")
-                ),
-                "nightCnt" to rs.getLong("night_cnt"),
-                // 예전 의미(개인 야간 수신 설정 수) — 한 릴리스 함께 보낸다
-                "nightPersonalCnt" to rs.getLong("night_personal_cnt")
+                // 등록된 수신자 수 · 그중 계정 상태상 받을 수 있는 수 · 받을 수 없는 수 (06 RCP-04)
+                "recipientCnt" to rs.getLong("recipient_cnt"),
+                "receivableCnt" to rs.getLong("receivable_cnt"),
+                "inactiveAccountCnt" to rs.getLong("inactive_cnt")
             )
         } ?: emptyMap()
     }
@@ -569,7 +558,7 @@ class AlertConfigRepository(
     fun findRecipientGroups(groupId: Int? = null, includeInactive: Boolean = false): List<Map<String, Any?>> {
         val sql = """
             SELECT
-                g.group_id, g.group_nm, g.window_cd, g.night_recv, g.dept_id, d.dept_nm, g.use_flg, g.upd_date,
+                g.group_id, g.group_nm, g.window_cd, g.dept_id, d.dept_nm, g.use_flg, g.upd_date,
                 (
                     SELECT string_agg(gc.channel_cd, ',' ORDER BY gc.channel_cd)
                       FROM ax.tb_alm_recip_group_channel gc WHERE gc.group_id = g.group_id
@@ -586,7 +575,6 @@ class AlertConfigRepository(
                 "groupId" to rs.getInt("group_id"),
                 "name" to rs.getString("group_nm"),
                 "validWindow" to rs.getString("window_cd"),
-                "night" to rs.getBoolean("night_recv"),
                 "deptId" to Rs.intOrNull(rs, "dept_id"),
                 "dept" to rs.getString("dept_nm"),
                 "useFlg" to rs.getString("use_flg"),
@@ -604,20 +592,18 @@ class AlertConfigRepository(
     fun insertRecipientGroup(
         groupNm: String,
         windowCd: String,
-        night: Boolean,
         deptId: Int?,
         actor: String
     ): Int {
         val sql = """
-            INSERT INTO ax.tb_alm_recip_group (group_nm, window_cd, night_recv, dept_id, use_flg, ins_user, upd_user)
-            VALUES (:groupNm, :windowCd, :night, :deptId, 'Y', :actor, :actor)
+            INSERT INTO ax.tb_alm_recip_group (group_nm, window_cd, dept_id, use_flg, ins_user, upd_user)
+            VALUES (:groupNm, :windowCd, :deptId, 'Y', :actor, :actor)
             RETURNING group_id
         """.trimIndent()
 
         val params = MapSqlParameterSource()
             .addValue("groupNm", groupNm.take(50))
             .addValue("windowCd", windowCd)
-            .addValue("night", night)
             .addValue("deptId", deptId)
             .addValue("actor", actor)
 
@@ -631,7 +617,6 @@ class AlertConfigRepository(
         groupId: Int,
         groupNm: String,
         windowCd: String,
-        night: Boolean,
         deptId: Int?,
         actor: String
     ): Int {
@@ -639,7 +624,6 @@ class AlertConfigRepository(
             UPDATE ax.tb_alm_recip_group
                SET group_nm   = :groupNm,
                    window_cd  = :windowCd,
-                   night_recv = :night,
                    dept_id    = :deptId,
                    upd_date   = now(),
                    upd_user   = :actor
@@ -650,7 +634,6 @@ class AlertConfigRepository(
             .addValue("groupId", groupId)
             .addValue("groupNm", groupNm.take(50))
             .addValue("windowCd", windowCd)
-            .addValue("night", night)
             .addValue("deptId", deptId)
             .addValue("actor", actor)
 
@@ -711,15 +694,15 @@ class AlertConfigRepository(
     /**
      * 수신자 목록을 조회한다. (No.162)
      *
-     * @param state 수신 상태 (RECV/ABSENT)
+     * `mail` 은 계정 메일(`tb_sys_user.email`)이 기준이다. 수신자 행의 `email` 은 등록 때 계정에서 떠 둔 사본이라
+     * 계정 메일을 바꿔도 따라오지 않았다 — 계정 메일이 비었을 때만 쓴다(2026-10-03, 계정 메일 단일 기준).
      */
-    fun findRecipients(state: String?, limit: Int, offset: Int, filter: RecipientFilter = RecipientFilter()): List<Map<String, Any?>> {
+    fun findRecipients(limit: Int, offset: Int, filter: RecipientFilter = RecipientFilter()): List<Map<String, Any?>> {
         val sql = StringBuilder(
             """
             SELECT
                 r.user_id, u.user_nm, d.dept_nm, u.position_cd, pc.code_nm AS position_nm,
-                r.email, r.mobile_no, r.messenger_id, r.night_recv,
-                r.recv_state_cd, sc.code_nm AS recv_state_nm, r.remark,
+                COALESCE(NULLIF(u.email, ''), r.email) AS email, r.mobile_no, r.messenger_id, r.remark,
                 u.user_state_cd, us.code_nm AS user_state_nm,
                 (
                     SELECT string_agg(g.group_nm, ',' ORDER BY g.group_nm)
@@ -731,14 +714,13 @@ class AlertConfigRepository(
             INNER JOIN ax.tb_sys_user u ON u.user_id = r.user_id
             LEFT  JOIN ax.tb_sys_dept d ON d.dept_id = u.dept_id
             LEFT  JOIN ax.tb_sys_code pc ON pc.group_cd = 'SYS_POSITION'   AND pc.code = u.position_cd
-            LEFT  JOIN ax.tb_sys_code sc ON sc.group_cd = 'ALM_RECV_STATE' AND sc.code = r.recv_state_cd
             LEFT  JOIN ax.tb_sys_code us ON us.group_cd = 'SYS_USER_STATE' AND us.code = u.user_state_cd
             WHERE 1 = 1
             """.trimIndent()
         )
 
         val params = MapSqlParameterSource()
-        appendRecipientFilters(sql, params, state, filter)
+        appendRecipientFilters(sql, params, filter)
 
         sql.append("\nORDER BY d.sort_seq, u.user_nm, r.user_id\nLIMIT :limit OFFSET :offset")
         params.addValue("limit", limit).addValue("offset", offset)
@@ -754,10 +736,7 @@ class AlertConfigRepository(
                 "mail" to rs.getString("email"),
                 "hp" to rs.getString("mobile_no"),
                 "messenger" to rs.getString("messenger_id"),
-                "night" to rs.getBoolean("night_recv"),
-                "state" to rs.getString("recv_state_cd"),
-                "stateNm" to rs.getString("recv_state_nm"),
-                // 계정 상태 — 정지·승인 대기 계정은 수신 상태여도 알림을 받지 못한다(RCP-04)
+                // 계정 상태 — 정지·승인 대기 계정은 알림을 받지 못한다(RCP-04)
                 "userState" to rs.getString("user_state_cd"),
                 "userStateNm" to rs.getString("user_state_nm"),
                 // 소속 수신 그룹 — 화면이 그룹으로 좁혀 보는 기준이다 (없으면 빈 배열)
@@ -768,7 +747,7 @@ class AlertConfigRepository(
     }
 
     /** 수신자 전체 건수 */
-    fun countRecipients(state: String?, filter: RecipientFilter = RecipientFilter()): Long {
+    fun countRecipients(filter: RecipientFilter = RecipientFilter()): Long {
         val sql = StringBuilder(
             """
             SELECT count(*) FROM ax.tb_alm_recipient r
@@ -778,18 +757,14 @@ class AlertConfigRepository(
             """.trimIndent()
         )
         val params = MapSqlParameterSource()
-        appendRecipientFilters(sql, params, state, filter)
+        appendRecipientFilters(sql, params, filter)
         return jdbcTemplate.queryForObject(sql.toString(), params, Long::class.java) ?: 0L
     }
 
     /** 수신자 목록 조건 (06 RCP-05·11) — 이름·사번·부서 검색 · 소속 그룹 · 계정 상태 */
     data class RecipientFilter(val keyword: String? = null, val groupId: Int? = null, val userState: String? = null)
 
-    private fun appendRecipientFilters(sql: StringBuilder, params: MapSqlParameterSource, state: String?, f: RecipientFilter) {
-        if (!state.isNullOrBlank()) {
-            sql.append(" AND r.recv_state_cd = :state")
-            params.addValue("state", normalizeRecvState(state))
-        }
+    private fun appendRecipientFilters(sql: StringBuilder, params: MapSqlParameterSource, f: RecipientFilter) {
         com.dwje.api.common.util.SqlLikeUtils.contains(f.keyword)?.let {
             sql.append(" AND (u.user_nm ILIKE :kw ESCAPE '\\' OR r.user_id ILIKE :kw ESCAPE '\\' OR coalesce(d.dept_nm, '') ILIKE :kw ESCAPE '\\')")
             params.addValue("kw", it)
@@ -806,20 +781,21 @@ class AlertConfigRepository(
 
     /**
      * 수신자를 등록한다. (No.163)
+     *
+     * `email` 은 계정 메일의 사본(NOT NULL·'@' 검사 때문에 남겨 둔 열)이다. 읽을 때는 계정 메일이 우선한다.
      */
     fun insertRecipient(
         empNo: String,
         email: String,
         mobileNo: String?,
         messengerId: String?,
-        night: Boolean,
         actor: String
     ): Int {
         val sql = """
             INSERT INTO ax.tb_alm_recipient (
-                user_id, email, mobile_no, messenger_id, night_recv, recv_state_cd, ins_user, upd_user
+                user_id, email, mobile_no, messenger_id, ins_user, upd_user
             ) VALUES (
-                :empNo, :email, :mobileNo, :messengerId, :night, 'RECV', :actor, :actor
+                :empNo, :email, :mobileNo, :messengerId, :actor, :actor
             )
         """.trimIndent()
 
@@ -828,7 +804,6 @@ class AlertConfigRepository(
             .addValue("email", email)
             .addValue("mobileNo", mobileNo)
             .addValue("messengerId", messengerId)
-            .addValue("night", night)
             .addValue("actor", actor)
 
         return jdbcTemplate.update(sql, params)
@@ -838,21 +813,18 @@ class AlertConfigRepository(
      * 수신자를 수정한다. (No.164)
      *
      * 휴대전화·메신저는 `""` 을 보내면 지운다(06 RCP-12). null(키 없음)은 그대로 둔다. 길이는 서비스가 검사한다.
+     * 메일은 계정 메일이 기준이라 여기서 바꾸지 않는다(2026-10-03) — 계정 관리에서 바꾼다.
      */
     fun updateRecipient(
         empNo: String,
-        email: String?,
         mobileNo: String?,
         messengerId: String?,
-        night: Boolean?,
         actor: String
     ): Int {
         val sql = """
             UPDATE ax.tb_alm_recipient
-               SET email        = coalesce(:email, email),
-                   mobile_no    = CASE WHEN :hpGiven THEN nullif(:mobileNo, '') ELSE mobile_no END,
+               SET mobile_no    = CASE WHEN :hpGiven THEN nullif(:mobileNo, '') ELSE mobile_no END,
                    messenger_id = CASE WHEN :msgGiven THEN nullif(:messengerId, '') ELSE messenger_id END,
-                   night_recv   = coalesce(:night, night_recv),
                    upd_date     = now(),
                    upd_user     = :actor
              WHERE user_id = :empNo
@@ -860,50 +832,24 @@ class AlertConfigRepository(
 
         val params = MapSqlParameterSource()
             .addValue("empNo", empNo)
-            .addValue("email", email)
             .addValue("mobileNo", mobileNo)
             .addValue("messengerId", messengerId)
             .addValue("hpGiven", mobileNo != null)
             .addValue("msgGiven", messengerId != null)
-            .addValue("night", night)
             .addValue("actor", actor)
 
         return jdbcTemplate.update(sql, params)
     }
 
-    /**
-     * 수신/부재 상태를 토글한다. (No.165)
-     */
-    fun updateRecipientState(empNo: String, state: String, actor: String, reason: String? = null): Int {
-        // 비고는 사유를 보냈을 때만 바꾼다 — "" 은 지운다 (06 RCP-07)
-        val sql = """
-            UPDATE ax.tb_alm_recipient
-               SET recv_state_cd = :state,
-                   remark        = CASE WHEN :reasonGiven THEN nullif(:reason, '') ELSE remark END,
-                   upd_date      = now(),
-                   upd_user      = :actor
-             WHERE user_id = :empNo
-        """.trimIndent()
-
-        val params = MapSqlParameterSource()
-            .addValue("empNo", empNo)
-            .addValue("state", normalizeRecvState(state))
-            .addValue("reason", reason)
-            .addValue("reasonGiven", reason != null)
-            .addValue("actor", actor)
-
-        return jdbcTemplate.update(sql, params)
-    }
-
-    /** 수신자 한 명의 저장 값 — 수정 감사(바뀐 항목 이름)·상태 비교용. 응답에 싣지 않는다 */
+    /** 수신자 한 명의 저장 값 — 수정 감사(바뀐 항목 이름)용. 응답에 싣지 않는다 */
     fun findRecipientRow(empNo: String): Map<String, Any?>? =
         jdbcTemplate.query(
-            "SELECT email, mobile_no, messenger_id, night_recv, recv_state_cd, remark FROM ax.tb_alm_recipient WHERE user_id = :empNo",
+            "SELECT email, mobile_no, messenger_id, remark FROM ax.tb_alm_recipient WHERE user_id = :empNo",
             MapSqlParameterSource("empNo", empNo)
         ) { rs, _ ->
             mapOf<String, Any?>(
                 "mail" to rs.getString("email"), "hp" to rs.getString("mobile_no"), "messenger" to rs.getString("messenger_id"),
-                "night" to rs.getBoolean("night_recv"), "state" to rs.getString("recv_state_cd"), "remark" to rs.getString("remark")
+                "remark" to rs.getString("remark")
             )
         }.firstOrNull()
 
@@ -911,38 +857,6 @@ class AlertConfigRepository(
     fun existsRecipient(empNo: String): Boolean {
         val sql = "SELECT count(*) FROM ax.tb_alm_recipient WHERE user_id = :empNo"
         return (jdbcTemplate.queryForObject(sql, MapSqlParameterSource("empNo", empNo), Long::class.java) ?: 0L) > 0
-    }
-
-    /**
-     * 수신 그룹 구성원의 발송 대상 정보를 조회한다. (테스트 발송용)
-     */
-    fun findGroupRecipients(groupId: Int): List<Map<String, Any?>> {
-        val sql = """
-            SELECT r.user_id, u.user_nm, r.email, r.mobile_no, r.messenger_id, r.recv_state_cd
-            FROM ax.tb_alm_recip_group_member m
-            INNER JOIN ax.tb_alm_recipient r ON r.user_id = m.user_id
-            INNER JOIN ax.tb_sys_user      u ON u.user_id = m.user_id
-            WHERE m.group_id = :groupId
-              AND r.recv_state_cd = 'RECV'
-            ORDER BY u.user_nm
-        """.trimIndent()
-
-        return jdbcTemplate.query(sql, MapSqlParameterSource("groupId", groupId)) { rs, _ ->
-            mapOf(
-                "empNo" to rs.getString("user_id"),
-                "name" to rs.getString("user_nm"),
-                "mail" to rs.getString("email"),
-                "hp" to rs.getString("mobile_no"),
-                "messenger" to rs.getString("messenger_id")
-            )
-        }
-    }
-
-    /** 수신 상태 표기값을 코드로 정규화한다. */
-    fun normalizeRecvState(state: String): String = when (state.trim()) {
-        "수신", "RECV", "recv" -> "RECV"
-        "부재", "ABSENT", "absent" -> "ABSENT"
-        else -> state.trim().uppercase()
     }
 
     // =================================================================================
@@ -994,6 +908,13 @@ class AlertConfigRepository(
             "SELECT d.dept_nm FROM ax.tb_sys_user u JOIN ax.tb_sys_dept d ON d.dept_id = u.dept_id WHERE u.user_id = :empNo",
             MapSqlParameterSource("empNo", empNo)
         ) { rs, _ -> rs.getString("dept_nm") }.firstOrNull()
+
+    /** 계정 메일 주소 (비었거나 계정이 없으면 null) — 수신자 등록 때 수신자 행의 사본 값으로 쓴다 */
+    fun findUserEmail(empNo: String): String? =
+        jdbcTemplate.query(
+            "SELECT NULLIF(btrim(email), '') AS email FROM ax.tb_sys_user WHERE user_id = :empNo",
+            MapSqlParameterSource("empNo", empNo)
+        ) { rs, _ -> rs.getString("email") }.firstOrNull()
 
     /** 이 수신자가 멤버인 그룹 ID (사용 중지 그룹 포함) */
     fun findMemberGroupIds(empNo: String): List<Int> =
@@ -1059,7 +980,7 @@ class AlertConfigRepository(
     fun findTargetGroups(groupIds: List<Int>): List<TargetGroupRow> {
         if (groupIds.isEmpty()) return emptyList()
         val sql = """
-            SELECT g.group_id, g.group_nm, g.use_flg, g.night_recv,
+            SELECT g.group_id, g.group_nm, g.use_flg,
                    (SELECT string_agg(gc.channel_cd, ',' ORDER BY gc.channel_cd)
                       FROM ax.tb_alm_recip_group_channel gc WHERE gc.group_id = g.group_id) AS channels
               FROM ax.tb_alm_recip_group g
@@ -1070,18 +991,21 @@ class AlertConfigRepository(
                 groupId = rs.getInt("group_id"),
                 groupNm = rs.getString("group_nm"),
                 useFlg = Rs.yn(rs, "use_flg"),
-                night = rs.getBoolean("night_recv"),
                 channels = rs.getString("channels")?.split(",") ?: emptyList()
             )
         }
     }
 
-    /** 수신 대상 판정용 멤버 — 제외 사유를 내야 하므로 엔진처럼 WHERE 로 거르지 않고 다 읽는다 */
+    /**
+     * 수신 대상 판정용 멤버 — 제외 사유를 내야 하므로 엔진처럼 WHERE 로 거르지 않고 다 읽는다.
+     * 메일은 계정 메일(`u.email`)이 기준이고 수신자 행의 사본(`rc.email`)은 계정 메일이 비었을 때만 쓴다
+     * (2026-10-03, 엔진 RecipientRepository.TARGETS_SQL 과 같은 규칙).
+     */
     fun findTargetMembers(groupIds: List<Int>): List<TargetMemberRow> {
         if (groupIds.isEmpty()) return emptyList()
         val sql = """
             SELECT m.group_id, m.user_id, u.user_nm, d.dept_nm, u.user_state_cd, us.code_nm AS user_state_nm,
-                   rc.recv_state_cd, rc.email, rc.mobile_no, rc.messenger_id, rc.night_recv
+                   COALESCE(NULLIF(u.email, ''), rc.email) AS email, rc.mobile_no, rc.messenger_id
               FROM ax.tb_alm_recip_group_member m
               JOIN ax.tb_alm_recipient rc ON rc.user_id = m.user_id
               JOIN ax.tb_sys_user u       ON u.user_id  = m.user_id
@@ -1098,11 +1022,9 @@ class AlertConfigRepository(
                 deptNm = rs.getString("dept_nm"),
                 userState = rs.getString("user_state_cd"),
                 userStateNm = rs.getString("user_state_nm"),
-                recvState = rs.getString("recv_state_cd"),
                 email = rs.getString("email"),
                 mobileNo = rs.getString("mobile_no"),
-                messengerId = rs.getString("messenger_id"),
-                night = rs.getBoolean("night_recv")
+                messengerId = rs.getString("messenger_id")
             )
         }
     }

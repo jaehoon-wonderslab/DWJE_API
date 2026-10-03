@@ -163,19 +163,15 @@ data class AppProperties(
 /**
  * 알림 테스트 발송·수신 대상 판정 설정 (`app.alert.*`)
  *
- * 값은 Alert_Engine 설정(`alert.night`, 웹 주소)과 같아야 한다 — 테스트 발송(API)과 실발송(엔진)의
- * 대상이 어긋나지 않게 하기 위함이다.
+ * 값은 Alert_Engine 설정(수신 가능 계정 상태, 웹 주소)과 같아야 한다 — 테스트 발송(API)과 실발송(엔진)의
+ * 대상이 어긋나지 않게 하기 위함이다. 야간 구간(`night-from` · `night-to`)은 야간 수신을 없애며 함께 뺐다(2026-10-03).
  *
  * @param webBaseUrl            메일 본문 알림 링크의 웹 주소. 비어 있으면 링크 줄을 넣지 않는다(환경변수 AX_WEB_BASE_URL)
- * @param nightFrom             야간 시작(포함, HH:mm)
- * @param nightTo               야간 끝(제외, HH:mm). 시작보다 이르면 자정을 넘긴다
  * @param receivableUserStates  알림을 받을 수 있는 계정 상태(SYS_USER_STATE). 잠긴 계정(LOCKED)은 로그인만 막혔으므로 받는다
  *                              (2026-10-01 3단계 결정). 엔진 RCP-04(E-1)와 같은 값이어야 한다
  */
 data class AlertProperties(
     val webBaseUrl: String = "",
-    val nightFrom: String = "22:00",
-    val nightTo: String = "06:00",
     val receivableUserStates: List<String> = listOf("ACTIVE", "LOCKED"),
     /** 지표 수집 중단 판정 배수 — 최근 측정값이 max(평가 주기 × 배수, 600초) 보다 오래되면 중단. 엔진 stale-factor 와 같은 값 (05 ALC-08) */
     val staleFactor: Int = 3

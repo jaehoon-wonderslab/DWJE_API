@@ -79,7 +79,7 @@ class AccountGwP2DbTest {
     @DisplayName("ACC-11 삭제 사전 확인(막는 참조·함께 지워지는 참조·가입 경로), 막는 참조가 있으면 409 + data, 본인은 deletable=false")
     fun deleteCheck() {
         users.createUser(UserSaveRequest(empNo = "ZT-P2D", name = "삭제시험", deptId = 2, extraMenuIds = listOf("dash-ai")))
-        exec("INSERT INTO ax.tb_alm_recipient (user_id, email, recv_state_cd) VALUES ('ZT-P2D', 'zt@x.local', 'RECV')")
+        exec("INSERT INTO ax.tb_alm_recipient (user_id, email) VALUES ('ZT-P2D', 'zt@x.local')")
         val ok = users.getDeleteCheck("ZT-P2D")
         assertEquals(true, ok["deletable"]); assertEquals("ADMIN", ok["joinSrc"])
         assertEquals(mapOf("recipients" to 1L, "menuGrants" to 1L, "usage" to 0L), ok["cascade"])

@@ -26,7 +26,7 @@
 |---|---|---:|
 | `tb_alm_cond` | 조건 본문(지표·비교·임계·지속·대상·시간대·중복억제·`msg_template`·`blind_field_key`) | 0 |
 | `tb_alm_cond_channel` / `tb_alm_cond_group` / `tb_alm_cond_escalation` | 조건 ↔ 채널·수신그룹·에스컬레이션 규칙 | 0 |
-| `tb_alm_recip_group` (+`_member`, `_channel`) · `tb_alm_recipient` | 수신 그룹·멤버·연락처(`night_recv`, `recv_state_cd`) | 0 |
+| `tb_alm_recip_group` (+`_member`, `_channel`) · `tb_alm_recipient` | 수신 그룹·멤버·연락처(~~`night_recv`, `recv_state_cd`~~ — **제거됨(2026-10-03)**, V74 에서 컬럼 삭제(값은 `_bak` 보관)) | 0 |
 | `tb_alm_duty` | 당직·대리 수신 (`main_user_id` / `sub_user_id`) | 0 |
 | `tb_alm_escalation_rule` | `after_min` 경과 후 `to_group_id` 로 승격 — **제거됨(2026-10-03)**, V73 에서 표 삭제(행은 `_bak` 보관) | 3 |
 | `tb_alm_alert` | 발생한 알림 (`dedup_key`, `esc_level`, `ack_state_cd` 컬럼 보유) | 0 |
@@ -345,7 +345,7 @@ tick(60s):
 | 정상 발송 | 신규 1행 | 발송 후 `SENT`/`FAIL` | 적재 |
 | 억제 창 안 재발 | 기존 행 `hit_cnt++`, `last_hit_at` | `SUPPRESSED` 1행 | 적재 안 함 |
 | 유효 시간대 밖 | 신규 1행 | `SKIPPED` 1행 | 적재 안 함 |
-| 수신자 야간 미수신 | 신규 1행 | 그 수신자만 `SKIPPED` | 그 수신자만 제외 |
+| ~~수신자 야간 미수신~~ — 제거됨(2026-10-03, V74) | — | — | 야간 제외 없음 |
 
 - 억제 창 = `dedup.attr1` 분. `DAY_ONCE(-1)` 는 `last_alert_at::date = today` 로 판정.
 - `dedup_key = cond_id || '|' || scope_key` (기존 `ix_alm_alert_dedup` 부분 인덱스를 그대로 쓴다).
@@ -356,10 +356,10 @@ tick(60s):
 ```
 조건 ─ tb_alm_cond_group ─ 수신그룹
                             ├ tb_alm_recip_group_member ─ tb_alm_recipient
-                            │    recv_state_cd='RECV' 인 사람만 (부재는 제외)
+                            │    멤버 전원 (부재 제외는 2026-10-03 제거) · 계정 상태가 수신 가능인 사람만
                             └ 채널 = 조건 채널 ∩ 그룹 채널
                                  MAIL→email · SMS→mobile_no · MSG→messenger_id · POPUP→DB
-야간(그룹.night_recv=false & 수신자.night_recv=false) 이고 지금이 야간이면 그 사람은 SKIPPED
+(제거됨 2026-10-03) 야간(그룹.night_recv=false & 수신자.night_recv=false) 이고 지금이 야간이면 그 사람은 SKIPPED
 연락처가 비어 있으면 FAIL('연락처 없음') — 조용히 건너뛰지 않는다
 보낼 사람이 0명이면 FAIL('수신 상태인 멤버가 없음') — 등록만 하고 아무도 안 받는 상태를 화면에서 보이게
 ```
@@ -370,6 +370,13 @@ tick(60s):
 > 컬럼은 남아 있지만 지금은 항상 `false` · `null` 이다 — 당번이 다시 생기면 수신자 질의만 고치면 된다.
 > 승격 규칙(`tb_alm_escalation_rule`)은 그대로 살아 있어 §5-7 은 유효하다.
 > → 2026-10-03 승격 기능 전체 제거로 이 문장은 더 이상 맞지 않는다. §5-7 참고.
+
+> **부재 · 야간 수신 제거됨(2026-10-03).** 수신자 수신 상태(`recv_state_cd`, RECV/ABSENT), 개인 · 그룹 야간 수신
+> (`night_recv`)을 없앴다. 이제 수신 그룹의 멤버는 모두 받고(계정 상태 · 연락처만 본다), 시간에 따른 제외는
+> 그룹 · 조건의 유효 시간대(`window_cd`)뿐이다. 엔진 `alert.night` 설정과 API `app.alert.night-from/to` 도 쓰지 않는다.
+> V74 가 컬럼 3개를 지운다(값은 `ax.tb_alm_recipient_absent_night_bak` · `ax.tb_alm_recip_group_night_bak` 에 보관,
+> 되돌리기는 `rollback/V74__down.sql`). API 수신/부재 전환(`PATCH /alert-recipients/{id}/state`)도 함께 뺐다.
+> 공통코드 `ALM_RECV_STATE` 는 사용 중지(`use_flg='N'`)로 남긴다.
 
 ### 5-6. 메시지 생성과 마스킹
 
@@ -503,7 +510,7 @@ app:
 | 단계 | 범위 | 끝났을 때 확인되는 것 |
 |---|---|---|
 | **1단계** | V35 스키마 + 지표 수집(BUILTIN 3종) + 평가 + 발생. 발송은 `LOG` 모드 | 임계를 넘기면 `/alert/list` 에 알림이 실제로 쌓인다. 지속·억제·시간대 판정이 로그로 검증된다 |
-| **2단계** | 대기열 + SMTP 실발송 + 재시도 + 야간·부재·대리(당직) + 마스킹 | 메일이 실제로 도착한다. 테스트 발송이 실제 경로를 탄다 |
+| **2단계** | 대기열 + SMTP 실발송 + 재시도 + 야간·부재·대리(당직, 셋 다 이후 제거됨) + 마스킹 | 메일이 실제로 도착한다. 테스트 발송이 실제 경로를 탄다 |
 | **3단계** | 에스컬레이션 + 엔진 상태 API·화면 + POPUP 채널 + 보존/파티션 운영 | 확인 안 된 위험이 상위로 올라간다. 엔진 이상을 화면에서 안다 |
 
 1단계만으로도 **「알림 목록 화면이 비어 있다」는 현재 상태는 해소된다.** 발송을 뒤로 미루는 이유는, 판정이 틀린 채로 메일이 나가면 되돌릴 수 없기 때문이다.
@@ -513,7 +520,7 @@ app:
 ## 10. 결정이 필요한 것
 
 1. **엔진 위치** — API 내장(권장) vs `MES_migration_engine` 처럼 별도 프로세스. 운영 서버 대수·재기동 정책에 달렸다.
-2. **`CRIT` 는 유효 시간대를 무시할 것인가.** V35 에서 `tb_alm_cond.ignore_window_flg` 컬럼으로 **조건마다 정할 수 있게** 넣었다(기본 `'N'`). 남은 결정은 운영 방침 — 위험 조건을 등록할 때 이 값을 기본으로 켤 것인지다. 수신자 개인의 야간 미수신(`night_recv`)은 이 값과 무관하게 지킨다.
+2. **`CRIT` 는 유효 시간대를 무시할 것인가.** V35 에서 `tb_alm_cond.ignore_window_flg` 컬럼으로 **조건마다 정할 수 있게** 넣었다(기본 `'N'`). 남은 결정은 운영 방침 — 위험 조건을 등록할 때 이 값을 기본으로 켤 것인지다. 수신자 개인의 야간 미수신(`night_recv`)은 이 값과 무관하게 지킨다. → 2026-10-03 `ignore_window_flg`(V73)와 `night_recv`(V74) 모두 제거됨.
 3. **정상 복귀 알림(해제 통보)을 보낼 것인가.** 지금 설계는 상태만 되돌리고 통보하지 않는다.
 4. **`DAY_CLOSE` 의 「마감」 기준 시각** — 이관 엔진의 야간 배치 완료 시점인지, 고정 시각(예: 08:00)인지.
 5. **SMS·메신저 연동처** 존재 여부. 없으면 1~3단계 모두 `LOG` 구현으로 두고 채널 선택지에서 감춘다.

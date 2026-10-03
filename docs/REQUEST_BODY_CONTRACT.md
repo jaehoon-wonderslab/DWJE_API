@@ -141,11 +141,13 @@
 
 - `PATCH /api/v1/alert-conditions/{condId}/state`
 - `PATCH /api/v1/alert-recipient-groups/{groupId}/state`
-- `PATCH /api/v1/alert-recipients/{recipientId}/state`
+- ~~`PATCH /api/v1/alert-recipients/{recipientId}/state`~~ — 제거됨(2026-10-03). 수신/부재 전환 기능을 없애며 경로를 지웠다(V74 에서 `recv_state_cd` 컬럼 삭제)
 
 ### `RecipientGroupRequest`
 
 허용 키 — `name`, `channels`, `validWindow`, `night`, `deptId`, `memberEmpNos`
+
+> 사용 중지 — `night` : 야간 수신 제거(2026-10-03, V74). 옛 WEB 번들 호환으로 받기만 하고 값은 무시한다. 모든 WEB 배포 뒤 키를 지운다.
 
 - `POST /api/v1/alert-recipient-groups`
 
@@ -153,11 +155,17 @@
 
 허용 키 — `name`, `channels`, `validWindow`, `night`, `deptId`, `memberEmpNos`, `updatedAt`
 
+> 사용 중지 — `night` : 야간 수신 제거(2026-10-03, V74). 받기만 하고 값은 무시한다.
+
 - `PUT /api/v1/alert-recipient-groups/{groupId}`
 
 ### `RecipientRequest`
 
-허용 키 — `empNo`, `mail`, `hp`, `messenger`, `night`
+허용 키 — `empNo`, `mail`, `hp`, `messenger`, `night`, `state`, `reason`
+
+> 사용 중지 — `night`, `state`, `reason` : 야간 수신 · 수신/부재 제거(2026-10-03, V74). 옛 WEB 번들 호환으로 받기만 하고 값은 무시한다. 모든 WEB 배포 뒤 키를 지운다.
+
+> 사용 중지 — `mail` : 메일은 계정 메일(`tb_sys_user.email`)이 기준이다(2026-10-03). 등록(`POST`)은 선택이며 계정 메일이 비었을 때만 대체 주소로 쓰고(둘 다 없으면 400 `field = mail`), 수정(`PUT`)은 보내도 무시한다.
 
 - `POST /api/v1/alert-recipients`
 - `PUT /api/v1/alert-recipients/{recipientId}`

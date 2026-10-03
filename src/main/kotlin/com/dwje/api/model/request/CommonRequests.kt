@@ -18,7 +18,7 @@ data class ExportFormatRequest(
 )
 
 /**
- * 상태 변경 공통 요청 (사용/정지, 활성/중지, 수신/부재 등)
+ * 상태 변경 공통 요청 (사용/정지, 활성/중지 등)
  *
  * @param state  상태 값 (문자열 표기)
  * @param on     불리언 표기 상태 값

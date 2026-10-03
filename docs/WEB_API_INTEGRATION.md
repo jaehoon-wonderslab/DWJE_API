@@ -136,6 +136,40 @@ GET /api/v1/common/data-range?plantCd=PL01
 
 기존 응답 스키마는 바꾸지 않았다. 위 4건 외에 재작업할 부분은 없다.
 
+### 5-0. 알림 수신자 「부재」 · 「야간 수신」 제거 (2026-10-03, V74)
+
+수신 그룹에 든 사람은 모두 받는다. 받는 사람을 가리는 기준은 계정 상태(사용 · 잠김만 받음)와 채널 연락처뿐이고,
+시간에 따른 제외는 그룹 · 조건의 유효 시간대만 남았다. 배포 순서는 새 엔진 · API → WEB → V74 이다.
+
+| 구분 | 내용 |
+|---|---|
+| 제거됨 | `PATCH /api/v1/alert-recipients/{recipientId}/state` — 수신/부재 전환 |
+| 제거됨(쿼리) | `GET /alert-recipients` 의 `state` — 보내도 무시 |
+| 제거됨(응답) | `GET /alert-recipients` 행의 `night` · `state` · `stateNm` (`remark` 는 일반 비고로 남음) |
+| 제거됨(응답) | `GET /alert-recipient-groups` · `GET /alert-recipient-groups/{id}` 의 `night`, 그룹 `members[]` 의 `state` |
+| 제거됨(응답) | `GET /alert-recipients/summary` 의 `recipientCnt.receiving` · `recipientCnt.absent` · `nightCnt` · `nightPersonalCnt` · `nightWindow` |
+| 수정(응답) | `GET /alert-recipients/summary` — `recipientCnt` 는 객체가 아니라 수(등록된 수신자 전체). `receivableCnt`(그중 계정 상태상 받는 수) 추가, `inactiveAccountCnt`(받지 못하는 수) 유지 |
+| 제거됨(사유) | 테스트 발송(조건 · 그룹) `skipped[].reason` 의 `ABSENT` · `NIGHT_OFF` — 사람 단위 사유는 `ACCOUNT_INACTIVE` · `NO_CONTACT` 만 |
+| 사용 중지(요청) | `night`(그룹 등록 · 수정, 수신자 등록 · 수정), `state` · `reason`(수신자 등록 · 수정) — 받고 버린다 |
+| 수정(의미) | 수신 가능 인원(`receivingCnt` · `receivableCnt` · `receivableCntAfter`)은 부재를 빼지 않는다 — 계정 상태 · 연락처만 본다 |
+
+### 5-0-1. 알림 수신자 메일 — 계정 메일 단일 기준 (2026-10-03)
+
+수신자 행(`ax.tb_alm_recipient.email`)의 메일은 등록 때 계정에서 떠 둔 사본이라, 계정 관리에서 메일을 바꿔도
+수신자 화면과 알림 발송이 옛 주소를 썼다. 이제 메일은 계정 메일(`ax.tb_sys_user.email`)이 기준이다.
+읽는 곳은 모두 `COALESCE(NULLIF(u.email, ''), r.email)` 이며, 수신자 행의 사본은 계정 메일이 비었을 때만 쓴다.
+알림 엔진의 발송 대상 조회(`RecipientRepository.TARGETS_SQL`)도 같은 규칙이다. DB 변경은 없다.
+
+| 구분 | 내용 |
+|---|---|
+| 수정(응답 의미) | `GET /alert-recipients`(목록 · 엑셀) 행의 `mail` — 키는 그대로, 값이 계정 메일(비었으면 수신자 사본) |
+| 수정(의미) | 테스트 발송(조건 · 그룹) 대기열 주소, 수신 가능 인원(`receivingCnt` · `receivableCnt` · `receivableCntAfter`)의 연락처 판정, 수신자 영향 조회 — 모두 계정 메일 기준 |
+| 사용 중지(요청) | `POST /alert-recipients` 의 `mail` — 선택. 계정 메일이 있으면 무시하고 계정 메일로 사본을 채운다. 계정 메일이 비었을 때만 형식 검사 뒤 대체 주소로 쓰며, 둘 다 없으면 400(`field = mail`) |
+| 사용 중지(요청) | `PUT /alert-recipients/{recipientId}` 의 `mail` — 보내도 무시한다(형식 오류도 400 이 아님). 메일은 계정 관리에서 바꾼다 |
+| 변경 없음 | `hp` · `messenger` 는 지금처럼 수신자 행 값을 쓰고 수정할 수 있다 |
+
+WEB 은 수신자 등록 · 수정 화면에서 메일 입력을 없애고, 목록의 `mail` 을 읽기 전용으로 보여 주면 된다.
+
 ### 5-1. `defect-trend` 의 `topN` — 유형 계열 범위
 
 `유형별 불량 수량 추이` 는 상위 2종만 계열로 내려, 같은 화면의 `defect-composition`(전 유형)과

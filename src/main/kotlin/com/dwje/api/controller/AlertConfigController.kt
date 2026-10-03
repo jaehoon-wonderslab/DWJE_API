@@ -126,7 +126,7 @@ class AlertRecipientController(
 ) {
 
     /** 수신자 관리 요약 (No.157) */
-    @Operation(summary = "수신자 관리 요약", description = "그룹 수, 수신·부재 인원, 계정 상태상 받을 수 없는 인원, 야간 수신 인원·야간 구간, 대상 그룹 없는 승격 단계 수를 반환한다.")
+    @Operation(summary = "수신자 관리 요약", description = "사용 중 그룹 수, 수신자 수, 그중 계정 상태상 받을 수 있는 인원·받을 수 없는 인원을 반환한다.")
     @GetMapping("/alert-recipients/summary")
     fun recipientSummary(): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(alertConfigService.getRecipientSummary())
@@ -182,17 +182,16 @@ class AlertRecipientController(
     }
 
     /** 수신자 목록 (No.162) */
-    @Operation(summary = "수신자 목록", description = "수신자 연락처와 수신 상태를 조회한다.")
+    @Operation(summary = "수신자 목록", description = "수신자 연락처와 계정 상태를 조회한다.")
     @GetMapping("/alert-recipients")
     fun recipients(
-        @Parameter(description = "수신 상태 — RECV|ABSENT(수신|부재)") @RequestParam(required = false) state: String?,
         @Parameter(description = "이름·사번·부서 검색어(50자 이내)") @RequestParam(required = false) keyword: String?,
         @Parameter(description = "이 수신 그룹의 멤버만") @RequestParam(required = false) groupId: Int?,
         @Parameter(description = "계정 상태 — ACTIVE|SUSPENDED|PENDING|LOCKED") @RequestParam(required = false) userState: String?,
         @RequestParam(required = false) page: Int?,
         @RequestParam(required = false) size: Int?
     ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta, masked) = alertConfigService.getRecipients(state, page, size, keyword, groupId, userState)
+        val (rows, meta, masked) = alertConfigService.getRecipients(page, size, keyword, groupId, userState)
         return ApiResponse.page(mapOf("items" to rows), meta, masked)
     }
 
@@ -223,20 +222,8 @@ class AlertRecipientController(
     ): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(alertConfigService.updateRecipient(recipientId, request), "수신자가 수정되었습니다.")
 
-    /** 수신/부재 토글 (No.165) */
-    @Operation(summary = "수신/부재 토글", description = "수신자의 수신 상태를 전환한다.")
-    @PatchMapping("/alert-recipients/{recipientId}/state")
-    fun changeRecipientState(
-        @PathVariable recipientId: String,
-        @RequestBody(required = false) request: StateChangeRequest?
-    ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(
-            alertConfigService.changeRecipientState(recipientId, request?.state, request?.reason),
-            "수신 상태가 변경되었습니다."
-        )
-
     /** 수신자를 빼면 생기는 영향 (06 RCP-08) */
-    @Operation(summary = "수신자 삭제 영향", description = "이 수신자를 빼면 그룹별 남는 수신 가능 인원, 받는 사람이 없어지는 그룹, 그 그룹을 쓰는 발송 조건·승격 단계.")
+    @Operation(summary = "수신자 삭제 영향", description = "이 수신자를 빼면 그룹별 남는 수신 가능 인원, 받는 사람이 없어지는 그룹, 그 그룹을 쓰는 발송 조건.")
     @GetMapping("/alert-recipients/{recipientId}/impact")
     fun recipientImpact(@PathVariable recipientId: String): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(alertConfigService.getRecipientImpact(recipientId))

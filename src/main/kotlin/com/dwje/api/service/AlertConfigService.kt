@@ -104,10 +104,10 @@ class AlertConfigService(
             val gs = condGroups[condId].orEmpty()
             @Suppress("UNCHECKED_CAST")
             val reach = targetResolver.evaluate(gs.mapNotNull { targetGroups[it["groupId"] as Int] }, members,
-                row["channels"] as List<String>, java.time.LocalTime.NOON, ignoreNight = true)
+                row["channels"] as List<String>)
             val out = (row - "realAlertCnt").toMutableMap()
             out["groups"] = gs.map { it + counts.getValue(it["groupId"] as Int) }
-            // 조건 단위 받는 사람 수(중복 제외, 야간 무관) · 삭제 가능(통합관리자 · 운영 알림 0건) (05 ALC-08)
+            // 조건 단위 받는 사람 수(중복 제외) · 삭제 가능(통합관리자 · 운영 알림 0건) (05 ALC-08)
             out["receivingCnt"] = reach.targets.map { it.userId }.distinct().size
             out["deletable"] = principal.superAdmin && (row["realAlertCnt"] as Long) == 0L
             // 운영 알림 수(테스트 제외) — 「운영 알림 N건이 있어 삭제할 수 없습니다」 툴팁 (05 ALC-13)
@@ -380,7 +380,7 @@ class AlertConfigService(
      * 발송 조건 테스트 (No.156, 05 ALC-03)
      *
      * 실제 임계 초과와 무관하게 조건에 연결된 수신 그룹·채널로 테스트 알림을 발송 대기열에 넣는다.
-     * 중지된 조건도 시험할 수 있다. 유효 시간대는 보지 않고 개인 야간 미수신은 지킨다.
+     * 중지된 조건도 시험할 수 있다. 유효 시간대는 보지 않는다.
      */
     @Transactional
     fun testSendCondition(condId: Int): Pair<Map<String, Any?>, List<String>> {
@@ -410,15 +410,14 @@ class AlertConfigService(
     // =================================================================================
 
     /**
-     * 수신자 관리 요약 (No.157) — 수신 불가 계정 수(inactiveAccountCnt, RCP-04),
-     * 야간에 실제로 받는 사람 수(nightCnt)와 야간 구간(nightWindow, RCP-10)
+     * 수신자 관리 요약 (No.157) — 사용 중 그룹 수, 수신자 수(recipientCnt), 그중 받을 수 있는 수(receivableCnt),
+     * 계정 상태상 받을 수 없는 수(inactiveAccountCnt, RCP-04).
+     * 수신/부재 인원·야간 수신 인원·야간 구간은 2026-10-03 에 없앴다(V74).
      */
     @Transactional(readOnly = true)
     fun getRecipientSummary(): Map<String, Any?> {
         authorizationService.requireMenu(MenuId.SYS_RECIP)
-        return alertConfigRepository.findRecipientSummary(targetResolver.receivableUserStates) +
-            // 엔진 alert.night 와 같은 값이어야 한다(06 Q-02)
-            ("nightWindow" to mapOf("from" to appProperties.alert.nightFrom, "to" to appProperties.alert.nightTo))
+        return alertConfigRepository.findRecipientSummary(targetResolver.receivableUserStates)
     }
 
     /**
@@ -496,7 +495,7 @@ class AlertConfigService(
         request.deptId?.let { requireDept(it) }
         val empNos = requireRecipientEmpNos(request.memberEmpNos)
 
-        val groupId = alertConfigRepository.insertRecipientGroup(name, validWindow, request.night, request.deptId, principal.userId)
+        val groupId = alertConfigRepository.insertRecipientGroup(name, validWindow, request.deptId, principal.userId)
         alertConfigRepository.replaceGroupChannels(groupId, channels)
         alertConfigRepository.replaceGroupMembers(groupId, empNos, principal.userId)
 
@@ -510,7 +509,7 @@ class AlertConfigService(
     /**
      * 수신 그룹 수정 (No.160, 06 RCP-02)
      *
-     * 보낸 키만 바꾼다. 예전에는 DTO 기본값으로 담당 부서·시간대·야간 수신을 덮어 썼고,
+     * 보낸 키만 바꾼다. 예전에는 DTO 기본값으로 담당 부서·시간대를 덮어 썼고,
      * 멤버를 모두 빼는 저장(`[]`)은 조용히 무시했다.
      */
     @Transactional
@@ -528,7 +527,6 @@ class AlertConfigService(
 
         val name = request.name?.let { requireGroupName(it, groupId) } ?: cur["name"] as String
         val validWindow = request.validWindow?.let { requireCode("ALM_WINDOW", it, "validWindow", "유효 시간대") } ?: cur["validWindow"] as String
-        val night = request.night ?: cur["night"] as Boolean
         val deptId = when (val d = request.deptId) {
             null -> cur["deptId"] as Int?
             else -> d.orElse(null)?.also { requireDept(it) }
@@ -536,7 +534,7 @@ class AlertConfigService(
         val channels = request.channels?.let { requireGroupChannels(it) }
         val empNos = request.memberEmpNos?.let { requireRecipientEmpNos(it) }
 
-        alertConfigRepository.updateRecipientGroup(groupId, name, validWindow, night, deptId, principal.userId)
+        alertConfigRepository.updateRecipientGroup(groupId, name, validWindow, deptId, principal.userId)
         channels?.let { alertConfigRepository.replaceGroupChannels(groupId, it) }
         var added = emptyList<String>()
         var removed = emptyList<String>()
@@ -551,7 +549,6 @@ class AlertConfigService(
         val changes = mutableListOf<String>()
         if (name != cur["name"]) changes += "이름 ${cur["name"]} → $name"
         if (validWindow != cur["validWindow"]) changes += "시간대 ${cur["validWindow"]} → $validWindow"
-        if (night != cur["night"]) changes += "야간 수신 ${cur["night"]} → $night"
         if (deptId != cur["deptId"]) changes += "담당 부서 ${cur["deptId"] ?: "-"} → ${deptId ?: "-"}"
         @Suppress("UNCHECKED_CAST")
         channels?.let { if (it.sorted() != (cur["channels"] as List<String>).sorted()) changes += "채널 ${cur["channels"]} → $it" }
@@ -634,22 +631,19 @@ class AlertConfigService(
      */
     @Transactional(readOnly = true)
     fun getRecipients(
-        state: String?, page: Int?, size: Int?, keyword: String? = null, groupId: Int? = null, userState: String? = null
+        page: Int?, size: Int?, keyword: String? = null, groupId: Int? = null, userState: String? = null
     ): Triple<List<Map<String, Any?>>, PageMeta, List<String>> {
         authorizationService.requireMenu(MenuId.SYS_RECIP)
         val kw = keyword?.trim()?.ifEmpty { null }?.also {
             if (it.length > 50) throw InvalidParameterException("검색어는 50자까지 입력할 수 있습니다.", "keyword")
-        }
-        val recv = state?.trim()?.ifEmpty { null }?.let {
-            requireCode("ALM_RECV_STATE", alertConfigRepository.normalizeRecvState(it), "state", "수신 상태")
         }
         val us = userState?.trim()?.ifEmpty { null }?.let { requireCode("SYS_USER_STATE", it, "userState", "계정 상태") }
         val filter = AlertConfigRepository.RecipientFilter(kw, groupId, us)
         val paging = PageRequestParam.ofAllowAll(page, size)
         val mask = authorizationService.masking()
 
-        val total = alertConfigRepository.countRecipients(recv, filter)
-        val rows = alertConfigRepository.findRecipients(recv, paging.limitOrNull ?: RECIPIENT_ALL_MAX, paging.offset, filter).map {
+        val total = alertConfigRepository.countRecipients(filter)
+        val rows = alertConfigRepository.findRecipients(paging.limitOrNull ?: RECIPIENT_ALL_MAX, paging.offset, filter).map {
             it.toMutableMap().also { row -> mask.applyTo(row, CONTACT_FIELDS) }
         }
         val meta = if (paging.isAll) PageMeta.capped(total, RECIPIENT_ALL_MAX, rows.size) else PageMeta.of(paging.page, paging.size, total)
@@ -673,7 +667,12 @@ class AlertConfigService(
         return mapOf("items" to items, "meta" to mapOf("page" to 1, "size" to limit, "total" to total)) to mask.maskedKeys()
     }
 
-    /** 수신자 등록 (No.163) — 연락처를 다루므로 worker 데이터 권한이 필요하다(RCP-01) */
+    /**
+     * 수신자 등록 (No.163) — 연락처를 다루므로 worker 데이터 권한이 필요하다(RCP-01).
+     *
+     * 메일은 계정 메일이 기준이다(2026-10-03). `mail` 은 선택이며 계정 메일이 있으면 무시한다.
+     * 계정 메일이 비었을 때만 보낸 `mail` 을 수신자 행에 대체 주소로 둔다. 둘 다 없으면 400.
+     */
     @Transactional
     fun createRecipient(request: RecipientRequest): Map<String, Any?> {
         val principal = authorizationService.requireWrite(MenuId.SYS_RECIP)
@@ -681,8 +680,6 @@ class AlertConfigService(
 
         val empNo = request.empNo?.trim()?.ifEmpty { null }
             ?: throw InvalidParameterException("사번을 입력해 주세요.", "empNo")
-        val mail = request.mail?.trim()?.ifEmpty { null }
-            ?: throw InvalidParameterException("메일 주소를 입력해 주세요.", "mail")
 
         if (!systemUserRepository.existsUser(empNo)) {
             throw ResourceNotFoundException("계정을 찾을 수 없습니다. [$empNo]")
@@ -694,11 +691,15 @@ class AlertConfigService(
         if (alertConfigRepository.existsRecipient(empNo)) {
             throw DuplicatedValueException("이미 등록된 수신자입니다. [$empNo]", "empNo")
         }
-        requireMail(mail)
+        // 계정 메일 우선 — 수신자 행의 email 은 NOT NULL 이라 사본으로 채운다. 계정 메일이 없을 때만 요청 값을 쓴다
+        @Suppress("DEPRECATION")
+        val mail = alertConfigRepository.findUserEmail(empNo)
+            ?: request.mail?.trim()?.ifEmpty { null }?.let { requireMail(it) }
+            ?: throw InvalidParameterException("계정에 메일 주소가 없습니다. 계정 관리에서 메일 주소를 먼저 등록해 주세요.", "mail")
         val hp = request.hp?.trim()?.ifEmpty { null }?.let { requireHp(it) }
         val messenger = request.messenger?.trim()?.ifEmpty { null }?.let { requireMessenger(it) }
 
-        alertConfigRepository.insertRecipient(empNo, mail, hp, messenger, request.night ?: false, principal.userId)
+        alertConfigRepository.insertRecipient(empNo, mail, hp, messenger, principal.userId)
 
         auditLogService.record(
             logType = AuditType.CONFIG_CHANGE, menuId = MenuId.SYS_RECIP, targetDesc = "수신자 등록 [$empNo]",
@@ -709,7 +710,8 @@ class AlertConfigService(
 
     /**
      * 수신자 수정 (No.164) — 연락처를 다루므로 worker 데이터 권한이 필요하다(RCP-01).
-     * 키 없음 = 그대로, 휴대전화·메신저 `""` = 지우기, 메일 `""` = 400(필수) (06 RCP-12).
+     * 키 없음 = 그대로, 휴대전화·메신저 `""` = 지우기 (06 RCP-12).
+     * 메일은 계정 메일이 기준이라 `mail` 은 보내도 무시한다(2026-10-03) — 계정 관리에서 바꾼다.
      */
     @Transactional
     fun updateRecipient(recipientId: String, request: RecipientRequest): Map<String, Any?> {
@@ -721,21 +723,15 @@ class AlertConfigService(
         request.empNo?.trim()?.ifEmpty { null }?.let {
             if (it != recipientId) throw InvalidParameterException("경로의 사번과 본문의 사번이 다릅니다. [$it]", "empNo")
         }
-        val mail = request.mail?.trim()?.let {
-            if (it.isEmpty()) throw InvalidParameterException("메일 주소를 입력해 주세요.", "mail")
-            requireMail(it)
-        }
         val hp = request.hp?.trim()?.let { if (it.isEmpty()) "" else requireHp(it) }
         val messenger = request.messenger?.trim()?.let { if (it.isEmpty()) "" else requireMessenger(it) }
 
-        alertConfigRepository.updateRecipient(recipientId, mail, hp, messenger, request.night, principal.userId)
+        alertConfigRepository.updateRecipient(recipientId, hp, messenger, principal.userId)
 
         // 바뀐 항목 이름만 — 값은 남기지 않는다 (06 RCP-13)
         val changed = listOfNotNull(
-            "메일".takeIf { mail != null && mail != before["mail"] },
             "휴대전화".takeIf { hp != null && hp.ifEmpty { null } != before["hp"] },
-            "메신저".takeIf { messenger != null && messenger.ifEmpty { null } != before["messenger"] },
-            "야간 수신".takeIf { request.night != null && request.night != before["night"] }
+            "메신저".takeIf { messenger != null && messenger.ifEmpty { null } != before["messenger"] }
         )
         if (changed.isNotEmpty()) {
             auditLogService.record(
@@ -744,31 +740,6 @@ class AlertConfigService(
             )
         }
         return mapOf("success" to true)
-    }
-
-    /**
-     * 수신/부재 전환 (No.165, 06 RCP-07) — 상태 필수. 사유(reason)를 보내면 비고에 남긴다(`""` 은 지움).
-     */
-    @Transactional
-    fun changeRecipientState(recipientId: String, state: String?, reason: String? = null): Map<String, Any?> {
-        val principal = authorizationService.requireWrite(MenuId.SYS_RECIP)
-        val raw = state?.trim()?.ifEmpty { null }
-            ?: throw InvalidParameterException("바꿀 수신 상태(RECV·ABSENT)를 보내 주십시오.", "state")
-        val next = requireCode("ALM_RECV_STATE", alertConfigRepository.normalizeRecvState(raw), "state", "수신 상태")
-        val cleanReason = reason?.trim()
-        if (cleanReason != null && cleanReason.length > 300) {
-            throw InvalidParameterException("비고는 300자까지 입력할 수 있습니다.", "reason")
-        }
-        val before = alertConfigRepository.findRecipientRow(recipientId)
-            ?: throw ResourceNotFoundException("수신자를 찾을 수 없습니다. [$recipientId]")
-        if (before["state"] == next && cleanReason == null) return mapOf("success" to true, "state" to next, "changed" to false)
-
-        alertConfigRepository.updateRecipientState(recipientId, next, principal.userId, cleanReason)
-        auditLogService.record(
-            logType = AuditType.CONFIG_CHANGE, menuId = MenuId.SYS_RECIP, targetDesc = "수신자 상태 변경 [$recipientId]",
-            remark = "${before["state"]} → $next, 사유 ${if (cleanReason.isNullOrEmpty()) "없음" else "있음"}"
-        )
-        return mapOf("success" to true, "state" to next, "changed" to true)
     }
 
     /**
@@ -924,7 +895,6 @@ class AlertConfigService(
         "empNo" to m.userId,
         "name" to mask.on(DataField.WORKER) { m.userNm },
         "dept" to m.deptNm,
-        "state" to m.recvState,
         "userState" to m.userState
     )
 

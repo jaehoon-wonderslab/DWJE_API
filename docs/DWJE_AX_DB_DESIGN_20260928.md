@@ -635,7 +635,7 @@ MES 원본에서 복제한 기본 정보와 생산·불량·재고 기록을 저
 | `eval_cnt` | `integer` | N | N | 판정한 (조건 × 대상) 수 |
 | `raise_cnt` | `integer` | N | N | 새로 만든 알림 수 (건). 억제 창에 묶인 재발은 suppress_cnt 로 집계 |
 | `suppress_cnt` | `integer` | N | N | 중복 억제로 발송하지 않은 수 |
-| `skip_cnt` | `integer` | N | N | 유효 시간대·야간 미수신으로 건너뛴 수 |
+| `skip_cnt` | `integer` | N | N | 유효 시간대로 건너뛴 수 (야간 미수신은 2026-10-03 V74 에서 없앰) |
 | `queued_cnt` | `integer` | N | N | 발송 대기열에 넣은 수 (건). 실제로 나간 수는 sent_cnt 참조 |
 | `sent_cnt` | `integer` | N | N | 채널로 실제 내보낸 수 (건) |
 | `fail_cnt` | `integer` | N | N | 발송 실패·연락처 없음·수신자 없음으로 실패 처리한 수 (건) |
@@ -654,7 +654,7 @@ MES 원본에서 복제한 기본 정보와 생산·불량·재고 기록을 저
 | `group_id` | `integer` | N | Y | 수신 그룹 식별자 (자동 채번) |
 | `group_nm` | `character varying(50)` | N | N | 그룹 이름. 발송 조건은 이 이름만 참조하며 중복될 수 없음 |
 | `window_cd` | `character varying(30)` | N | N | 수신 시간대. 공통코드 그룹 = ALM_WINDOW (ALWAYS=24시간 상시, D0820=08:00~20:00, D0618=06:00~18:00, WORKDAY=주간 근무일만, ONCE=지정 시각 1회) |
-| `night_recv` | `boolean` | N | N | true 면 그룹 전체가 야간에도 수신. 멤버 개인 설정이 꺼져 있어도 발송 |
+| ~~`night_recv`~~ | `boolean` | N | N | **제거됨(2026-10-03, V74).** 야간 수신 기능을 없애며 컬럼 삭제 — 값은 `ax.tb_alm_recip_group_night_bak` 에 보관, 되돌리기는 `rollback/V74__down.sql`. (옛 주석: true 면 그룹 전체가 야간에도 수신. 멤버 개인 설정이 꺼져 있어도 발송) |
 | `dept_id` | `integer` | Y | N | 대응 부서 (그룹이 부서 단위인 경우). "현장 반장" 처럼 부서와 무관한 그룹은 NULL |
 | `use_flg` | `common.d_yn` | N | N | 'Y' 면 발송 대상으로 전개. 'N' 이면 멤버가 있어도 아무도 받지 않음 |
 | `ins_date` | `timestamp with time zone` | N | N | 등록일시 |
@@ -692,9 +692,9 @@ MES 원본에서 복제한 기본 정보와 생산·불량·재고 기록을 저
 | `email` | `character varying(200)` | N | N | 메일 주소. MAIL 채널의 수신 주소이며 '@' 가 없으면 등록되지 않음 |
 | `mobile_no` | `character varying(20)` | Y | N | 휴대폰 번호 — 데이터 항목 worker(작업자 정보) 권한이 있는 계정에게만 표시 |
 | `messenger_id` | `character varying(50)` | Y | N | 메신저 계정. MSG 채널의 수신 주소로 쓰며 비면 그 건은 실패로 남음 |
-| `night_recv` | `boolean` | N | N | true 면 이 수신자는 야간에도 수신. false 면 야간 건을 SKIPPED 로 남기고 보내지 않음 |
-| `recv_state_cd` | `character varying(30)` | N | N | 수신 상태. 공통코드 그룹 = ALM_RECV_STATE (RECV=수신, ABSENT=부재). 부재면 당번·대리 규칙에 따라 대리 수신자에게 발송 |
-| `remark` | `character varying(300)` | Y | N | 비고. 알림 수신자 관리 목록이 읽지만 지금 저장하는 화면 기능은 없음 |
+| ~~`night_recv`~~ | `boolean` | N | N | **제거됨(2026-10-03, V74).** 개인 야간 수신 — 값은 `ax.tb_alm_recipient_absent_night_bak` 에 보관. (옛 주석: true 면 이 수신자는 야간에도 수신. false 면 야간 건을 SKIPPED 로 남기고 보내지 않음) |
+| ~~`recv_state_cd`~~ | `character varying(30)` | N | N | **제거됨(2026-10-03, V74).** 수신/부재 — 값은 `ax.tb_alm_recipient_absent_night_bak` 에 보관, 공통코드 그룹 ALM_RECV_STATE 는 사용 중지(`use_flg='N'`)·`tb_sys_code_ref` 행 삭제. 이제 그룹 멤버는 모두 받음(계정 상태만 봄). (옛 주석: 수신 상태. 공통코드 그룹 = ALM_RECV_STATE (RECV=수신, ABSENT=부재)) |
+| `remark` | `character varying(300)` | Y | N | 비고(300자 이내). 수신자 표 「비고」 열에 표시. 부재 사유 용도는 부재 기능과 함께 없앰(2026-10-03, V74) |
 | `ins_date` | `timestamp with time zone` | N | N | 등록일시 |
 | `ins_user` | `common.d_user_id` | Y | N | 등록자 (사번) |
 | `upd_date` | `timestamp with time zone` | N | N | 최종 수정일시 |

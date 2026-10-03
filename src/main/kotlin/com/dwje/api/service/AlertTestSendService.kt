@@ -7,7 +7,6 @@ import com.dwje.api.common.util.MaskingSupport
 import com.dwje.api.config.AppProperties
 import com.dwje.api.repository.AlertRepository
 import org.springframework.stereotype.Service
-import java.time.LocalTime
 
 /**
  * 알림 테스트 발송 공용 (05 ALC-03 · 06 RCP-03)
@@ -42,12 +41,12 @@ class AlertTestSendService(
     )
 
     /** @return 응답 데이터와 마스킹된 항목 키 */
-    fun send(subject: TestSubject, mask: MaskingSupport, now: LocalTime = LocalTime.now()): Pair<Map<String, Any?>, List<String>> {
+    fun send(subject: TestSubject, mask: MaskingSupport): Pair<Map<String, Any?>, List<String>> {
         if (alertRepository.lockAndCheckRecentTest(subject.dedupKey)) {
             throw ConflictingValueException("방금 테스트했습니다. 1분 뒤 다시 시도해 주십시오.")
         }
 
-        val result = targetResolver.resolve(subject.groupIds, subject.channels, now)
+        val result = targetResolver.resolve(subject.groupIds, subject.channels)
 
         var alertId: Long? = null
         var queuedCnt = 0

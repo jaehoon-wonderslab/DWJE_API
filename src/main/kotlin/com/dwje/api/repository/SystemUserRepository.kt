@@ -201,7 +201,9 @@ class SystemUserRepository(
                 "remark" to rs.getString("remark"),
                 "pwdChangeRequired" to (rs.getString("pwd_change_req_yn") == "Y"),
                 "lockedAt" to Rs.dateTime(rs, "locked_at"),
-                // 원본 이메일은 응답에 넣지 않는다 — 잠금 해제 메일이 갈 주소를 가린 값만
+                // 이메일 — 계정 관리 목록 「이메일」 열(2026-10-03). 이 행은 계정 관리(sys-user) 권한 API 에서만 나간다.
+                // 가린 값(emailMasked)은 잠금 해제 · 가입 신청 안내가 그대로 쓴다
+                "email" to rs.getString("email")?.takeIf { it.isNotBlank() },
                 "emailMasked" to rs.getString("email")?.takeIf { it.isNotBlank() }?.let { EmailVerificationService.maskEmailOf(it) },
                 // 정지 사유 — RETIRED(그룹웨어 퇴직) · REJECTED(가입 반려) · ADMIN(관리자 정지). 정지가 아니면 null
                 "stateReason" to rs.getString("state_reason"),

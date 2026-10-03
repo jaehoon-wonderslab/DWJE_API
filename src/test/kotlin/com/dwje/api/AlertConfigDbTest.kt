@@ -202,7 +202,7 @@ class AlertConfigDbTest {
     }
 
     @Test
-    @DisplayName("RCP-03 그룹 테스트 — 부재·정지 제외, 대기열 경로, 계정 정지는 ACCOUNT_INACTIVE")
+    @DisplayName("RCP-03 그룹 테스트 — 정지 제외, 대기열 경로, 계정 정지는 ACCOUNT_INACTIVE, 부재·야간 사유 없음(V74)")
     fun groupTestSend() {
         jdbc.update("UPDATE ax.tb_sys_user SET user_state_cd = 'SUSPENDED' WHERE user_id = '10004'", MapSqlParameterSource())
         val (data, _) = service.testSendGroup(11)
@@ -210,6 +210,7 @@ class AlertConfigDbTest {
         @Suppress("UNCHECKED_CAST") val skipped = data["skipped"] as List<Map<String, Any?>>
         assertTrue(recipients.none { it["empNo"] == "10004" })
         assertTrue(skipped.any { it["empNo"] == "10004" && it["reason"] == "ACCOUNT_INACTIVE" })
+        assertTrue(skipped.none { it["reason"] == "ABSENT" || it["reason"] == "NIGHT_OFF" })
         assertEquals(recipients.size, data["queuedCnt"])
         val alertId = (data["alertId"] as Number).toLong()
         assertEquals("[테스트] 수신 그룹 발송 확인 — 엔진 가동", str("SELECT title FROM ax.tb_alm_alert WHERE alert_id = $alertId"))
@@ -229,19 +230,19 @@ class AlertConfigDbTest {
         val noWorker = UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, false,
             menuPerms = setOf(MenuId.SYS_RECIP))
         UserContext.set(noWorker)
-        val (rows, _, masked) = service.getRecipients(null, 1, 50)
+        val (rows, _, masked) = service.getRecipients(1, 50)
         assertEquals(listOf("worker"), masked)
         assertTrue(rows.all { it["mail"] == null && it["name"] == null && it["empNo"] != null && "userState" in it })
         val (groups, gMasked) = service.getRecipientGroups()
         assertEquals(listOf("worker"), gMasked)
         @Suppress("UNCHECKED_CAST")
         val members = (groups["items"] as List<Map<String, Any?>>).flatMap { it["members"] as List<Map<String, Any?>> }
-        assertTrue(members.all { it["name"] == null })
+        assertTrue(members.all { it["name"] == null && "state" !in it })
         val denied = assertThrows(BusinessException::class.java) { service.updateRecipient("10000", RecipientRequest(hp = "000")) }
         assertEquals("E-AUTH-003", denied.errorCode.code)
 
         UserContext.set(itTeam)
-        val (rows2, _, masked2) = service.getRecipients(null, 1, 50)
+        val (rows2, _, masked2) = service.getRecipients(1, 50)
         assertTrue(masked2.isEmpty())
         assertTrue(rows2.all { it["mail"] != null })
     }
@@ -250,6 +251,7 @@ class AlertConfigDbTest {
     @DisplayName("RCP-02 그룹 수정 — 이름만 보내면 부서·채널 유지, memberEmpNos [] 는 전원 제외, deptId null 은 비우기, updatedAt 불일치 409")
     fun groupUpdateKeeps() {
         val before = service.getRecipientGroup(11).first
+        assertTrue("night" !in before, "야간 수신 제거(V74)")
         service.updateRecipientGroup(11, RecipientGroupUpdateRequest(name = "ZT 엔진 가동", updatedAt = before["updatedAt"] as String))
         val after = service.getRecipientGroup(11).first
         assertEquals(before["deptId"], after["deptId"])
@@ -264,7 +266,7 @@ class AlertConfigDbTest {
             service.updateRecipientGroup(11, RecipientGroupUpdateRequest(memberEmpNos = listOf("NO-SUCH")))
         }.field)
         assertThrows(ConflictingValueException::class.java) {
-            service.updateRecipientGroup(11, RecipientGroupUpdateRequest(night = true, updatedAt = "2001-01-01 00:00:00"))
+            service.updateRecipientGroup(11, RecipientGroupUpdateRequest(validWindow = "ALWAYS", updatedAt = "2001-01-01 00:00:00"))
         }
     }
 

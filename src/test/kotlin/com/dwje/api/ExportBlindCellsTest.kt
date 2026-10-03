@@ -20,7 +20,6 @@ import org.junit.jupiter.api.Test
 import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.mock
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
-import java.time.LocalTime
 
 /** 3단계 메인 결정 — 서버 생성 파일의 가린 칸은 「비공개」(R-10), 잠긴 계정도 알림 수신 */
 class ExportBlindCellsTest {
@@ -116,11 +115,11 @@ class ExportBlindCellsTest {
     @DisplayName("잠긴(LOCKED) 계정도 알림 대상, 정지·승인 대기는 제외 (기본 설정)")
     fun lockedReceives() {
         val resolver = AlertTargetResolver(AlertConfigRepository(mock(NamedParameterJdbcTemplate::class.java)), AppProperties())
-        fun m(id: String, state: String) = TargetMemberRow(1, id, id, "부서", state, state, "RECV", "$id@x", null, null, false)
+        fun m(id: String, state: String) = TargetMemberRow(1, id, id, "부서", state, state, "$id@x", null, null)
         val r = resolver.evaluate(
-            listOf(TargetGroupRow(1, "G", true, false, listOf("MAIL"))),
+            listOf(TargetGroupRow(1, "G", true, listOf("MAIL"))),
             mapOf(1 to listOf(m("A", "ACTIVE"), m("L", "LOCKED"), m("S", "SUSPENDED"), m("P", "PENDING"))),
-            listOf("MAIL"), LocalTime.NOON
+            listOf("MAIL")
         )
         assertEquals(listOf("A", "L"), r.targets.map { it.userId })
         assertEquals(setOf("S", "P"), r.skipped.filter { it.reason == "ACCOUNT_INACTIVE" }.map { it.empNo }.toSet())

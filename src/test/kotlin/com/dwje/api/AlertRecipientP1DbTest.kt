@@ -169,30 +169,71 @@ class AlertRecipientP1DbTest {
     }
 
     @Test
-    @DisplayName("RCP-05·06·07·12 — 목록 필터, 미배정 등록 409, 상태 본문 필수·사유 비고, 연락처 \"\" 지우기·형식")
+    @DisplayName("RCP-05·06·12 — 목록 필터, 미배정 등록 409, 부재·야간 키 없음(V74), 연락처 \"\" 지우기·형식")
     fun recipients() {
-        val (byGroup, meta, _) = service.getRecipients(null, 1, 0, groupId = 11)
+        val (byGroup, meta, _) = service.getRecipients(1, 0, groupId = 11)
         assertEquals(long("SELECT count(*) FROM ax.tb_alm_recip_group_member WHERE group_id = 11"), meta.total)
         assertTrue(byGroup.isNotEmpty())
-        assertEquals("userState", assertThrows(InvalidParameterException::class.java) { service.getRecipients(null, 1, 10, userState = "X") }.field)
+        assertTrue(byGroup.all { "state" !in it && "stateNm" !in it && "night" !in it && "remark" in it })
+        assertEquals("userState", assertThrows(InvalidParameterException::class.java) { service.getRecipients(1, 10, userState = "X") }.field)
 
         val unassigned = str("SELECT u.user_id FROM ax.tb_sys_user u JOIN ax.tb_sys_dept d ON d.dept_id = u.dept_id WHERE d.dept_nm = '미배정' AND NOT EXISTS (SELECT 1 FROM ax.tb_alm_recipient r WHERE r.user_id = u.user_id) LIMIT 1")
         assertEquals("empNo", assertThrows(ConflictingValueException::class.java) {
             service.createRecipient(RecipientRequest(empNo = unassigned, mail = "x@dwje.co.kr"))
         }.field)
 
-        assertEquals("state", assertThrows(InvalidParameterException::class.java) { service.changeRecipientState("10005", null) }.field)
-        val r = service.changeRecipientState("10005", "RECV", "출장 복귀")
-        assertEquals(true, r["changed"])
-        assertEquals("출장 복귀", str("SELECT remark FROM ax.tb_alm_recipient WHERE user_id = '10005'"))
-        assertEquals(false, service.changeRecipientState("10005", "수신")["changed"])
+        // 옛 화면이 night · state · reason 을 함께 보내도 연락처만 바꾸고 나머지는 버린다
+        @Suppress("DEPRECATION")
+        assertEquals(true, service.updateRecipient("10003", RecipientRequest(night = true, state = "ABSENT", reason = "x"))["success"])
 
         exec("UPDATE ax.tb_alm_recipient SET mobile_no = '010-1111-2222' WHERE user_id = '10003'")
         service.updateRecipient("10003", RecipientRequest(hp = ""))
         assertNull(jdbc.queryForObject("SELECT mobile_no FROM ax.tb_alm_recipient WHERE user_id = '10003'", MapSqlParameterSource(), String::class.java))
         assertEquals("hp", assertThrows(InvalidParameterException::class.java) { service.updateRecipient("10003", RecipientRequest(hp = "abc")) }.field)
-        assertEquals("mail", assertThrows(InvalidParameterException::class.java) { service.updateRecipient("10003", RecipientRequest(mail = "a@b")) }.field)
+        // 메일은 계정 메일이 기준이라 수정 요청의 mail 은 형식과 무관하게 무시한다(2026-10-03)
+        val copyBefore = str("SELECT email FROM ax.tb_alm_recipient WHERE user_id = '10003'")
+        @Suppress("DEPRECATION")
+        assertEquals(true, service.updateRecipient("10003", RecipientRequest(mail = "a@b"))["success"])
+        assertEquals(copyBefore, str("SELECT email FROM ax.tb_alm_recipient WHERE user_id = '10003'"))
+        assertFalse(auditRemarks().any { it?.contains("메일") == true }, "메일은 바뀌지 않으므로 감사에 메일 변경이 없다")
         assertFalse(auditRemarks().any { it?.contains("@") == true || it?.contains("010") == true }, "감사에 연락처 값이 없다")
+    }
+
+    @Test
+    @DisplayName("계정 메일 단일 기준(2026-10-03) — 계정 메일을 바꾸면 수신자 목록 mail·테스트 발송 대상 주소가 따라오고, 비었을 때만 수신자 사본")
+    fun accountEmailIsSourceOfTruth() {
+        val acct = "zt-acct-10003@wonderslab.test"
+        exec("UPDATE ax.tb_alm_recipient SET email = 'zt-stale-10003@dwje.test' WHERE user_id = '10003'")
+        exec("UPDATE ax.tb_sys_user SET email = '$acct', user_state_cd = 'ACTIVE' WHERE user_id = '10003'")
+
+        fun listedMail() = service.getRecipients(1, 500).first.single { it["empNo"] == "10003" }["mail"]
+        assertEquals(acct, listedMail())
+
+        // 그룹 11(MAIL) 테스트 발송 — 대기열 주소가 계정 메일
+        val (data, _) = service.testSendGroup(11)
+        val alertId = (data["alertId"] as Number).toLong()
+        assertEquals(acct, str("SELECT dest_addr FROM ax.tb_alm_send_queue WHERE alert_id = $alertId AND user_id = '10003' AND channel_cd = 'MAIL'"))
+
+        // 계정 메일이 비면 수신자 행의 사본으로 내려간다 (수신 가능 판정도 그 사본 기준)
+        exec("UPDATE ax.tb_sys_user SET email = NULL WHERE user_id = '10003'")
+        assertEquals("zt-stale-10003@dwje.test", listedMail())
+        exec("UPDATE ax.tb_sys_user SET email = '' WHERE user_id = '10003'")
+        assertEquals("zt-stale-10003@dwje.test", listedMail())
+
+        // 등록 — mail 없이도 계정 메일로 사본을 채운다. 계정 메일이 있으면 보낸 mail 은 무시한다
+        exec("DELETE FROM ax.tb_alm_recipient WHERE user_id = '10003'")
+        exec("UPDATE ax.tb_sys_user SET email = '$acct' WHERE user_id = '10003'")
+        @Suppress("DEPRECATION")
+        service.createRecipient(RecipientRequest(empNo = "10003", mail = "ignored@dwje.test"))
+        assertEquals(acct, str("SELECT email FROM ax.tb_alm_recipient WHERE user_id = '10003'"))
+
+        // 계정 메일이 없으면 보낸 mail 을 대체 주소로 쓰고, 그것도 없으면 400(mail)
+        exec("DELETE FROM ax.tb_alm_recipient WHERE user_id = '10003'")
+        exec("UPDATE ax.tb_sys_user SET email = NULL WHERE user_id = '10003'")
+        assertEquals("mail", assertThrows(InvalidParameterException::class.java) { service.createRecipient(RecipientRequest(empNo = "10003")) }.field)
+        @Suppress("DEPRECATION")
+        service.createRecipient(RecipientRequest(empNo = "10003", mail = "fallback@dwje.test"))
+        assertEquals("fallback@dwje.test", str("SELECT email FROM ax.tb_alm_recipient WHERE user_id = '10003'"))
     }
 
     @Test
@@ -229,7 +270,9 @@ class AlertRecipientP1DbTest {
         }.field)
         @Suppress("UNCHECKED_CAST")
         val summary = service.getRecipientSummary()
-        assertTrue("nightWindow" in summary && "nightPersonalCnt" in summary)
+        assertTrue(listOf("nightWindow", "nightPersonalCnt", "nightCnt").none { it in summary }, "야간 수신 제거(V74)")
+        assertEquals(long("SELECT count(*) FROM ax.tb_alm_recipient"), summary["recipientCnt"])
+        assertEquals(summary["recipientCnt"], (summary["receivableCnt"] as Long) + (summary["inactiveAccountCnt"] as Long))
         assertFalse("escNoTargetCnt" in summary, "승격 규칙 제거(2026-10-03) — 대상 그룹 없는 승격 단계 수는 보내지 않는다")
     }
 
