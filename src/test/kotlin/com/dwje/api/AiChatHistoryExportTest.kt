@@ -31,7 +31,7 @@ class AiChatHistoryExportTest {
             "responseMs" to 120, "rating" to "USEFUL", "maskedCnt" to 0))
         val service = AiAdminService(repo, mock(VectorIndexRepository::class.java), auth, ObjectMapper(),
             mock(AiAskDebugRecorder::class.java), mock(DataFieldService::class.java), mock(AuditLogService::class.java))
-        val result = service.getChatDetail(7L)
+        val result = service.getChatDetail(7L, "all")
         assertEquals("불량 top 2", result["question"])
         assertEquals(AiResponseSanitizer.HIDDEN, result["answer"])
         assertEquals("불량 유형 2건", result["judgmentBasis"])
@@ -50,9 +50,15 @@ class AiChatHistoryExportTest {
             AuthorizationService(mock(com.dwje.api.repository.AuthRepository::class.java)), ObjectMapper(), mock(AiAskDebugRecorder::class.java),
             mock(DataFieldService::class.java), mock(AuditLogService::class.java))
         assertThrows(com.dwje.api.common.exception.MenuAccessDeniedException::class.java) { service.getChatDetail(7L) }
-        // 조회만 있으면 디버그 진단은 쓰기 권한 없음(E-AUTH-004) — 관리 기능이다(08 CHH-16)
+        // 자연어 질의 이력(본인)만 있으면 디버그 진단은 전사 화면 접근 없음(E-AUTH-002) — 관리 기능이다(V70)
         UserContext.set(UserPrincipal("u1", "사용자", 1, "품질", null, null, false,
             menuPerms = setOf(com.dwje.api.common.util.MenuId.CHAT_HISTORY)))
+        assertThrows(com.dwje.api.common.exception.MenuAccessDeniedException::class.java) {
+            service.getAskDebug(UUID.randomUUID().toString())
+        }
+        // 전사 화면에 접근해도 미배정 계정이면 쓰기 동작 거부(E-AUTH-004)
+        UserContext.set(UserPrincipal("u1", "사용자", 59, "미배정", null, null, false,
+            menuPerms = setOf(com.dwje.api.common.util.MenuId.SYS_CHAT_HISTORY), unassigned = true))
         assertThrows(com.dwje.api.common.exception.WriteAccessDeniedException::class.java) {
             service.getAskDebug(UUID.randomUUID().toString())
         }

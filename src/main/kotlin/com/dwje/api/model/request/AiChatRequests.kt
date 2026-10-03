@@ -151,6 +151,16 @@ data class AiReviewRequest(
 )
 
 /**
+ * 학습 답변 저장 — PUT /api/v1/ai/chat/history/{messageId}/train-answer (V70, 전사 자연어 질의 이력)
+ *
+ * @param answer 학습 데이터로 쓸 답변 (4000자). 빈 문자열·공백만이면 저장된 답변을 지운다
+ */
+data class AiTrainAnswerRequest(
+    @field:jakarta.validation.constraints.Size(max = 4000, message = "학습 답변은 4000자 이내로 입력해 주세요.")
+    val answer: String? = null
+)
+
+/**
  * 학습데이터 내보내기 — POST /api/v1/ai/chat/history/export-trainset (08 CHH-03)
  *
  * @param ratingFilter USEFUL | REASK | BAD | ALL (기본 USEFUL, ALL 은 평가가 있는 건 전체)

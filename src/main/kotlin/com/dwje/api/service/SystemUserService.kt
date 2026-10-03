@@ -135,7 +135,7 @@ class SystemUserService(
         systemDeptGuard.assertCanAssignDept(principal, dept)
         val requestedMenus = validateExtraMenus(request.extraMenuIds)
         systemDeptGuard.assertNoExtraMenusForUnassigned(dept, requestedMenus)
-        // 관리 화면 4종 추가 허용은 통합관리자만(R-07) — 새 계정이라 요청 목록 전부가 부여다
+        // 관리 화면 5종 추가 허용은 통합관리자만(R-07) — 새 계정이라 요청 목록 전부가 부여다
         systemDeptGuard.assertCanGrantAdminScreen(principal, requestedMenus.orEmpty())
 
         val stateCd = assertAssignableState(systemUserRepository.normalizeUserState(request.state ?: "ACTIVE"))
@@ -193,7 +193,7 @@ class SystemUserService(
             plan != null && (plan.add.isNotEmpty() || plan.remove.isNotEmpty()))
         if (request.deptId != null) systemDeptGuard.assertCanAssignDept(principal, targetDept)
         systemDeptGuard.assertNoExtraMenusForUnassigned(targetDept, requestedMenus)
-        // 관리 화면 4종 부여·회수는 통합관리자만(R-07) — 이미 가진 화면을 그대로 두는 저장은 통과한다(치환 계획 기준)
+        // 관리 화면 5종 부여·회수는 통합관리자만(R-07) — 이미 가진 화면을 그대로 두는 저장은 통과한다(치환 계획 기준)
         if (plan != null) systemDeptGuard.assertCanGrantAdminScreen(principal, plan.add + plan.remove)
         // 실부서 → 미배정 이동이면 추가 허용을 전부 회수한다(01 ACC-14). 관리 화면 회수도 통합관리자만(R-07)
         val movingToUnassigned = currentDeptId != targetDept["deptId"] && systemDeptGuard.isUnassignedDept(targetDept)
@@ -642,7 +642,7 @@ class SystemUserService(
             systemDeptGuard.assertCanGrantAdminScreen(principal, plan.adminChanged)
             copiedCnt = systemUserRepository.replaceMenuPerms(deptId, plan.src, principal.userId)
         }
-        // 전사 공통 화면(질의 이력·용어 사전 조회)은 복사 여부와 관계없이 조회 권한을 준다 — 복사로 이미 있는 행의 쓰기 칸은 그대로
+        // 전사 공통 화면(질의 이력·용어 사전 조회)은 복사 여부와 관계없이 접근 권한을 준다
         val defaults = if (systemDeptGuard.isUnassignedDeptName(deptNm)) MenuId.DEFAULT_READ_MENUS - MenuId.GLOSS_VIEW
             else MenuId.DEFAULT_READ_MENUS
         defaults.forEach { systemUserRepository.upsertMenuPerm(deptId, it, true, principal.userId) }
@@ -740,7 +740,7 @@ class SystemUserService(
     /**
      * 메뉴 권한 매트릭스 조회 (No.140, 03 MNP-17)
      *
-     * 통합관리자는 전 화면 조회·쓰기, 미배정은 고정 5개 화면 조회만으로 그린다(DB 행이 아니라 상수 — R-01).
+     * 통합관리자는 전 화면, 미배정은 고정 화면만으로 그린다(DB 행이 아니라 상수 — R-01). 칸은 「접근」 하나다(V70).
      */
     @Transactional(readOnly = true)
     fun getMenuPermMatrix(): Map<String, Any?> {
@@ -759,29 +759,25 @@ class SystemUserService(
         val rows = systemUserRepository.findActiveMenuPermRows()
 
         val matrix = linkedMapOf<String, List<String>>()
-        val writeMatrix = linkedMapOf<String, List<String>>()
         depts.forEach { dept ->
             val deptId = dept["deptId"] as Int
             val mine = rows.filter { it.deptId == deptId && it.read }
             when (dept["locked"]) {
-                "SUPER_ADMIN" -> { matrix["$deptId"] = screenIds; writeMatrix["$deptId"] = screenIds }
+                "SUPER_ADMIN" -> matrix["$deptId"] = screenIds
                 "UNASSIGNED" -> {
                     val fixed = screenIds.filter { it in MenuId.UNASSIGNED_SCREENS }
                     if (mine.map { it.menuId }.toSet() != fixed.toSet()) {
                         log.warn("미배정 부서 메뉴 권한 행이 고정 화면과 다릅니다 : db={} fixed={}", mine.map { it.menuId }, fixed)
                     }
-                    matrix["$deptId"] = fixed; writeMatrix["$deptId"] = emptyList()
+                    matrix["$deptId"] = fixed
                 }
-                else -> {
-                    matrix["$deptId"] = mine.map { it.menuId }
-                    writeMatrix["$deptId"] = mine.filter { it.write }.map { it.menuId }
-                }
+                else -> matrix["$deptId"] = mine.map { it.menuId }
             }
         }
 
         val grants = systemUserRepository.findGrantsByMenu()
         val result = linkedMapOf<String, Any?>(
-            "screens" to screens, "depts" to depts, "matrix" to matrix, "writeMatrix" to writeMatrix,
+            "screens" to screens, "depts" to depts, "matrix" to matrix,
             "grantCounts" to grants.mapValues { it.value.size },
             "canEditAdminScreens" to principal.superAdmin,
             "version" to permHash(rows.filter { it.menuId in screenIds })
@@ -791,45 +787,41 @@ class SystemUserService(
         return result
     }
 
-    /** 메뉴 권한 단건 변경 (No.141, 03 MNP-02·16) */
+    /** 메뉴 권한 단건 변경 (No.141, 03 MNP-02) — 요청의 perm 은 무시한다(V70 조회/쓰기 통합) */
     @Transactional
     fun changeMenuPerm(request: MenuPermRequest): Map<String, Any?> {
         val principal = authorizationService.requireWrite(MenuId.SYS_MENU)
         val dept = requireActiveDept(request.deptId)
-        // 시스템 부서(통합관리자·미배정)의 권한은 고정이다(CMN-01, R-01) · 관리 화면 4종은 통합관리자만(R-07)
+        // 시스템 부서(통합관리자·미배정)의 권한은 고정이다(CMN-01, R-01) · 관리 화면 5종은 통합관리자만(R-07)
         systemDeptGuard.assertNotSystemDeptPerm(dept)
         val screen = systemUserRepository.findAllMenus().firstOrNull { it["id"] == request.screenId }
             ?: throw InvalidParameterException("존재하지 않거나 사용 중지된 화면 ID 입니다. [${request.screenId}]", "screenId")
-        val perm = requirePerm(request.perm)
-        val isAction = screen["kind"] == "ACTION"
-
         val before = systemUserRepository.findMenuPerm(request.deptId, request.screenId)
-        val expected = expectedAfter(before, request.allowed, perm, isAction)
-        val changed = (before?.read ?: false) != expected.first || (before?.write ?: false) != expected.second
+        val changed = (before?.read ?: false) != request.allowed
         if (changed) systemDeptGuard.assertCanGrantAdminScreen(principal, listOf(request.screenId))
 
-        systemUserRepository.applyMenuPerm(request.deptId, request.screenId, request.allowed, perm, isAction, principal.userId)
+        systemUserRepository.applyMenuPerm(request.deptId, request.screenId, request.allowed, principal.userId)
         val after = systemUserRepository.findMenuPerm(request.deptId, request.screenId)
 
         if (changed) {
-            val label = "${request.screenId}(${if (perm == "WRITE") "쓰기" else "조회"})"
+            val act = if (request.allowed) "화면 접근 허용" else "화면 접근 회수"
             val permAuditId = auditLogService.record(
                 logType = AuditType.PERM_CHANGE,
                 menuId = MenuId.SYS_MENU,
                 targetDesc = "메뉴 권한 변경 [${dept["deptNm"]} / ${request.screenId}]",
-                remark = "${if (request.allowed) "부여" else "회수"} $label"
+                remark = "$act ${request.screenId}"
             )
             auditLogService.recordPermChange(
                 actCd = "MENU_PERM",
                 targetKindCd = "MENU",
                 targetNm = "${dept["deptNm"]} / ${screen["name"]}(${request.screenId})",
-                detail = "${if (request.allowed) "부여" else "회수"} [$label]",
+                detail = "$act [${request.screenId}]",
                 targetDeptId = request.deptId,
                 auditId = permAuditId
             )
         }
 
-        return mapOf("success" to true, "read" to (after?.read ?: false), "write" to (after?.write ?: false), "changed" to changed)
+        return mapOf("success" to true, "allowed" to (after?.read ?: false), "changed" to changed)
     }
 
     /** 메뉴 권한 그룹 일괄 변경 (No.142, 03 MNP-04) */
@@ -842,7 +834,6 @@ class SystemUserService(
             ?: throw InvalidParameterException("메뉴 그룹을 선택해 주세요.", "groupId")
         val groupId = systemUserRepository.findMenuGroupId(raw)
             ?: throw InvalidParameterException("메뉴 그룹을 찾을 수 없습니다. [$raw]", "groupId")
-        val perm = requirePerm(request.perm)
 
         val screens = systemUserRepository.findAllMenus()
             .filter { it["groupId"] == groupId && (request.includeActions || it["kind"] != "ACTION") }
@@ -853,13 +844,9 @@ class SystemUserService(
         val removed = mutableListOf<String>()
         screens.forEach { sc ->
             val id = sc["id"] as String
-            val isAction = sc["kind"] == "ACTION"
             val before = systemUserRepository.findMenuPerm(request.deptId, id)
-            val exp = expectedAfter(before, request.allowed, perm, isAction)
-            val beforeOn = if (perm == "WRITE") before?.write ?: false else before?.read ?: false
-            val afterOn = if (perm == "WRITE") exp.second else exp.first
-            if (beforeOn == afterOn && (before?.read ?: false) == exp.first) return@forEach
-            systemUserRepository.applyMenuPerm(request.deptId, id, request.allowed, perm, isAction, principal.userId)
+            if ((before?.read ?: false) == request.allowed) return@forEach
+            systemUserRepository.applyMenuPerm(request.deptId, id, request.allowed, principal.userId)
             if (request.allowed) added += id else removed += id
         }
         val changedCnt = added.size + removed.size
@@ -874,7 +861,7 @@ class SystemUserService(
             actCd = "MENU_PERM",
             targetKindCd = "MENU",
             targetNm = "${dept["deptNm"]} / 그룹 $groupId",
-            detail = "그룹 일괄 ${if (request.allowed) "부여" else "회수"}(${if (perm == "WRITE") "쓰기" else "조회"}) ${changedCnt}건" +
+            detail = "그룹 일괄 ${if (request.allowed) "허용" else "회수"} ${changedCnt}건" +
                 (added + removed).takeIf { it.isNotEmpty() }?.let { " [${it.joinToString(", ")}]" }.orEmpty(),
             targetDeptId = request.deptId,
             auditId = permAuditId
@@ -887,7 +874,7 @@ class SystemUserService(
      * 부서 메뉴 권한 복사 (No.143, 03 MNP-01)
      *
      * `dryRun=true` 면 저장 없이 바뀔 내용과 해시를 돌려준다(조회 권한). 실행 때 그 해시를 보내면
-     * 미리보기 이후 두 부서 권한이 바뀌었는지 확인해 409 로 막는다. 원본이 통합관리자면 사용 중 전 화면 조회·쓰기다.
+     * 미리보기 이후 두 부서 권한이 바뀌었는지 확인해 409 로 막는다. 원본이 통합관리자면 사용 중 전 화면이다.
      */
     @Transactional
     fun copyMenuPerms(request: MenuPermCopyRequest): Map<String, Any?> {
@@ -911,7 +898,7 @@ class SystemUserService(
                 "from" to mapOf("deptId" to request.fromDeptId, "deptNm" to fromDept["deptNm"]),
                 "to" to mapOf("deptId" to request.toDeptId, "deptNm" to toDept["deptNm"],
                     "userCnt" to systemUserRepository.countUsersInDept(request.toDeptId)),
-                "added" to plan.added.map { (id, w) -> mapOf("id" to id, "read" to true, "write" to w) },
+                "added" to plan.added.map { mapOf("id" to it) },
                 "removed" to plan.removed.map { mapOf("id" to it) },
                 "adminScreensChanged" to plan.adminChanged,
                 "requiresSuperAdmin" to plan.adminChanged.isNotEmpty(),
@@ -929,8 +916,8 @@ class SystemUserService(
 
         val copiedCnt = systemUserRepository.replaceMenuPerms(request.toDeptId, plan.src, principal.userId)
 
-        val detail = "메뉴 권한 복사 (${fromDept["deptNm"]} → ${toDept["deptNm"]}) 부여 [" +
-            plan.added.entries.joinToString(", ") { "${it.key}(${if (it.value) "쓰기" else "조회"})" } + "] · 회수 [" + plan.removed.joinToString(", ") + "]"
+        val detail = "메뉴 권한 복사 (${fromDept["deptNm"]} → ${toDept["deptNm"]}) 허용 [" +
+            plan.added.joinToString(", ") + "] · 회수 [" + plan.removed.joinToString(", ") + "]"
         val permAuditId = auditLogService.record(
             logType = AuditType.PERM_CHANGE, menuId = MenuId.SYS_MENU,
             targetDesc = "메뉴 권한 복사 [${fromDept["deptNm"]} → ${toDept["deptNm"]}]",
@@ -945,13 +932,13 @@ class SystemUserService(
             auditId = permAuditId
         )
 
-        return mapOf("copiedCnt" to copiedCnt, "added" to plan.added.keys.toList(), "removed" to plan.removed)
+        return mapOf("copiedCnt" to copiedCnt, "added" to plan.added, "removed" to plan.removed)
     }
 
     /** 복사 계획 — 원본 집합, 바뀌는 칸, 관리 화면 변화, 두 부서 해시 */
     private data class MenuCopyPlan(
-        val src: Map<String, Boolean>,
-        val added: Map<String, Boolean>,
+        val src: List<String>,
+        val added: List<String>,
         val removed: List<String>,
         val adminChanged: List<String>,
         val hash: String
@@ -961,43 +948,27 @@ class SystemUserService(
         val fromDeptId = fromDept["deptId"] as Int
         val screenIds = systemUserRepository.findAllMenus().map { it["id"] as String }
         val rows = systemUserRepository.findActiveMenuPermRows().filter { it.menuId in screenIds }
-        val src: Map<String, Boolean> = if (systemDeptGuard.isSuperAdminDept(fromDept)) {
-            screenIds.associateWith { true }
+        val src: List<String> = if (systemDeptGuard.isSuperAdminDept(fromDept)) {
+            screenIds
         } else {
-            rows.filter { it.deptId == fromDeptId && it.read }.associate { it.menuId to it.write }
+            rows.filter { it.deptId == fromDeptId && it.read }.map { it.menuId }
         }
-        val dst = rows.filter { it.deptId == toDeptId && it.read }.associate { it.menuId to it.write }
-        val added = src.filter { (id, w) -> dst[id] != w }
-        val removed = dst.keys.filter { it !in src }
-        val adminChanged = (added.keys + removed).filter { it in MenuId.ADMIN_SCREENS }.distinct().sorted()
+        val dst = rows.filter { it.deptId == toDeptId && it.read }.map { it.menuId }.toSet()
+        val added = src.filter { it !in dst }
+        val removed = dst.filter { it !in src }
+        val adminChanged = (added + removed).filter { it in MenuId.ADMIN_SCREENS }.distinct().sorted()
         // 원본이 통합관리자면 행이 없으므로 부서 ID + 사용 중 화면 목록으로 해시한다
         val fromPart = if (systemDeptGuard.isSuperAdminDept(fromDept)) "SUPER|$fromDeptId|" + screenIds.sorted().joinToString(",")
             else permHash(rows.filter { it.deptId == fromDeptId })
         return MenuCopyPlan(src, added, removed, adminChanged, sha256("$fromPart#" + permHash(rows.filter { it.deptId == toDeptId })))
     }
 
-    /** 권한 행 집합의 해시 — `deptId|menuId|read|write` 정렬 후 SHA-256 hex */
+    /** 권한 행 집합의 해시 — `deptId|menuId|read` 정렬 후 SHA-256 hex */
     private fun permHash(rows: List<com.dwje.api.repository.MenuPermRow>): String =
-        sha256(rows.map { "${it.deptId}|${it.menuId}|${it.read}|${it.write}" }.sorted().joinToString("\n"))
+        sha256(rows.map { "${it.deptId}|${it.menuId}|${it.read}" }.sorted().joinToString("\n"))
 
     private fun sha256(text: String): String =
         java.security.MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
-
-    /** perm 값 검증 — READ | WRITE */
-    private fun requirePerm(perm: String?): String {
-        val p = perm?.trim()?.uppercase().orEmpty().ifEmpty { "READ" }
-        if (p != "READ" && p != "WRITE") throw InvalidParameterException("권한 구분은 READ 또는 WRITE 입니다.", "perm")
-        return p
-    }
-
-    /** 칸 변경 후 예상 값(조회, 쓰기) — [SystemUserRepository.applyMenuPerm] 규칙과 같다 */
-    private fun expectedAfter(before: com.dwje.api.repository.MenuPermRow?, allowed: Boolean, perm: String, isAction: Boolean): Pair<Boolean, Boolean> =
-        when {
-            perm == "READ" && allowed -> true to ((before?.write ?: false) || isAction)
-            perm == "READ" -> false to false
-            allowed -> true to true
-            else -> (before?.read ?: false) to false
-        }
 
     // =================================================================================
     // 데이터 접근 권한
@@ -1270,7 +1241,7 @@ class SystemUserService(
     }
 
     // =================================================================================
-    // 계정별 추가 허용 화면 (V30 ax.tb_sys_user_menu_grant) — 부서 권한에 더하는 화면. 열람만 부여한다(can_write=false).
+    // 계정별 추가 허용 화면 (V30 ax.tb_sys_user_menu_grant) — 부서 권한에 더하는 화면. 행 = 접근 허용(V70).
     // =================================================================================
 
     /** 목록 행에 계정별 추가 허용 화면(`extraMenuIds`)을 붙인다 — 없는 계정도 빈 배열로, 화면이 배열로만 읽는다. */

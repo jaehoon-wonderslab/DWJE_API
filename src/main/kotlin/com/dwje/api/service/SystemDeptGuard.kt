@@ -16,7 +16,7 @@ import org.springframework.stereotype.Component
  *
  * 오류 코드 구분(공통 9.7)
  * - 누가 해도 안 되는 변경(시스템 부서의 권한 변경·복사, 이름 변경·삭제, 미배정 계정 추가 메뉴) → 409 `E-RULE-001`
- * - 통합관리자만 할 수 있는 변경(통합관리자 부서로 배정, 관리 화면 4종 부여·회수) → 403 `E-AUTH-002`
+ * - 통합관리자만 할 수 있는 변경(통합관리자 부서로 배정, 관리 화면 5종 부여·회수) → 403 `E-AUTH-002`
  *
  * 미배정 부서는 지금처럼 이름(`app.unassigned-dept-name`)으로 판정한다(결정 D-03 전이라 역할 컬럼을 쓰지 않는다).
  * 부서 정보는 `SystemUserRepository.findDept` 의 Map(`deptNm`·`superAdmin`)을 그대로 받는다 — 판정에 DB 를 다시 읽지 않는다.
@@ -103,7 +103,7 @@ class SystemDeptGuard(
     }
 
     /**
-     * 관리 화면 4종(`MenuId.ADMIN_SCREENS`)의 부여·회수는 통합관리자만 (403 E-AUTH-002, R-07).
+     * 관리 화면 5종(`MenuId.ADMIN_SCREENS`)의 부여·회수는 통합관리자만 (403 E-AUTH-002, R-07).
      *
      * @param changedMenuIds 이번 요청으로 실제로 바뀌는 화면 ID — 변화가 없는 화면은 넣지 않는다
      */

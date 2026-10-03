@@ -17,7 +17,7 @@ import org.springframework.transaction.annotation.Transactional
  * 권한 판정 서비스
  *
  * 권한 모델은 2계층으로 구성된다.
- * 1. 메뉴 접근 권한 : 부서 × 화면 — 화면 진입 자체를 통제. 화면마다 조회(can_read)·쓰기(can_write) 두 칸이 있다(R-06)
+ * 1. 메뉴 접근 권한 : 부서 × 화면 — 화면 진입 자체를 통제. 접근할 수 있는 화면의 동작은 모두 허용한다(V70, 미배정은 쓰기 동작 불가)
  * 2. 데이터 접근 권한 : 부서 × 데이터 항목 7종 — 응답 값 마스킹을 통제
  *
  * 계정은 소속 부서의 권한을 상속하며, `is_super_admin` 부서(통합관리자)는 전 권한을 보유한다.
@@ -80,9 +80,9 @@ class AuthorizationService(
      * 계정 행으로 권한 집합을 만든다 — [loadPrincipal] 과 [loadPrincipalForInspection] 이 같은 규칙을 쓴다.
      *
      * - 통합관리자: 권한 행을 읽지 않고 전 권한(집합은 비워 두고 `superAdmin` 으로 판정).
-     * - 미배정(R-01·R-11): 화면 권한 = 유효 권한 ∩ [MenuId.UNASSIGNED_SCREENS], 쓰기 권한·데이터 권한 = 빈 집합.
-     *   DB 에 행이 잘못 들어가도 넓어지지 않게 하는 방어선이다.
-     * - 그 밖: 화면 권한 = 부서 ∪ 계정 추가 허용(V30 뷰), 쓰기 권한 = 그중 `can_write` 인 화면, 데이터 권한 = 부서 기준.
+     * - 미배정(R-01·R-11): 화면 권한 = 유효 권한 ∩ [MenuId.UNASSIGNED_SCREENS], 데이터 권한 = 빈 집합.
+     *   DB 에 행이 잘못 들어가도 넓어지지 않게 하는 방어선이다. 쓰기 동작은 [UserPrincipal.canWriteMenu] 가 막는다.
+     * - 그 밖: 화면 권한 = 부서 ∪ 계정 추가 허용(V30 뷰), 데이터 권한 = 부서 기준. 쓰기 판정은 화면 권한과 같다(V70).
      *   매 요청 다시 읽으므로 추가 허용을 넣고 빼면 발급된 토큰에도 바로 반영된다.
      */
     private fun buildPrincipal(user: Map<String, Any?>, impersonated: Boolean, impersonatedBy: String?): UserPrincipal {
@@ -92,15 +92,14 @@ class AuthorizationService(
         val superAdmin = user["superAdmin"] as Boolean
         val unassigned = !superAdmin && deptName == appProperties.unassignedDeptName
 
-        val effective = if (superAdmin) emptyMap() else authRepository.findEffectiveMenuPermissionsWithWrite(userId)
+        val effective: Set<String> = if (superAdmin) emptySet() else authRepository.findEffectiveMenuPermissions(userId)
         val menuPerms = when {
             superAdmin -> emptySet()
-            unassigned -> effective.keys.filterTo(linkedSetOf()) { it in MenuId.UNASSIGNED_SCREENS }
-            else -> effective.keys
+            unassigned -> effective.filterTo(linkedSetOf()) { it in MenuId.UNASSIGNED_SCREENS }
+            else -> effective
         }
-        val writePerms = if (superAdmin || unassigned) emptySet() else effective.filterValues { it }.keys
         val dataPerms = if (superAdmin || unassigned) emptySet() else authRepository.findDataPermissions(deptId)
-        if (unassigned) warnClampedUnassigned(userId, deptId, effective.keys - MenuId.UNASSIGNED_SCREENS)
+        if (unassigned) warnClampedUnassigned(userId, deptId, effective - MenuId.UNASSIGNED_SCREENS)
 
         return UserPrincipal(
             userId = userId,
@@ -113,7 +112,6 @@ class AuthorizationService(
             menuPerms = menuPerms,
             dataPerms = dataPerms,
             impersonated = impersonated,
-            writePerms = writePerms,
             pwdChangeRequired = user["pwdChangeRequired"] == true,
             unassigned = unassigned,
             impersonatedBy = impersonatedBy
@@ -157,10 +155,10 @@ class AuthorizationService(
     }
 
     /**
-     * 현재 사용자의 화면 **쓰기** 권한을 검증한다 (R-06, 03 MNP-16 · 공통 9.4 CMN-06).
+     * 현재 사용자가 화면의 쓰기 동작(저장·삭제 등)을 할 수 있는지 검증한다 (V70 — 조회/쓰기 칸 통합).
      *
-     * 판정 = 통합관리자 → 통과, 미배정 → 거부(쓰기 권한 집합이 비어 있음), 그 밖에는 조회 권한과 쓰기 권한이 둘 다 있어야 한다.
-     * 조회 권한부터 없으면 E-AUTH-002(화면 접근 권한 없음), 조회만 있으면 E-AUTH-004(쓰기 권한 없음)다.
+     * 판정 = 통합관리자 → 통과, 화면 접근 권한이 없으면 E-AUTH-002, 미배정 계정이면 E-AUTH-004, 그 밖에는 통과.
+     * 이름은 호출부를 그대로 두려고 남겼다. 의미는 「화면 접근 + 미배정 아님」이다.
      * 엑셀 내려받기는 쓰기 대상이 아니다 — [requireMenu] 로 판정한다(공통 9.8, R-10).
      *
      * @param menuId 화면 ID (ax.tb_sys_menu.menu_id)
@@ -174,8 +172,8 @@ class AuthorizationService(
     }
 
     /**
-     * 여러 화면 중 하나라도 쓰기 권한이 있으면 통과시킨다. (한 쓰기 API 를 두 화면이 함께 쓰는 경우)
-     * 어느 화면의 조회 권한도 없으면 E-AUTH-002, 조회만 있으면 E-AUTH-004 다.
+     * 여러 화면 중 하나라도 쓰기 동작이 허용되면 통과시킨다. (한 쓰기 API 를 두 화면이 함께 쓰는 경우)
+     * 어느 화면에도 접근할 수 없으면 E-AUTH-002, 미배정 계정이면 E-AUTH-004 다.
      */
     fun requireAnyWrite(vararg menuIds: String): UserPrincipal {
         val principal = requireAnyMenu(*menuIds)
@@ -185,7 +183,7 @@ class AuthorizationService(
         return principal
     }
 
-    /** 현재 사용자가 화면 쓰기 권한을 갖는지 — 예외 없이 응답 필드(`canWrite` 등)를 채울 때 쓴다 */
+    /** 현재 사용자가 화면 쓰기 동작을 할 수 있는지(접근 권한 + 미배정 아님) — 예외 없이 응답 필드(`canWrite` 등)를 채울 때 쓴다 */
     fun canWrite(menuId: String): Boolean = UserContext.currentOrNull()?.canWriteMenu(menuId) == true
 
     /**

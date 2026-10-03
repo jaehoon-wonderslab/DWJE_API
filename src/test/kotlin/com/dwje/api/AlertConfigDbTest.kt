@@ -61,8 +61,7 @@ class AlertConfigDbTest {
     /** 전산팀 — 두 화면 쓰기, worker 있음 */
     private val itTeam = UserPrincipal(
         "10004", "전산", 5, "전산팀", null, null, false,
-        menuPerms = setOf(MenuId.ALERT_COND, MenuId.SYS_RECIP), dataPerms = setOf("worker"),
-        writePerms = setOf(MenuId.ALERT_COND, MenuId.SYS_RECIP)
+        menuPerms = setOf(MenuId.ALERT_COND, MenuId.SYS_RECIP), dataPerms = setOf("worker")
     )
 
     @BeforeEach
@@ -229,7 +228,7 @@ class AlertConfigDbTest {
         assertTrue(items.all { "members" !in it && "memberEmpNos" !in it && "memberCnt" in it && "receivingCnt" in it })
 
         val noWorker = UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, false,
-            menuPerms = setOf(MenuId.SYS_RECIP), writePerms = setOf(MenuId.SYS_RECIP))
+            menuPerms = setOf(MenuId.SYS_RECIP))
         UserContext.set(noWorker)
         val (rows, _, masked) = service.getRecipients(null, 1, 50)
         assertEquals(listOf("worker"), masked)
@@ -271,10 +270,10 @@ class AlertConfigDbTest {
     }
 
     @Test
-    @DisplayName("쓰기 권한 — 조회만 있는 계정은 조건 등록·수정·상태·테스트 모두 E-AUTH-004, DB 불변")
+    @DisplayName("쓰기 동작 — 미배정 계정은 화면에 접근해도 조건 등록·수정·상태·테스트 모두 E-AUTH-004, DB 불변 (V70)")
     fun writePerm() {
         val condId = newCond()
-        UserContext.set(UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, false, menuPerms = setOf(MenuId.ALERT_COND)))
+        UserContext.set(UserPrincipal("10001", "품질", 59, "미배정", null, null, false, menuPerms = setOf(MenuId.ALERT_COND), unassigned = true))
         val name = str("SELECT cond_nm FROM ax.tb_alm_cond WHERE cond_id = $condId")
         assertThrows(WriteAccessDeniedException::class.java) { service.updateCondition(condId, AlertConditionUpdateRequest(name = "x")) }
         assertThrows(WriteAccessDeniedException::class.java) { service.changeConditionState(condId, false, null) }

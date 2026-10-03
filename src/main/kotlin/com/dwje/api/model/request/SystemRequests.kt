@@ -92,8 +92,10 @@ data class MenuPermRequest(
 
     val allowed: Boolean = true,
 
-    /** 바꿀 칸 — READ(조회, 기본) | WRITE(쓰기). 03 MNP-16 */
-    val perm: String = "READ"
+    /** 옛 WEB 번들 호환 — 값은 무시한다. 조회/쓰기 칸을 「접근」 하나로 합쳤다(V70) */
+    @Deprecated("옛 WEB 번들 호환 — 값은 무시")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(V70 조회/쓰기 통합)")
+    val perm: String? = null
 )
 
 /**
@@ -108,8 +110,10 @@ data class MenuPermGroupRequest(
 
     val allowed: Boolean = true,
 
-    /** READ | WRITE (03 MNP-16) */
-    val perm: String = "READ",
+    /** 옛 WEB 번들 호환 — 값은 무시한다(V70 조회/쓰기 통합) */
+    @Deprecated("옛 WEB 번들 호환 — 값은 무시")
+    @field:io.swagger.v3.oas.annotations.media.Schema(deprecated = true, description = "사용 중지 — 보내도 무시한다(V70 조회/쓰기 통합)")
+    val perm: String? = null,
 
     /** 동작 화면(예: 업로드 리포트 업로드)도 함께 바꿀지. 기본 false — 그룹 일괄로 동작 권한이 딸려 가지 않게 */
     val includeActions: Boolean = false

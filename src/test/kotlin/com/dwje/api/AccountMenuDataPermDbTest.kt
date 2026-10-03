@@ -51,8 +51,7 @@ class AccountMenuDataPermDbTest {
     /** 전산팀 관리자(비통합관리자) — 시스템관리 화면 쓰기 */
     private val itAdmin = UserPrincipal(
         "10004", "최전산", 5, "전산팀", null, null, false,
-        menuPerms = setOf(MenuId.SYS_ACCOUNT, MenuId.SYS_MENU, MenuId.SYS_DATA),
-        writePerms = setOf(MenuId.SYS_ACCOUNT, MenuId.SYS_MENU, MenuId.SYS_DATA)
+        menuPerms = setOf(MenuId.SYS_ACCOUNT, MenuId.SYS_MENU, MenuId.SYS_DATA)
     )
 
     @BeforeEach
@@ -138,19 +137,18 @@ class AccountMenuDataPermDbTest {
     // ---------------------------------------------------------------- 03 메뉴
 
     @Test
-    @DisplayName("MNP-02·16 단건 — 없는 화면 400(field=screenId), WRITE 켜기·끄기, READ 끄면 행 삭제")
+    @DisplayName("MNP-02 단건 (V70 접근 칸 하나) — 없는 화면 400(field=screenId), 허용 → {allowed, changed}, 다시 허용은 changed=false, 회수는 행 삭제, perm 은 무시")
     fun singlePerm() {
         assertEquals("screenId", assertThrows(InvalidParameterException::class.java) {
             service.changeMenuPerm(MenuPermRequest(4, "no-such", true))
         }.field)
-        assertEquals("perm", assertThrows(InvalidParameterException::class.java) {
-            service.changeMenuPerm(MenuPermRequest(4, "rpt-scrap", true, "ALL"))
-        }.field)
-        val on = service.changeMenuPerm(MenuPermRequest(4, "rpt-scrap", true, "WRITE"))
-        assertEquals(true, on["read"]); assertEquals(true, on["write"])
+        exec("DELETE FROM ax.tb_sys_dept_menu_perm WHERE dept_id = 4 AND menu_id = 'rpt-scrap'")
+        val on = service.changeMenuPerm(MenuPermRequest(4, "rpt-scrap", true, "ALL"))
+        assertEquals(mapOf("success" to true, "allowed" to true, "changed" to true), on)
+        assertEquals(false, service.changeMenuPerm(MenuPermRequest(4, "rpt-scrap", true))["changed"])
+        // 옛 화면이 perm=WRITE 로 끄더라도 접근 회수다
         val off = service.changeMenuPerm(MenuPermRequest(4, "rpt-scrap", false, "WRITE"))
-        assertEquals(true, off["read"]); assertEquals(false, off["write"])
-        service.changeMenuPerm(MenuPermRequest(4, "rpt-scrap", false, "READ"))
+        assertEquals(false, off["allowed"]); assertEquals(true, off["changed"])
         assertEquals(0L, long("SELECT count(*) FROM ax.tb_sys_dept_menu_perm WHERE dept_id = 4 AND menu_id = 'rpt-scrap'"))
     }
 
@@ -168,10 +166,12 @@ class AccountMenuDataPermDbTest {
     }
 
     @Test
-    @DisplayName("MNP-01 복사 — dryRun 은 쓰지 않고 해시를 준다, 해시 불일치 409 문구, 원본 통합관리자는 사용 중 전 화면")
+    @DisplayName("MNP-01 복사 — dryRun 은 쓰지 않고 해시를 준다(added[{id}]), 해시 불일치 409 문구, 원본 통합관리자는 사용 중 전 화면")
     fun copy() {
         val before = long("SELECT count(*) FROM ax.tb_sys_dept_menu_perm WHERE dept_id = 4")
         val preview = service.copyMenuPerms(MenuPermCopyRequest(3, 4, dryRun = true))
+        @Suppress("UNCHECKED_CAST")
+        assertTrue((preview["added"] as List<Map<String, Any?>>).all { it.keys == setOf("id") })
         assertEquals(before, long("SELECT count(*) FROM ax.tb_sys_dept_menu_perm WHERE dept_id = 4"))
         val hash = preview["expectedHash"] as String
         assertEquals("미리보기 이후 권한이 바뀌었습니다. 미리보기를 다시 실행하세요.",
@@ -181,19 +181,19 @@ class AccountMenuDataPermDbTest {
 
         service.copyMenuPerms(MenuPermCopyRequest(1, 4, expectedHash = service.copyMenuPerms(MenuPermCopyRequest(1, 4, dryRun = true))["expectedHash"] as String))
         val active = long("SELECT count(*) FROM ax.tb_sys_menu m JOIN ax.tb_sys_menu_group g ON g.group_id = m.group_id AND g.use_flg = 'Y' WHERE m.use_flg = 'Y'")
-        assertEquals(active, long("SELECT count(*) FROM ax.tb_sys_dept_menu_perm p JOIN ax.tb_sys_menu m ON m.menu_id = p.menu_id AND m.use_flg = 'Y' WHERE p.dept_id = 4 AND p.can_read AND p.can_write"))
+        assertEquals(active, long("SELECT count(*) FROM ax.tb_sys_dept_menu_perm p JOIN ax.tb_sys_menu m ON m.menu_id = p.menu_id AND m.use_flg = 'Y' WHERE p.dept_id = 4 AND p.can_read"))
     }
 
     @Test
-    @DisplayName("MNP-17 매트릭스 — screens kind/admin/common, depts locked, 미배정 = 고정 5개·쓰기 없음, version")
+    @DisplayName("MNP-17 매트릭스 — screens kind/admin/common, depts locked, 미배정 = 고정 5개, writeMatrix 없음(V70), version")
     fun matrix() {
         val m = service.getMenuPermMatrix()
         @Suppress("UNCHECKED_CAST") val screens = m["screens"] as List<Map<String, Any?>>
         assertEquals("ACTION", screens.single { it["id"] == "dash-ai-upload" }["kind"])
         assertEquals(true, screens.single { it["id"] == "sys-menu" }["admin"])
         assertEquals(true, screens.single { it["id"] == "chat-history" }["common"])
-        @Suppress("UNCHECKED_CAST") val writeMatrix = m["writeMatrix"] as Map<String, List<String>>
-        assertEquals(emptyList<String>(), writeMatrix["59"])
+        assertTrue("writeMatrix" !in m)
+        assertEquals(true, screens.any { it["id"] == MenuId.SYS_CHAT_HISTORY }, "V70 전사 자연어 질의 이력 화면")
         @Suppress("UNCHECKED_CAST") val matrix = m["matrix"] as Map<String, List<String>>
         assertEquals(MenuId.UNASSIGNED_SCREENS, matrix["59"]!!.toSet())
         assertEquals(64, (m["version"] as String).length)
@@ -279,9 +279,10 @@ class AccountMenuDataPermDbTest {
         assertEquals(0, again["changedCnt"])
         assertEquals(0, org.mockito.Mockito.mockingDetails(audit).invocations.size)
 
-        exec("INSERT INTO ax.tb_sys_user_menu_grant (user_id, menu_id, can_write) VALUES ('10004', 'sys-dl', false)")
+        exec("INSERT INTO ax.tb_sys_user_menu_grant (user_id, menu_id) VALUES ('10004', 'sys-dl')")
         @Suppress("UNCHECKED_CAST")
-        assertTrue(((service.getMenuPermMatrix()["grants"] as Map<String, List<Map<String, Any?>>>)["sys-dl"]).orEmpty().any { it["empNo"] == "10004" })
+        val grant = ((service.getMenuPermMatrix()["grants"] as Map<String, List<Map<String, Any?>>>)["sys-dl"]).orEmpty().single { it["empNo"] == "10004" }
+        assertTrue("write" !in grant, "V70 — grants 항목에 write 없음")
         UserContext.set(UserPrincipal("10002", "생산", 3, "생산관리팀", null, null, false, menuPerms = setOf(MenuId.SYS_ACCOUNT)))
         val m = service.getMenuPermMatrix()
         assertTrue("grants" !in m)

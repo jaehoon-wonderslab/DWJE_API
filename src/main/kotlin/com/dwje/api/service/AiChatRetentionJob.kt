@@ -43,7 +43,7 @@ class AiChatRetentionJob(
         val cut = LocalDate.now(ZoneId.of("Asia/Seoul")).minusDays(days.toLong()).atStartOfDay()
         val deleted = aiChatRepository.purgeBefore(cut)
         auditLogService.record(
-            logType = AuditType.AUTO_GEN, menuId = MenuId.CHAT_HISTORY,
+            logType = AuditType.AUTO_GEN, menuId = MenuId.SYS_CHAT_HISTORY,
             targetDesc = "질의 이력 보존 기간 경과 삭제", remark = "보존 ${days}일, cut=$cut, " +
                 deleted.entries.joinToString(", ") { "${it.key}=${it.value}" }
         )

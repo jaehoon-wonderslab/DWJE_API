@@ -41,7 +41,7 @@ class GlossaryChangeLogTest {
     private val admin = UserPrincipal("10000", "관리자", 1, "통합관리자", null, null, true)
     private val writer = UserPrincipal(
         "10002", "박생산", 3, "생산팀", null, null, false,
-        menuPerms = setOf(MenuId.SYS_GLOSS), writePerms = setOf(MenuId.SYS_GLOSS)
+        menuPerms = setOf(MenuId.SYS_GLOSS)
     )
     private val viewer = UserPrincipal("10003", "조회", 3, "생산팀", null, null, false, menuPerms = setOf(MenuId.GLOSS_VIEW))
 

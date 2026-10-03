@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Test
  * 시스템 부서(통합관리자·미배정) 보호 규칙 — 공통 기획서 4.1 CMN-01
  *
  * 1. 누가 해도 안 되는 변경은 409 E-RULE-001 (시스템 부서 권한 변경·복사, 이름 변경·삭제, 미배정 계정 추가 메뉴)
- * 2. 통합관리자만 할 수 있는 변경은 403 E-AUTH-002 (통합관리자 부서 배정, 관리 화면 4종 부여·회수)
+ * 2. 통합관리자만 할 수 있는 변경은 403 E-AUTH-002 (통합관리자 부서 배정, 관리 화면 5종 부여·회수)
  * 3. 미배정 판정은 부서 이름(app.unassigned-dept-name) 하나로 한다
  */
 class SystemDeptGuardTest {
@@ -69,7 +69,7 @@ class SystemDeptGuardTest {
     }
 
     @Test
-    @DisplayName("관리 화면 4종 부여·회수는 통합관리자만 — 바뀌는 화면에 관리 화면이 없으면 통과")
+    @DisplayName("관리 화면 5종 부여·회수는 통합관리자만 — 바뀌는 화면에 관리 화면이 없으면 통과")
     fun adminScreensOnlyBySuperAdmin() {
         val e = assertCode(ErrorCode.AUTH_MENU_DENIED) { guard.assertCanGrantAdminScreen(user(false), listOf("qc-aoi", "sys-menu")) }
         assertTrue(e.message.contains("[sys-menu]"))

@@ -25,8 +25,8 @@ enum class ErrorCode(
 
     // 2026-10-01 시스템관리 개선 1단계 — 번호는 공통 기획서 9.7 오류 코드표를 따른다.
 
-    /** 쓰기 권한 없음 — 화면 조회 권한은 있으나 그 화면의 쓰기(can_write) 권한이 없다 (R-06) */
-    AUTH_WRITE_DENIED("E-AUTH-004", HttpStatus.FORBIDDEN, "이 화면의 쓰기 권한이 없습니다."),
+    /** 쓰기 동작 거부 — 화면에는 접근할 수 있으나 미배정 계정이라 저장·삭제 등을 할 수 없다 (V70) */
+    AUTH_WRITE_DENIED("E-AUTH-004", HttpStatus.FORBIDDEN, "미배정 계정은 이 동작을 할 수 없습니다. 부서 배정 후 이용해 주세요."),
 
     /** 계정 잠금 — 비밀번호 연속 실패로 시스템이 잠갔다 (R-02). 응답 data 에 잠금 해제 안내 값이 실린다 */
     AUTH_ACCOUNT_LOCKED("E-AUTH-005", HttpStatus.UNAUTHORIZED, "비밀번호를 연속으로 잘못 입력해 계정이 잠겼습니다."),

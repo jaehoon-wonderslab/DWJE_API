@@ -32,13 +32,13 @@ class DataAccessDeniedException(val fieldKey: String) :
     BusinessException(ErrorCode.AUTH_DATA_DENIED, "데이터 접근 권한이 없습니다. [$fieldKey]", fieldKey)
 
 /**
- * E-AUTH-004 : 쓰기 권한 없음 (R-06)
+ * E-AUTH-004 : 쓰기 동작 거부 (V70)
  *
- * 화면 조회 권한은 있으나 그 화면의 쓰기 권한(부서 `can_write` OR 계정 추가 허용 `can_write`)이 없다.
- * 조회 권한까지 없으면 이 예외가 아니라 [MenuAccessDeniedException](E-AUTH-002)이다.
+ * 화면에는 접근할 수 있으나 미배정 부서 계정이라 그 화면의 저장·삭제 등 쓰기 동작을 할 수 없다.
+ * 화면 접근 권한까지 없으면 이 예외가 아니라 [MenuAccessDeniedException](E-AUTH-002)이다.
  */
 class WriteAccessDeniedException(val menuId: String) :
-    BusinessException(ErrorCode.AUTH_WRITE_DENIED, "이 화면의 쓰기 권한이 없습니다. [$menuId]")
+    BusinessException(ErrorCode.AUTH_WRITE_DENIED, "미배정 계정은 이 동작을 할 수 없습니다. [$menuId]")
 
 /**
  * E-AUTH-005 : 계정 잠금 (R-02, 09 기획서 AUD-16)

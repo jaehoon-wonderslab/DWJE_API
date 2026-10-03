@@ -129,15 +129,13 @@ class GwDeptMapServiceTest {
 
     private fun login(vararg menus: String, superAdmin: Boolean = false) = UserContext.set(
         UserPrincipal(userId = "IT1", userName = "전산", deptId = 5, deptName = "전산팀", positionCd = null,
-                      plantCd = null, superAdmin = superAdmin, menuPerms = menus.toSet(),
-                      // 이관 후 전산팀처럼 받은 화면의 쓰기 권한도 가진다(R-06). 조회 전용 시험은 loginReadOnly 를 쓴다
-                      writePerms = menus.toSet())
+                      plantCd = null, superAdmin = superAdmin, menuPerms = menus.toSet())
     )
 
-    /** 화면 조회만 있고 쓰기 권한이 없는 계정 (R-06) */
+    /** 화면에는 접근하지만 쓰기 동작을 못 하는 계정 — V70 부터는 미배정 계정뿐이다 */
     private fun loginReadOnly(vararg menus: String) = UserContext.set(
-        UserPrincipal(userId = "IT2", userName = "조회", deptId = 2, deptName = "품질보증팀", positionCd = null,
-                      plantCd = null, superAdmin = false, menuPerms = menus.toSet())
+        UserPrincipal(userId = "IT2", userName = "조회", deptId = 59, deptName = "미배정", positionCd = null,
+                      plantCd = null, superAdmin = false, menuPerms = menus.toSet(), unassigned = true)
     )
 
     private fun req(empNos: List<String>? = null, gwDeptNms: List<String>? = null, all: Boolean? = null, includeSuspended: Boolean? = null) =

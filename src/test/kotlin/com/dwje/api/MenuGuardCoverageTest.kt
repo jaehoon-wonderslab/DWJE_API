@@ -42,8 +42,10 @@ import kotlin.reflect.jvm.kotlinFunction
  * 엔드포인트를 새로 만들고 권한 검사를 빠뜨리면 이 테스트가 실패한다(목록을 손으로 관리하지 않는다).
  *
  * 1. 화면 권한이 하나도 없는 계정 → 모든 대상 엔드포인트가 403 E-AUTH-002
- * 2. 사용 중 전 화면을 **조회만** 가진 계정 → 조회 성격이 아닌 모든 쓰기(POST·PUT·PATCH·DELETE) 엔드포인트가
- *    E-AUTH-004(쓰기 권한 없음) 또는 E-AUTH-002(통합관리자 전용·제거된 화면)로 막힌다.
+ * 2. 사용 중 전 화면에 접근하는 **미배정** 계정 → 조회 성격이 아닌 모든 쓰기(POST·PUT·PATCH·DELETE) 엔드포인트가
+ *    E-AUTH-004(미배정 쓰기 동작 거부) 또는 E-AUTH-002(통합관리자 전용·제거된 화면)로 막힌다.
+ *    V70 부터 쓰기 칸이 없어 「조회만」 계정이 사라졌다 — 쓰기 동작 판정(requireWrite)을 빠뜨린 엔드포인트는
+ *    미배정 계정으로 찾는다.
  *    조회 성격 POST(내려받기·미리보기)는 [READ_LIKE_WRITES] 에 이유와 함께 적는다(R-10 — 내려받기는 쓰기 대상이 아니다).
  *
  * HTTP 를 거치지 않고 컨트롤러 메서드를 직접 부르므로 본문 검증(@Valid)에 걸리지 않고 서비스의 권한 검사까지 간다.
@@ -108,8 +110,8 @@ class MenuGuardCoverageTest {
         }.filter { e -> TARGET_PREFIXES.any { e.path.startsWith(it) } && !SecurityWhitelist.isWhitelisted(e.path) }
             .sortedBy { it.key }
 
-    private fun principal(menus: Set<String>) =
-        UserPrincipal("__guard__", "권한 점검", -1, "권한 점검", null, null, false, menuPerms = menus)
+    private fun principal(menus: Set<String>, unassigned: Boolean = false) =
+        UserPrincipal("__guard__", "권한 점검", -1, "권한 점검", null, null, false, menuPerms = menus, unassigned = unassigned)
 
     /** 대상 메서드를 롤백되는 트랜잭션 안에서 부르고, 던진 업무 예외(없으면 null)를 돌려준다 */
     private fun invoke(e: Endpoint): Throwable? {
@@ -185,18 +187,18 @@ class MenuGuardCoverageTest {
     }
 
     @Test
-    @DisplayName("조회 권한만 있는 계정 — 조회 성격이 아닌 쓰기 엔드포인트는 전부 E-AUTH-004(또는 통합관리자 전용 E-AUTH-002)")
+    @DisplayName("전 화면에 접근하는 미배정 계정 — 조회 성격이 아닌 쓰기 엔드포인트는 전부 E-AUTH-004(또는 통합관리자 전용 E-AUTH-002)")
     fun writeEndpointsNeedWritePermission() {
         val allMenus = jdbc.queryForList("SELECT menu_id FROM ax.tb_sys_menu WHERE use_flg = 'Y'", MapSqlParameterSource(), String::class.java).toSet()
         val writes = endpoints().filter { it.method != "GET" }
-            // 덕반장 AI 는 쓰기 칸이 없지만 질의 이력(/ai/chat/history)의 관리 기능은 쓰기 권한이다 (08 CHH-16)
+            // 덕반장 AI 는 쓰기 판정이 없지만 질의 이력(/ai/chat/history)의 관리 기능은 쓰기 동작이다 (V70 sys-chat-history)
             .filterNot { e -> READ_ONLY_SCREEN_PREFIXES.any { e.path.startsWith(it) } && !e.path.startsWith("/api/v1/ai/chat/history") }
             .filterNot { it.key in READ_LIKE_WRITES }
         assertTrue(writes.size >= 40, "쓰기 엔드포인트를 모으지 못했다 (${writes.size}건)")
 
         val allowed = setOf(ErrorCode.AUTH_WRITE_DENIED.code, ErrorCode.AUTH_MENU_DENIED.code)
         val violations = writes.mapNotNull { e ->
-            UserContext.set(principal(allMenus))
+            UserContext.set(principal(allMenus, unassigned = true))
             val t = invoke(e)
             if (codeOf(t) in allowed) null
             else "$e → ${t?.let { "${it.javaClass.simpleName}(${codeOf(it)}) ${it.message}" } ?: "통과(쓰기 권한 검사 없음)"}"

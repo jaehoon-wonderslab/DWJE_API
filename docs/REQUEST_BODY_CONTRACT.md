@@ -50,6 +50,12 @@
 
 - `PUT /api/v1/ai/chat/history/{messageId}/review`
 
+### `AiTrainAnswerRequest`
+
+허용 키 — `answer` (4000자 이내. 빈 문자열·공백만이면 저장된 학습 답변을 지운다, V70)
+
+- `PUT /api/v1/ai/chat/history/{messageId}/train-answer`
+
 ### `ListExportRequest`
 
 허용 키 — `scope`, `scopeCd`, `menuId`, `condSummary`, `format`, `from`, `to`, `target`, `view`, `keyword`
@@ -465,13 +471,13 @@
 
 ### `MenuPermRequest`
 
-허용 키 — `deptId`, `screenId`, `allowed`, `perm`
+허용 키 — `deptId`, `screenId`, `allowed`, `perm` (`perm` 은 옛 화면 호환으로 받기만 하고 무시한다 — V70 조회/쓰기 칸 통합)
 
 - `PUT /api/v1/system/menu-perms`
 
 ### `MenuPermGroupRequest`
 
-허용 키 — `deptId`, `groupId`, `groupNm`, `allowed`, `perm`, `includeActions`
+허용 키 — `deptId`, `groupId`, `groupNm`, `allowed`, `perm`, `includeActions` (`perm` 은 무시, V70)
 
 - `PUT /api/v1/system/menu-perms/group`
 

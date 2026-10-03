@@ -62,8 +62,9 @@ class DashboardUploadServiceTest {
         AppProperties(upload = UploadProperties(dir = dir.toString())), ObjectMapper(), mock(CodeValidator::class.java)
     )
 
-    private fun login(write: Boolean = true) = UserContext.set(UserPrincipal("10004", "전산", 5, "전산팀", null, null, false,
-        menuPerms = setOf("dash-ai-upload", "dash-ai"), writePerms = if (write) setOf("dash-ai-upload") else emptySet()))
+    /** write=false 는 쓰기 동작을 못 하는 계정 — V70 부터는 미배정 계정뿐이다 */
+    private fun login(write: Boolean = true) = UserContext.set(UserPrincipal("10004", "전산", 5, if (write) "전산팀" else "미배정", null, null, false,
+        menuPerms = setOf("dash-ai-upload", "dash-ai"), unassigned = !write))
 
     private fun xlsxBytes(): ByteArray = ByteArrayOutputStream().also { out ->
         XSSFWorkbook().use { wb -> wb.createSheet("시트1").createRow(0).createCell(0).setCellValue("값"); wb.write(out) }

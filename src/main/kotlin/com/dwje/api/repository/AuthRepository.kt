@@ -88,19 +88,6 @@ class AuthRepository(
         return jdbcTemplate.query(sql, MapSqlParameterSource("userId", userId)) { rs, _ -> rs.getString("menu_id") }.toSet()
     }
 
-    /**
-     * 계정의 유효 화면 권한과 쓰기 여부 — 화면 ID → 쓰기 가능 여부 (R-06, 03 MNP-16).
-     *
-     * 뷰가 이미 `bool_or(can_write)` 로 「부서 can_write OR 계정 추가 허용 can_write」 를 계산한다.
-     * 조회 권한 행만 뷰에 들어오므로 쓰기만 있고 조회가 없는 화면은 생기지 않는다.
-     */
-    fun findEffectiveMenuPermissionsWithWrite(userId: String): Map<String, Boolean> {
-        val sql = "SELECT menu_id, can_write FROM ax.vw_sys_user_menu_perm WHERE user_id = :userId"
-        return jdbcTemplate.query(sql, MapSqlParameterSource("userId", userId)) { rs, _ ->
-            rs.getString("menu_id") to rs.getBoolean("can_write")
-        }.toMap()
-    }
-
     fun findMenuPermissions(deptId: Int): Set<String> {
         // 판정 뷰(vw_sys_user_menu_perm, V64)와 같은 기준 — 화면과 메뉴 그룹이 모두 사용 중이어야 한다 (03 MNP-14)
         val sql = """

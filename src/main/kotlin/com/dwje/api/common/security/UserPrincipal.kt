@@ -16,7 +16,6 @@ package com.dwje.api.common.security
  * @param menuPerms    접근 가능한 메뉴 ID 집합
  * @param dataPerms    허용된 데이터 항목 key 집합 (qty/yield/price/customer/plan/mold/worker)
  * @param impersonated 계정 전환(대행 로그인) 여부
- * @param writePerms   쓰기 가능한 메뉴 ID 집합 — 부서 `can_write` OR 계정 추가 허용 `can_write` (R-06)
  * @param pwdChangeRequired 초기 비밀번호 변경 전 여부 (`pwd_change_req_yn='Y'`, R-04) — true 면 허용 목록 밖 API 를 막는다
  * @param unassigned   미배정 부서 소속 여부 — 화면 권한을 고정 5개로 자르고 데이터 권한을 비운다 (R-01·R-11)
  * @param impersonatedBy 계정 전환을 한 통합관리자 사번 — 전환 토큰으로 한 행위를 원래 관리자와 잇는다 (AUD-02)
@@ -32,7 +31,6 @@ data class UserPrincipal(
     val menuPerms: Set<String> = emptySet(),
     val dataPerms: Set<String> = emptySet(),
     val impersonated: Boolean = false,
-    val writePerms: Set<String> = emptySet(),
     val pwdChangeRequired: Boolean = false,
     val unassigned: Boolean = false,
     val impersonatedBy: String? = null
@@ -41,10 +39,10 @@ data class UserPrincipal(
     fun canAccessMenu(menuId: String): Boolean = superAdmin || menuPerms.contains(menuId)
 
     /**
-     * 통합관리자는 모든 화면에 쓴다. 그 밖에는 조회 권한과 쓰기 권한이 **둘 다** 있어야 한다.
-     * 미배정은 쓰기 권한 집합이 늘 비어 있다(loadPrincipal).
+     * 화면의 쓰기 동작(저장·삭제 등) 허용 여부 — 화면 접근 권한 하나로 판정한다(V70, 조회/쓰기 칸 통합).
+     * 통합관리자는 전부 통과, 미배정 계정은 접근할 수 있는 화면이라도 쓰기 동작을 못 한다.
      */
-    fun canWriteMenu(menuId: String): Boolean = superAdmin || (menuPerms.contains(menuId) && writePerms.contains(menuId))
+    fun canWriteMenu(menuId: String): Boolean = superAdmin || (menuPerms.contains(menuId) && !unassigned)
 
     /** 통합관리자·경영진은 전 데이터 항목을 열람한다. */
     fun canReadField(fieldKey: String): Boolean = superAdmin || dataPerms.contains(fieldKey)

@@ -724,63 +724,30 @@ class SystemUserRepository(
     /** 사용 중 화면의 권한 행 전부(조회 칸이 꺼진 행 포함) — 매트릭스 version·복사 해시 계산용 */
     fun findActiveMenuPermRows(): List<MenuPermRow> {
         val sql = """
-            SELECT p.dept_id, p.menu_id, p.can_read, p.can_write
+            SELECT p.dept_id, p.menu_id, p.can_read
             FROM ax.tb_sys_dept_menu_perm p
             INNER JOIN ax.tb_sys_menu m ON m.menu_id = p.menu_id AND m.use_flg = 'Y'
             INNER JOIN ax.tb_sys_menu_group g ON g.group_id = m.group_id AND g.use_flg = 'Y'
         """.trimIndent()
         return jdbcTemplate.query(sql, MapSqlParameterSource()) { rs, _ ->
-            MenuPermRow(rs.getInt("dept_id"), rs.getString("menu_id"), rs.getBoolean("can_read"), rs.getBoolean("can_write"))
+            MenuPermRow(rs.getInt("dept_id"), rs.getString("menu_id"), rs.getBoolean("can_read"))
         }
     }
 
     /** 부서·화면 한 칸의 현재 값 (행 없으면 null) */
     fun findMenuPerm(deptId: Int, menuId: String): MenuPermRow? =
         jdbcTemplate.query(
-            "SELECT dept_id, menu_id, can_read, can_write FROM ax.tb_sys_dept_menu_perm WHERE dept_id = :deptId AND menu_id = :menuId",
+            "SELECT dept_id, menu_id, can_read FROM ax.tb_sys_dept_menu_perm WHERE dept_id = :deptId AND menu_id = :menuId",
             MapSqlParameterSource().addValue("deptId", deptId).addValue("menuId", menuId)
-        ) { rs, _ -> MenuPermRow(rs.getInt("dept_id"), rs.getString("menu_id"), rs.getBoolean("can_read"), rs.getBoolean("can_write")) }
+        ) { rs, _ -> MenuPermRow(rs.getInt("dept_id"), rs.getString("menu_id"), rs.getBoolean("can_read")) }
             .firstOrNull()
 
     /**
-     * 메뉴 권한 한 칸을 바꾼다 (03 MNP-16).
-     *
-     * | perm  | allowed | 처리 |
-     * | READ  | true    | 조회 켬(기존 쓰기 칸 유지. 동작 화면은 조회=쓰기라 쓰기도 켬) |
-     * | READ  | false   | 행 삭제(쓰기도 함께 회수) |
-     * | WRITE | true    | 조회·쓰기 켬 |
-     * | WRITE | false   | 쓰기만 끔(행 유지) |
+     * 메뉴 접근 권한 한 칸을 바꾼다 (03 MNP-02, V70 — 조회/쓰기 칸 통합).
+     * 허용이면 행을 넣고(이미 있으면 can_read 를 켬), 회수면 행을 지운다. 접근 = 그 화면의 모든 동작 허용이다.
      */
-    fun applyMenuPerm(deptId: Int, menuId: String, allowed: Boolean, perm: String, isAction: Boolean, actor: String): Int {
-        val params = MapSqlParameterSource().addValue("deptId", deptId).addValue("menuId", menuId)
-            .addValue("actor", actor).addValue("isAction", isAction)
-        return when {
-            perm == "READ" && !allowed ->
-                jdbcTemplate.update("DELETE FROM ax.tb_sys_dept_menu_perm WHERE dept_id = :deptId AND menu_id = :menuId", params)
-            perm == "WRITE" && !allowed ->
-                jdbcTemplate.update(
-                    "UPDATE ax.tb_sys_dept_menu_perm SET can_write = false, upd_date = now(), upd_user = :actor WHERE dept_id = :deptId AND menu_id = :menuId",
-                    params
-                )
-            perm == "WRITE" ->
-                jdbcTemplate.update(
-                    """
-                    INSERT INTO ax.tb_sys_dept_menu_perm (dept_id, menu_id, can_read, can_write, ins_user, upd_user)
-                    VALUES (:deptId, :menuId, true, true, :actor, :actor)
-                    ON CONFLICT (dept_id, menu_id) DO UPDATE SET can_read = true, can_write = true, upd_date = now(), upd_user = :actor
-                    """.trimIndent(), params
-                )
-            else ->
-                jdbcTemplate.update(
-                    """
-                    INSERT INTO ax.tb_sys_dept_menu_perm (dept_id, menu_id, can_read, can_write, ins_user, upd_user)
-                    VALUES (:deptId, :menuId, true, :isAction, :actor, :actor)
-                    ON CONFLICT (dept_id, menu_id) DO UPDATE SET can_read = true,
-                        can_write = ax.tb_sys_dept_menu_perm.can_write OR :isAction, upd_date = now(), upd_user = :actor
-                    """.trimIndent(), params
-                )
-        }
-    }
+    fun applyMenuPerm(deptId: Int, menuId: String, allowed: Boolean, actor: String): Int =
+        upsertMenuPerm(deptId, menuId, allowed, actor)
 
     /** 이름으로 메뉴 그룹 ID 찾기(옛 groupNm 본문 호환) */
     fun findMenuGroupId(groupIdOrNm: String): String? =
@@ -793,10 +760,10 @@ class SystemUserRepository(
      * 메뉴 권한 복사 저장 (03 MNP-01) — 대상 부서의 **사용 중 화면** 행만 지우고 원본 집합을 넣는다.
      * 사용 중지 화면의 보존 행은 남긴다(화면을 되살리면 그대로 돌아오게).
      *
-     * @param rows 화면 ID → 쓰기 여부
+     * @param menuIds 접근을 허용할 화면 ID
      * @return 넣은 행 수
      */
-    fun replaceMenuPerms(toDeptId: Int, rows: Map<String, Boolean>, actor: String): Int {
+    fun replaceMenuPerms(toDeptId: Int, menuIds: Collection<String>, actor: String): Int {
         jdbcTemplate.update(
             """
             DELETE FROM ax.tb_sys_dept_menu_perm p USING ax.tb_sys_menu m
@@ -804,24 +771,24 @@ class SystemUserRepository(
             """.trimIndent(),
             MapSqlParameterSource("toDeptId", toDeptId)
         )
-        if (rows.isEmpty()) return 0
+        if (menuIds.isEmpty()) return 0
         val sql = """
-            INSERT INTO ax.tb_sys_dept_menu_perm (dept_id, menu_id, can_read, can_write, ins_user, upd_user)
-            VALUES (:toDeptId, :menuId, true, :canWrite, :actor, :actor)
-            ON CONFLICT (dept_id, menu_id) DO UPDATE SET can_read = true, can_write = EXCLUDED.can_write, upd_date = now(), upd_user = :actor
+            INSERT INTO ax.tb_sys_dept_menu_perm (dept_id, menu_id, can_read, ins_user, upd_user)
+            VALUES (:toDeptId, :menuId, true, :actor, :actor)
+            ON CONFLICT (dept_id, menu_id) DO UPDATE SET can_read = true, upd_date = now(), upd_user = :actor
         """.trimIndent()
-        rows.forEach { (menuId, write) ->
+        menuIds.forEach { menuId ->
             jdbcTemplate.update(sql, MapSqlParameterSource().addValue("toDeptId", toDeptId).addValue("menuId", menuId)
-                .addValue("canWrite", write).addValue("actor", actor))
+                .addValue("actor", actor))
         }
-        return rows.size
+        return menuIds.size
     }
 
     /** 화면별 계정 추가 허용 (사용 중 화면만) — 매트릭스 grants·grantCounts */
     fun findGrantsByMenu(): Map<String, List<Map<String, Any?>>> =
         jdbcTemplate.query(
             """
-            SELECT g.menu_id, g.user_id, u.user_nm, u.dept_id, g.can_write
+            SELECT g.menu_id, g.user_id, u.user_nm, u.dept_id
               FROM ax.tb_sys_user_menu_grant g
               JOIN ax.tb_sys_user u ON u.user_id = g.user_id
               JOIN ax.tb_sys_menu m ON m.menu_id = g.menu_id AND m.use_flg = 'Y'
@@ -832,7 +799,7 @@ class SystemUserRepository(
         ) { rs, _ ->
             rs.getString("menu_id") to mapOf<String, Any?>(
                 "empNo" to rs.getString("user_id"), "name" to rs.getString("user_nm"),
-                "deptId" to rs.getInt("dept_id"), "write" to rs.getBoolean("can_write")
+                "deptId" to rs.getInt("dept_id")
             )
         }.groupBy({ it.first }, { it.second })
 
@@ -846,7 +813,7 @@ class SystemUserRepository(
         // 권한 관리 화면이 존재하지 않는 행을 그리고 관리자가 켜고 꺼도 아무 일이 없다.
         // 실제로 비가동 관리(prod-down)를 내렸을 때 그렇게 남았다.
         val sql = """
-            SELECT p.dept_id, p.menu_id, p.can_read, p.can_write
+            SELECT p.dept_id, p.menu_id
             FROM ax.tb_sys_dept_menu_perm p
             INNER JOIN ax.tb_sys_menu m ON m.menu_id = p.menu_id AND m.use_flg = 'Y'
             INNER JOIN ax.tb_sys_menu_group g ON g.group_id = m.group_id AND g.use_flg = 'Y'
@@ -856,8 +823,7 @@ class SystemUserRepository(
         return jdbcTemplate.query(sql, MapSqlParameterSource()) { rs, _ ->
             mapOf(
                 "deptId" to rs.getInt("dept_id"),
-                "menuId" to rs.getString("menu_id"),
-                "canWrite" to rs.getBoolean("can_write")
+                "menuId" to rs.getString("menu_id")
             )
         }
     }
@@ -877,8 +843,8 @@ class SystemUserRepository(
         }
 
         val sql = """
-            INSERT INTO ax.tb_sys_dept_menu_perm (dept_id, menu_id, can_read, can_write, ins_user, upd_user)
-            VALUES (:deptId, :menuId, true, false, :actor, :actor)
+            INSERT INTO ax.tb_sys_dept_menu_perm (dept_id, menu_id, can_read, ins_user, upd_user)
+            VALUES (:deptId, :menuId, true, :actor, :actor)
             ON CONFLICT (dept_id, menu_id)
             DO UPDATE SET can_read = true, upd_date = now(), upd_user = :actor
         """.trimIndent()
@@ -1072,12 +1038,12 @@ class SystemUserRepository(
         ) { rs, _ -> rs.getString("menu_id") }.toSet()
     }
 
-    /** 추가 허용 부여(멱등). 계정 관리 화면은 열람만 부여한다 — can_write 는 false 로 둔다. */
+    /** 추가 허용 부여(멱등). 행이 있으면 그 화면에 접근할 수 있다(V70 — 쓰기 칸 없음). */
     fun insertUserGrants(empNo: String, menuIds: Collection<String>, actor: String): Int {
         if (menuIds.isEmpty()) return 0
         val sql = """
-            INSERT INTO ax.tb_sys_user_menu_grant (user_id, menu_id, can_write, ins_user, upd_user)
-            VALUES (:empNo, :menuId, false, :actor, :actor)
+            INSERT INTO ax.tb_sys_user_menu_grant (user_id, menu_id, ins_user, upd_user)
+            VALUES (:empNo, :menuId, :actor, :actor)
             ON CONFLICT (user_id, menu_id) DO UPDATE SET upd_user = EXCLUDED.upd_user, upd_date = now()
         """.trimIndent()
         val batch = menuIds.map { MapSqlParameterSource().addValue("empNo", empNo).addValue("menuId", it).addValue("actor", actor) }
@@ -1160,5 +1126,5 @@ class SystemUserRepository(
 
 }
 
-/** 부서 × 화면 권한 행 */
-data class MenuPermRow(val deptId: Int, val menuId: String, val read: Boolean, val write: Boolean)
+/** 부서 × 화면 권한 행 — 행이 있고 read 면 접근 허용(V70 부터 쓰기 칸 없음) */
+data class MenuPermRow(val deptId: Int, val menuId: String, val read: Boolean)

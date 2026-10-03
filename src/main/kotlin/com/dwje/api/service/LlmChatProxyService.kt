@@ -195,6 +195,8 @@ class LlmChatProxyService(
             "stream" to true,
             "max_tokens" to 512,
             "reasoning_effort" to "none",
+            // 마지막 조각에 usage(토큰 수)를 받는다 — 질의 이력에 남긴다(V71). 화면에는 이 조각을 그대로 보내지 않는다
+            "stream_options" to mapOf("include_usage" to true),
             "dwje" to mapOf("rag" to false, "tools" to false)
         ) + cfg.sampling.fields() + mapOf("temperature" to if (general) 0.2 else 0.0)
 
@@ -394,10 +396,10 @@ class LlmChatProxyService(
      *
      * @param messageId `/ai/chat/ask` 가 준 이력 ID. 없으면 저장하지 않는다
      */
-    fun saveAnswer(messageId: Long?, answer: String, elapsedMs: Long) {
+    fun saveAnswer(messageId: Long?, answer: String, elapsedMs: Long, meta: AiChatRepository.LlmMeta? = null) {
         if (messageId == null) return
         val userId = UserContext.currentOrNull()?.userId ?: return
-        runCatching { aiChatRepository.updateLlmAnswer(messageId, userId, AiResponseSanitizer.publicText(answer)!!, elapsedMs.toInt()) }
+        runCatching { aiChatRepository.updateLlmAnswer(messageId, userId, AiResponseSanitizer.publicText(answer)!!, elapsedMs.toInt(), meta) }
             .onSuccess { if (it == 0) log.warn("LLM 답 저장 대상 없음 : messageId={} user={}", messageId, userId) }
             .onFailure { log.warn("LLM 답 저장 실패 : messageId={} {}", messageId, it.toString()) }
     }
@@ -430,16 +432,35 @@ class LlmChatProxyService(
 
         fun text(): String = text.toString()
 
+        // LLM 응답 메타(V71) — 조각마다 오는 model · id, 끝 조각의 finish_reason, include_usage 마지막 조각의 usage
+        private var model: String? = null
+        private var requestId: String? = null
+        private var finishReason: String? = null
+        private var usage: JsonNode? = null
+
+        /** 받은 메타 + 호출 시간. 아무것도 못 받았으면(연결 직후 끊김 등) 시간만 */
+        fun meta(elapsedMs: Long): com.dwje.api.repository.AiChatRepository.LlmMeta =
+            com.dwje.api.repository.AiChatRepository.LlmMeta(
+                model = model, requestId = requestId, finishReason = finishReason,
+                promptTokens = usage?.path("prompt_tokens")?.takeIf { it.isIntegralNumber }?.asInt(),
+                completionTokens = usage?.path("completion_tokens")?.takeIf { it.isIntegralNumber }?.asInt(),
+                totalTokens = usage?.path("total_tokens")?.takeIf { it.isIntegralNumber }?.asInt(),
+                elapsedMs = elapsedMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            )
+
         private fun flushLine() {
             val s = line.toString(Charsets.UTF_8).trim()
             line.reset()
             if (!s.startsWith("data:")) return
             val data = s.removePrefix("data:").trim()
             if (data == "[DONE]") { done = true; return }
-            runCatching { objectMapper.readTree(data) }.getOrNull()
-                ?.path("choices")?.path(0)?.path("delta")?.path("content")
-                ?.takeIf { it.isTextual }
-                ?.let { text.append(it.asText()) }
+            val node = runCatching { objectMapper.readTree(data) }.getOrNull() ?: return
+            node.path("model").takeIf { it.isTextual }?.let { model = it.asText() }
+            node.path("id").takeIf { it.isTextual }?.let { requestId = it.asText() }
+            node.path("usage").takeIf { it.isObject }?.let { usage = it }
+            val choice = node.path("choices").path(0)
+            choice.path("finish_reason").takeIf { it.isTextual }?.let { finishReason = it.asText() }
+            choice.path("delta").path("content").takeIf { it.isTextual }?.let { text.append(it.asText()) }
         }
     }
 }

@@ -27,7 +27,7 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 /**
  * 용어 사전 권한·유사어 규칙 — 07 GLS-01·03, 13 GLV-02·05 (DB 없이)
  *
- * 1. 공식 용어 편집은 통합관리자만(E-AUTH-002), 조회만이면 E-AUTH-004, 화면 권한 없으면 E-AUTH-002
+ * 1. 공식 용어 편집은 통합관리자만(E-AUTH-002), 미배정이면 E-AUTH-004(V70), 화면 권한 없으면 E-AUTH-002
  * 2. 조회 API 는 gloss-view 로도 열리고, 그때 관리 지표·편집 표시·등록자 사번은 주지 않는다
  * 3. 유사어: 한 글자·숫자·날짜·공식 용어와 같은 낱말 400, 다른 공식 용어에 들어 있으면 경고
  */
@@ -67,16 +67,18 @@ class GlossaryPermissionTest {
     private val service = GlossaryService(repo, mock(GlossaryNormalizer::class.java), mock(VectorIndexRepository::class.java),
         AuthorizationService(mock(AuthRepository::class.java)))
 
-    private fun login(read: Set<String>, write: Set<String> = emptySet(), superAdmin: Boolean = false, user: String = "10002") =
-        UserContext.set(UserPrincipal(user, "사용자", 3, "생산관리팀", null, null, superAdmin, menuPerms = read, writePerms = write))
+    /** unassigned = 화면에는 접근하지만 쓰기 동작을 못 하는 미배정 계정 (V70) */
+    private fun login(read: Set<String>, unassigned: Boolean = false, superAdmin: Boolean = false, user: String = "10002") =
+        UserContext.set(UserPrincipal(user, "사용자", 3, if (unassigned) "미배정" else "생산관리팀", null, null, superAdmin,
+            menuPerms = read, unassigned = unassigned))
 
     @Test
-    @DisplayName("GLS-01 공식 용어 편집 — 쓰기 권한자도 통합관리자가 아니면 403 E-AUTH-002, 조회만이면 E-AUTH-004, 통합관리자는 통과")
+    @DisplayName("GLS-01 공식 용어 편집 — 화면 접근자도 통합관리자가 아니면 403 E-AUTH-002, 미배정이면 E-AUTH-004, 통합관리자는 통과")
     fun termsSuperAdminOnly() {
-        login(setOf("sys-gloss"), setOf("sys-gloss"))
+        login(setOf("sys-gloss"))
         listOf({ service.createTerm("새용어", "뜻", "생산단위") }, { service.updateTerm(15, "LOT", "뜻", "생산단위") }, { service.deleteTerm(15) })
             .forEach { call -> assertEquals(ErrorCode.AUTH_MENU_DENIED, assertThrows(BusinessException::class.java) { call() }.errorCode) }
-        login(setOf("sys-gloss"))
+        login(setOf("sys-gloss"), unassigned = true)
         assertThrows(WriteAccessDeniedException::class.java) { service.createTerm("새용어", "뜻", "생산단위") }
         login(setOf("gloss-view"))
         assertThrows(MenuAccessDeniedException::class.java) { service.createTerm("새용어", "뜻", "생산단위") }
@@ -107,7 +109,7 @@ class GlossaryPermissionTest {
         login(emptySet())
         assertThrows(MenuAccessDeniedException::class.java) { service.getSummary() }
 
-        login(setOf("sys-gloss"), setOf("sys-gloss"))
+        login(setOf("sys-gloss"))
         val m = service.getSummary()
         assertEquals(1L, m["myVariantCnt"]); assertEquals(false, m["canEditTerm"]); assertEquals(true, m["canWriteVariant"])
         assertTrue(service.exportTerms(GlossaryExportRequest(menuId = "sys-gloss")).headers.contains("유사어 등록자"))
@@ -127,7 +129,7 @@ class GlossaryPermissionTest {
     @Test
     @DisplayName("GLS-03 유사어 규칙 — 한 글자·숫자·날짜·공식 용어(자기 용어 포함)와 같은 낱말은 400, 다른 용어에 들어 있으면 경고")
     fun variantRules() {
-        login(setOf("sys-gloss"), setOf("sys-gloss"))
+        login(setOf("sys-gloss"))
         mapOf("계" to "2자 이상", "2026" to "숫자나 날짜", "9월" to "숫자나 날짜", "불량" to "공식 용어 [불량]", "lot" to "공식 용어 [LOT]")
             .forEach { (w, msg) ->
                 val e = assertThrows(InvalidParameterException::class.java) { service.createVariant(15, w) }

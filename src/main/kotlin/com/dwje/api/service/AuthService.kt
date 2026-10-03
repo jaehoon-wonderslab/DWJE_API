@@ -294,10 +294,11 @@ class AuthService(
         // 메뉴 트리 쿼리를 쓰면 하위 화면(is_sub_page)이 빠져 들어갈 수 없게 되므로
         // 통합관리자에게는 사용 중인 전 화면을 준다. (system/menu-perms 의 matrix 와 같은 기준)
         // 하위 화면을 메뉴에 그릴지는 클라이언트가 screens[].sub 로 판단한다.
-        // 쓰기 권한도 같은 기준이다 — 통합관리자는 전 화면, 그 밖에는 조회 권한이 있는 화면 중 can_write 인 것(R-06).
+        // writePerms 는 호환용으로 남긴 값이다(V70 — 조회/쓰기 칸 통합). 접근할 수 있는 화면은 모두 쓸 수 있으므로
+        // menuPerms 와 같고, 미배정 계정만 빈 목록이다(서버가 쓰기 동작을 E-AUTH-004 로 막는다).
         val allMenuIds = if (principal.superAdmin) authRepository.findAllMenuIds() else emptyList()
         val menuPerms = if (principal.superAdmin) allMenuIds else principal.menuPerms.sorted()
-        val writePerms = if (principal.superAdmin) allMenuIds else principal.writePerms.filter { it in principal.menuPerms }.sorted()
+        val writePerms = if (principal.unassigned) emptyList() else menuPerms
 
         return MyInfoResponse(
             user = user,

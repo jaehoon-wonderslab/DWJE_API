@@ -122,6 +122,44 @@ class VectorIndexRepository(
     }
 
     /**
+     * 질의 이력 목록 행의 근거 문서 요약 — 질의마다 최신 검색 기록의 히트 상위 [top] 건(순위순)과 히트 수.
+     * 상세의 `hits`([findQueryDetail] → [findQueryHits])와 같은 원천이다. 한 쪽(page)의 질의를 한 번에 읽는다.
+     *
+     * @return chatId → (상위 히트 목록, 히트 수). 검색 기록이 없는 질의는 키가 없다
+     */
+    fun findHitSummaries(chatIds: Collection<Long>, top: Int = 3): Map<Long, Pair<List<Map<String, Any?>>, Int>> {
+        if (chatIds.isEmpty()) return emptyMap()
+        val sql = """
+            WITH q AS (
+                SELECT DISTINCT ON (chat_id) chat_id, query_id
+                  FROM vec.tb_query_log
+                 WHERE chat_id IN (:chatIds)
+                 ORDER BY chat_id, asked_at DESC, query_id DESC
+            )
+            SELECT q.chat_id, h.rank_no, h.rrf_score, h.rerank_score, h.ts_score, h.doc_id, d.title, c.heading, c.page_no,
+                   count(*) OVER (PARTITION BY q.chat_id) AS hit_cnt,
+                   row_number() OVER (PARTITION BY q.chat_id ORDER BY h.rank_no) AS rn
+              FROM q
+              JOIN vec.tb_query_hit h ON h.query_id = q.query_id
+              LEFT JOIN vec.tb_doc       d ON d.doc_id   = h.doc_id
+              LEFT JOIN vec.tb_doc_chunk c ON c.chunk_id = h.chunk_id
+        """.trimIndent()
+        val rows = jdbcTemplate.query(sql, MapSqlParameterSource("chatIds", chatIds)) { rs, _ ->
+            Triple(rs.getLong("chat_id"), rs.getInt("hit_cnt"), if (rs.getInt("rn") > top) null else mapOf<String, Any?>(
+                "rank" to rs.getInt("rank_no"),
+                "docId" to rs.getLong("doc_id"),
+                "title" to rs.getString("title"),
+                "heading" to rs.getString("heading"),
+                "page" to Rs.intOrNull(rs, "page_no"),
+                "score" to (Rs.doubleOrNull(rs, "rerank_score") ?: Rs.doubleOrNull(rs, "rrf_score") ?: Rs.doubleOrNull(rs, "ts_score"))
+            ))
+        }
+        return rows.groupBy { it.first }.mapValues { (_, list) ->
+            list.mapNotNull { it.third }.sortedBy { it["rank"] as Int } to list.first().second
+        }
+    }
+
+    /**
      * 질의 검색 히트 목록을 조회한다. (No.188)
      */
     fun findQueryHits(queryId: Long): List<Map<String, Any?>> {

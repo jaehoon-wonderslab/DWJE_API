@@ -402,6 +402,9 @@ MES 원본에서 복제한 기본 정보와 생산·불량·재고 기록을 저
 | `profile_id` | `integer` | Y | N | 이 응답을 만든 서빙 버전 (ax.tb_ai_serving_profile). 버전별 품질 비교와 회귀 추적의 기준 |
 | `evidence_summary` | `text` | Y | N | 주석 없음 |
 | `unanswered_reason` | `text` | Y | N | 주석 없음 |
+| `train_answer` | `text` | Y | N | 학습 답변 — 전사 자연어 질의 이력 화면의 「답변 추가(학습 데이터)」. 4000자 이내. 학습데이터 내보내기는 이 값이 있으면 평가와 관계없이 넣고 응답 대신 이 값을 씀 (V70) |
+| `train_answer_by` | `character varying(30)` | Y | N | 학습 답변 작성자 사번 (ax.tb_sys_user.user_id). 답변을 지우면 NULL (V70) |
+| `train_answer_at` | `timestamp with time zone` | Y | N | 학습 답변 저장 시각. 답변을 지우면 NULL (V70) |
 
 **테이블명:** `ax.tb_ai_model_config`
 
@@ -1440,8 +1443,9 @@ MES 원본에서 복제한 기본 정보와 생산·불량·재고 기록을 저
 | :--- | :--- | :---: | :---: | :--- |
 | `dept_id` | `integer` | N | Y | 권한을 받는 부서 (ax.tb_sys_dept). 메뉴 접근 권한 화면 메뉴 권한 표의 부서 열 머리 |
 | `menu_id` | `character varying(30)` | N | Y | 대상 화면 (ax.tb_sys_menu). 메뉴 접근 권한 화면 메뉴 권한 표의 행 |
-| `can_read` | `boolean` | N | N | 조회 권한. 행이 있으면서 true 여야 화면에 들어갈 수 있음. 메뉴 접근 권한 화면 표의 체크 상태 |
-| `can_write` | `boolean` | N | N | 입력·수정 권한. false 면 조회만 가능하며, 권한 변경 이력의 "입력 권한 부여" 가 이 값을 켠 기록 |
+| `can_read` | `boolean` | N | N | 접근 권한. 행이 있으면서 true 여야 화면에 들어갈 수 있고, 들어갈 수 있으면 그 화면의 모든 동작을 허용(V70 에서 쓰기 칸 통합). 메뉴 접근 권한 화면 표의 「접근」 칸 |
+
+> 2026-10-03 V70 로 `can_write` 컬럼을 삭제했습니다. 접근 권한이 있으면 쓰기 동작도 허용하며, 미배정 부서 계정의 쓰기 동작 거부(E-AUTH-004)는 API 가 판정합니다. 판정 뷰 `ax.vw_sys_user_menu_perm` 의 열은 `user_id, menu_id, from_dept, from_grant` 입니다.
 | `ins_date` | `timestamp with time zone` | N | N | 등록일시 |
 | `ins_user` | `common.d_user_id` | Y | N | 등록자 (사번) |
 | `upd_date` | `timestamp with time zone` | N | N | 최종 수정일시 |
@@ -1574,13 +1578,12 @@ MES 원본에서 복제한 기본 정보와 생산·불량·재고 기록을 저
 
 **테이블명:** `ax.tb_sys_user_menu_grant`
 
-**테이블 설명:** 계정 × 화면 추가 허용 — 부서 권한에 더해 이 계정에만 열어 주는 화면. 행의 존재 = 열람 허용이며, 행으로 차단하는 용법은 없음(추가 허용 전용)
+**테이블 설명:** 계정 × 화면 추가 허용 — 부서 권한에 더해 이 계정에만 열어 주는 화면. 행의 존재 = 접근 허용이며, 행으로 차단하는 용법은 없음(추가 허용 전용). `can_write` 컬럼은 V70(2026-10-03)에서 삭제
 
 | 컬럼명 | 자료형 | NULL 허용 | 기본 키 | DB 주석 |
 | :--- | :--- | :---: | :---: | :--- |
 | `user_id` | `common.d_user_id` | N | Y | 사번 = ax.tb_sys_user.user_id. 웹·API 응답에서는 empNo. 계정 삭제 시 함께 삭제(CASCADE) |
 | `menu_id` | `character varying(30)` | N | Y | 화면 ID = ax.tb_sys_menu.menu_id. 웹 API 에서는 screenId. 조회 시 use_flg='Y' 메뉴만 반환 |
-| `can_write` | `boolean` | N | N | 입력·수정 권한 추가 부여. 유효 쓰기 권한 = 부서 can_write OR 이 값 (가산이며 부서 권한을 낮추지 않는다) |
 | `grant_reason` | `character varying(200)` | Y | N | 부여 사유. 부서 기준을 벗어난 예외이므로 남겨 두면 감사에서 되짚기 쉬움. 없으면 NULL |
 | `ins_date` | `timestamp with time zone` | N | N | 권한을 부여한 일시 |
 | `ins_user` | `common.d_user_id` | Y | N | 이 권한을 부여한 관리자 사번. 변경 이력 상세는 ax.tb_sys_perm_log (act_cd = USER_MENU_PERM) |

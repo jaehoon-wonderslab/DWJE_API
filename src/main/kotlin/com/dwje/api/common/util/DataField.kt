@@ -54,8 +54,10 @@ object MenuId {
     const val ALERT_COND = "alert-cond"
     const val SYS_RECIP = "sys-recip"
     const val SYS_GLOSS = "sys-gloss"
-    /** 자연어 질의 이력 — 2026-10-01 대그룹 「자연어 질의 이력」(history, `/history/chat`)으로 옮겼다 (R-08) */
+    /** 자연어 질의 이력 — 대그룹 「자연어 질의 이력」(history, `/history/chat`). V70 부터 본인 질의만 본다(scope=mine) */
     const val CHAT_HISTORY = "chat-history"
+    /** 시스템관리 › 전사 자연어 질의 이력 (`/system/chat-history`, V70) — 전 사용자 질의 · 검수 · 학습 데이터(scope=all) */
+    const val SYS_CHAT_HISTORY = "sys-chat-history"
     /** 용어 사전 › 용어 사전 조회 (GL-01, 대그룹 glossary, `/glossary/view`) — 조회 전용 (R-09 · R-15) */
     const val GLOSS_VIEW = "gloss-view"
     const val SYS_AUDIT = "sys-audit"
@@ -110,10 +112,11 @@ object MenuId {
     val UNASSIGNED_SCREENS: Set<String> = linkedSetOf(DASH_AI, DASH_PROC, PROD_MONITOR, AI_CHAT, CHAT_HISTORY)
 
     /**
-     * 관리 화면 4종 — 이 화면들의 부서 권한·계정 추가 허용은 통합관리자만 부여·회수한다 (R-07).
+     * 관리 화면 5종 — 이 화면들의 부서 권한·계정 추가 허용은 통합관리자만 부여·회수한다 (R-07).
      * 메뉴 접근 권한(03)과 계정 관리(01) 두 화면이 같은 목록을 쓴다.
+     * 전사 자연어 질의 이력(sys-chat-history)은 관리자 전용이다(2026-10-03 사용자 결정) — 기본 권한 행 없이 통합관리자만 연다.
      */
-    val ADMIN_SCREENS: Set<String> = linkedSetOf(SYS_ACCOUNT, SYS_MENU, SYS_DATA, SYS_GW_DEPT)
+    val ADMIN_SCREENS: Set<String> = linkedSetOf(SYS_ACCOUNT, SYS_MENU, SYS_DATA, SYS_GW_DEPT, SYS_CHAT_HISTORY)
 
     /**
      * 전사 공통 화면 — 새 부서를 만들면 조회 권한을 기본으로 준다 (08 CHH-17 · 13 GLV-06 · 03 MNP-17).

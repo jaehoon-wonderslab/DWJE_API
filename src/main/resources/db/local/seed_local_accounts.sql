@@ -122,14 +122,16 @@ ON CONFLICT (dept_id, field_key) DO NOTHING;
 -- 4. 메뉴 접근 권한 — 「화면-API 매핑」 시트의 접근 부서
 -- -------------------------------------------------------------------------------------
 
--- 4-0. 쓰기 권한 행 (can_write = true) — V49 이관 표 + V67(업로드 문서 숨김) 과 같다. 빈 DB 에서는 V49 가 돌 때 부서가 아직 없어
---      이관할 행이 없으므로 여기서 넣는다. 아래 4-1 · 4-2 보다 먼저 넣어야 조회 전용 행으로 덮이지 않는다.
-INSERT INTO ax.tb_sys_dept_menu_perm (dept_id, menu_id, can_read, can_write, ins_user, upd_user)
-SELECT d.dept_id, v.menu_id, true, true, 'SEED', 'SEED'
+-- 4-0. 관리 화면 접근 행 — V49 이관 표 + V67(업로드 문서 숨김) 과 같다.
+--      전사 자연어 질의 이력(sys-chat-history)은 관리자(통합관리자 부서) 전용이라 행을 넣지 않는다.
+--      V70 부터 조회/쓰기 칸이 「접근」 하나라(can_write 컬럼 삭제) 행이 있으면 그 화면의 모든 동작을 허용한다.
+--      빈 DB 에서는 V49 · V70 이 돌 때 부서가 아직 없어 넣을 행이 없으므로 여기서 넣는다.
+INSERT INTO ax.tb_sys_dept_menu_perm (dept_id, menu_id, can_read, ins_user, upd_user)
+SELECT d.dept_id, v.menu_id, true, 'SEED', 'SEED'
 FROM (VALUES
     ('sys-account','전산팀'), ('sys-gw-dept','전산팀'), ('sys-menu','전산팀'), ('sys-data','전산팀'),
     ('alert-cond','전산팀'), ('sys-recip','전산팀'), ('sys-gloss','전산팀'), ('sys-sync','전산팀'),
-    ('chat-history','전산팀'), ('dash-ai-upload','전산팀'), ('sys-upload-doc','전산팀'),
+    ('dash-ai-upload','전산팀'), ('sys-upload-doc','전산팀'),
 
     ('sys-account','통합관리자'), ('alert-cond','통합관리자'), ('sys-recip','통합관리자'),
     ('sys-sync','통합관리자'), ('sys-gloss','통합관리자'),
@@ -141,8 +143,8 @@ WHERE EXISTS (SELECT 1 FROM ax.tb_sys_menu m WHERE m.menu_id = v.menu_id)
 ON CONFLICT (dept_id, menu_id) DO NOTHING;
 
 -- 4-1. 전 부서 공통 화면 — 미배정은 고정 5개 화면만(V49)이라 뺀다
-INSERT INTO ax.tb_sys_dept_menu_perm (dept_id, menu_id, can_read, can_write, ins_user, upd_user)
-SELECT d.dept_id, m.menu_id, true, false, 'SEED', 'SEED'
+INSERT INTO ax.tb_sys_dept_menu_perm (dept_id, menu_id, can_read, ins_user, upd_user)
+SELECT d.dept_id, m.menu_id, true, 'SEED', 'SEED'
 FROM ax.tb_sys_dept d
 CROSS JOIN (VALUES ('ai-chat'), ('dash-ai'), ('dash-proc'), ('alert-list'), ('sys-gloss'), ('chat-history'),
                    ('gloss-view')) AS m(menu_id)
@@ -152,8 +154,8 @@ WHERE d.use_flg = 'Y'
 ON CONFLICT (dept_id, menu_id) DO NOTHING;
 
 -- 4-2. 부서 지정 화면
-INSERT INTO ax.tb_sys_dept_menu_perm (dept_id, menu_id, can_read, can_write, ins_user, upd_user)
-SELECT d.dept_id, v.menu_id, true, false, 'SEED', 'SEED'
+INSERT INTO ax.tb_sys_dept_menu_perm (dept_id, menu_id, can_read, ins_user, upd_user)
+SELECT d.dept_id, v.menu_id, true, 'SEED', 'SEED'
 FROM (VALUES
     -- 대시보드 (제조팀 제외)
     ('dash-kpi','품질보증팀'), ('dash-kpi','생산관리팀'), ('dash-kpi','전산팀'), ('dash-kpi','경영진'), ('dash-kpi','통합관리자'),

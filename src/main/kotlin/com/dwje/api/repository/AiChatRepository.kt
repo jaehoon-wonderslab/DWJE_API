@@ -51,6 +51,73 @@ class AiChatRepository(
         return reviewColumnsSeen
     }
 
+    /** V70(학습 답변 컬럼 3개)이 적용됐는지. 적용 전 서버에서도 질의 이력 조회가 500 이 나지 않게 한다 */
+    @Volatile private var trainColumnsSeen = false
+    internal fun hasTrainColumns(): Boolean {
+        if (trainColumnsSeen) return true
+        val sql = """
+            SELECT count(*) FROM information_schema.columns
+            WHERE table_schema = 'ax' AND table_name = 'tb_ai_chat_log'
+              AND column_name IN ('train_answer', 'train_answer_by', 'train_answer_at')
+        """.trimIndent()
+        trainColumnsSeen = jdbcTemplate.queryForObject(sql, MapSqlParameterSource(), Int::class.java) == 3
+        return trainColumnsSeen
+    }
+
+    /**
+     * 답변 시각 · 학습 답변 SELECT 조각 (V70) — 목록·상세·세션 공용. 적용 전이면 같은 이름의 NULL 로 채운다.
+     * 답변 시각 = 질의 시각 + 응답 시간(response_ms). 응답 시간이 없으면 NULL.
+     */
+    private fun trainSelect(): String {
+        val answeredAt = "c.asked_at + c.response_ms * interval '1 millisecond' AS answered_at"
+        return if (hasTrainColumns())
+            "$answeredAt, c.train_answer, c.train_answer_by, c.train_answer_at, " +
+                "(SELECT tu.user_nm FROM ax.tb_sys_user tu WHERE tu.user_id = c.train_answer_by) AS train_answer_by_nm"
+        else "$answeredAt, NULL::text AS train_answer, NULL::varchar AS train_answer_by, NULL::timestamptz AS train_answer_at, " +
+            "NULL::varchar AS train_answer_by_nm"
+    }
+
+    /** V71(LLM 응답 메타 컬럼 7개)이 적용됐는지. 적용 전 서버에서도 답 저장·이력 조회가 500 이 나지 않게 한다 */
+    @Volatile private var llmMetaColumnsSeen = false
+    internal fun hasLlmMetaColumns(): Boolean {
+        if (llmMetaColumnsSeen) return true
+        val sql = """
+            SELECT count(*) FROM information_schema.columns
+            WHERE table_schema = 'ax' AND table_name = 'tb_ai_chat_log'
+              AND column_name IN ('llm_model', 'llm_finish_reason', 'prompt_tokens', 'completion_tokens',
+                                  'total_tokens', 'llm_ms', 'llm_request_id')
+        """.trimIndent()
+        llmMetaColumnsSeen = jdbcTemplate.queryForObject(sql, MapSqlParameterSource(), Int::class.java) == 7
+        return llmMetaColumnsSeen
+    }
+
+    /** LLM 응답 메타 SELECT 조각 (V71) — 적용 전이면 같은 이름의 NULL. 의도 명칭(intent_nm)도 함께 낸다 */
+    private fun llmSelect(): String = "c.intent_nm, " + if (hasLlmMetaColumns())
+        "c.llm_model, c.llm_finish_reason, c.prompt_tokens, c.completion_tokens, c.total_tokens, c.llm_ms, c.llm_request_id"
+    else "NULL::varchar AS llm_model, NULL::varchar AS llm_finish_reason, NULL::int AS prompt_tokens, " +
+        "NULL::int AS completion_tokens, NULL::int AS total_tokens, NULL::int AS llm_ms, NULL::varchar AS llm_request_id"
+
+    /** [llmSelect] 행 매핑 — `llmRequestId` 는 서비스가 scope=all 에서만 남긴다 */
+    private fun llmFields(rs: java.sql.ResultSet): Map<String, Any?> = mapOf(
+        "intentNm" to rs.getString("intent_nm"),
+        "llmModel" to rs.getString("llm_model"),
+        "finishReason" to rs.getString("llm_finish_reason"),
+        "promptTokens" to Rs.intOrNull(rs, "prompt_tokens"),
+        "completionTokens" to Rs.intOrNull(rs, "completion_tokens"),
+        "totalTokens" to Rs.intOrNull(rs, "total_tokens"),
+        "llmMs" to Rs.intOrNull(rs, "llm_ms"),
+        "llmRequestId" to rs.getString("llm_request_id")
+    )
+
+    /** [trainSelect] 행 매핑 */
+    private fun trainFields(rs: java.sql.ResultSet): Map<String, Any?> = mapOf(
+        "answeredAt" to Rs.dateTime(rs, "answered_at"),
+        "trainAnswer" to rs.getString("train_answer"),
+        "trainAnswerAt" to Rs.dateTime(rs, "train_answer_at"),
+        "trainAnswerBy" to rs.getString("train_answer_by"),
+        "trainAnswerByNm" to rs.getString("train_answer_by_nm")
+    )
+
     /** 가린 항목 집합 → text[] 리터럴. 빈 집합은 '{}' (NULL 은 「기록 이전」 이라 구분한다) */
     private fun textArray(keys: Collection<String>): String =
         keys.filter { it.matches(Regex("[a-z0-9_]+")) }.sorted().joinToString(",", "{", "}")
@@ -189,13 +256,18 @@ class AiChatRepository(
      *
      * @return 고친 행 수 (0 이면 없는 ID 이거나 남의 이력)
      */
-    fun updateLlmAnswer(chatId: Long, userId: String, answer: String, responseMs: Int): Int {
+    fun updateLlmAnswer(chatId: Long, userId: String, answer: String, responseMs: Int, meta: LlmMeta? = null): Int {
         val reasonUpdate = if (hasBasisColumns())
             ", unanswered_reason = CASE WHEN :answer = '' THEN '모델 응답이 생성되지 않았습니다.' ELSE NULL END" else ""
+        // LLM 응답 메타(V71) — 컬럼이 없으면 건너뛴다. 값이 없는 항목(서버가 안 준 usage 등)은 NULL
+        val metaUpdate = if (meta != null && hasLlmMetaColumns()) """,
+                   llm_model = :llmModel, llm_finish_reason = :finishReason,
+                   prompt_tokens = :promptTokens, completion_tokens = :completionTokens, total_tokens = :totalTokens,
+                   llm_ms = :llmMs, llm_request_id = :llmRequestId""" else ""
         val sql = """
             UPDATE ax.tb_ai_chat_log
                SET answer      = :answer,
-                   response_ms = ${if (hasReviewColumns()) "coalesce(ask_ms, 0) + :responseMs" else ":responseMs"}$reasonUpdate
+                   response_ms = ${if (hasReviewColumns()) "coalesce(ask_ms, 0) + :responseMs" else ":responseMs"}$reasonUpdate$metaUpdate
              WHERE chat_id = :chatId
                AND user_id = :userId
         """.trimIndent()
@@ -206,8 +278,26 @@ class AiChatRepository(
                 .addValue("userId", userId)
                 .addValue("answer", answer)
                 .addValue("responseMs", responseMs)
+                .addValue("llmModel", meta?.model?.take(100))
+                .addValue("finishReason", meta?.finishReason?.take(30))
+                .addValue("promptTokens", meta?.promptTokens)
+                .addValue("completionTokens", meta?.completionTokens)
+                .addValue("totalTokens", meta?.totalTokens)
+                .addValue("llmMs", meta?.elapsedMs)
+                .addValue("llmRequestId", meta?.requestId?.take(100))
         )
     }
+
+    /** LLM 응답 메타 — 스트리밍 조각의 model · id · finish_reason · usage 와 호출 시간 (V71) */
+    data class LlmMeta(
+        val model: String? = null,
+        val requestId: String? = null,
+        val finishReason: String? = null,
+        val promptTokens: Int? = null,
+        val completionTokens: Int? = null,
+        val totalTokens: Int? = null,
+        val elapsedMs: Int? = null
+    )
 
     /**
      * 세션 단위 대화 이력을 조회한다. (No.15)
@@ -280,7 +370,7 @@ class AiChatRepository(
                 c.chat_id, c.session_id, c.user_id, c.dept_nm, c.question, c.normalized_question,
                 c.intent_cd, c.intent_nm, c.answer, c.response_ms, c.rating_cd,
                 c.blind_applied_cnt, c.profile_id, c.asked_at, c.is_reask, $basisSelect, ${reviewSelect()},
-                u.user_nm
+                ${trainSelect()}, ${llmSelect().removePrefix("c.intent_nm, ")}, u.user_nm
             FROM ax.tb_ai_chat_log c
             LEFT JOIN ax.tb_sys_user u ON u.user_id = c.user_id
             WHERE c.chat_id = :chatId
@@ -306,7 +396,7 @@ class AiChatRepository(
                 ,"unansweredReason" to rs.getString("unanswered_reason")
                 ,"userNm" to rs.getString("user_nm")
                 ,"reask" to rs.getBoolean("is_reask")
-            ) + reviewFields(rs)
+            ) + reviewFields(rs) + trainFields(rs) + llmFields(rs)
         }.firstOrNull()
     }
 
@@ -416,6 +506,33 @@ class AiChatRepository(
             MapSqlParameterSource().addValue("cd", reviewCd).addValue("comment", comment)
                 .addValue("by", reviewerId).addValue("chatId", chatId)
         ) { rs, _ -> Rs.dateTime(rs, "reviewed_at") }.firstOrNull()
+
+    /**
+     * 학습 답변 저장 (V70) — 전사 자연어 질의 이력에서 관리자가 적는 「이렇게 답해야 했다」 답변.
+     * [answer] 가 null 이면 지운다(작성자 · 시각도 함께 비운다). 다시 저장하면 덮어쓴다.
+     *
+     * @return 저장 뒤 값(trainAnswer · trainAnswerAt · trainAnswerBy · trainAnswerByNm). 질의가 없으면 null
+     */
+    fun updateTrainAnswer(chatId: Long, answer: String?, writerId: String): Map<String, Any?>? =
+        jdbcTemplate.query(
+            """
+            UPDATE ax.tb_ai_chat_log c
+               SET train_answer    = CAST(:answer AS text),
+                   train_answer_by = CASE WHEN CAST(:answer AS text) IS NULL THEN NULL ELSE :by END,
+                   train_answer_at = CASE WHEN CAST(:answer AS text) IS NULL THEN NULL ELSE now() END
+             WHERE c.chat_id = :chatId
+            RETURNING c.train_answer, c.train_answer_by, c.train_answer_at,
+                      (SELECT tu.user_nm FROM ax.tb_sys_user tu WHERE tu.user_id = c.train_answer_by) AS train_answer_by_nm
+            """.trimIndent(),
+            MapSqlParameterSource().addValue("answer", answer).addValue("by", writerId).addValue("chatId", chatId)
+        ) { rs, _ ->
+            mapOf(
+                "trainAnswer" to rs.getString("train_answer"),
+                "trainAnswerAt" to Rs.dateTime(rs, "train_answer_at"),
+                "trainAnswerBy" to rs.getString("train_answer_by"),
+                "trainAnswerByNm" to rs.getString("train_answer_by_nm")
+            )
+        }.firstOrNull()
 
     /**
      * 세션 대화 로그를 삭제한다. (No.16 — 새 대화 시작 시 세션 맥락 초기화)
@@ -717,7 +834,8 @@ class AiChatRepository(
             SELECT
                 c.chat_id, c.asked_at, c.user_id, u.user_nm, c.dept_nm,
                 c.question, c.answer, $basisSelect,
-                c.response_ms, c.rating_cd, c.is_reask, c.blind_applied_cnt, ${reviewSelect()},
+                c.response_ms, c.rating_cd, c.is_reask, c.blind_applied_cnt, ${reviewSelect()}, ${trainSelect()},
+                ${llmSelect()},
                 coalesce(c.session_id::text, 'chat-' || c.chat_id) AS session_key
             FROM ax.tb_ai_chat_log c
             LEFT JOIN ax.tb_sys_user u ON u.user_id = c.user_id
@@ -749,7 +867,7 @@ class AiChatRepository(
                 "reask" to rs.getBoolean("is_reask"),
                 "maskedCnt" to rs.getInt("blind_applied_cnt"),
                 "sessionKey" to rs.getString("session_key")
-            ) + reviewFields(rs)
+            ) + reviewFields(rs) + trainFields(rs) + llmFields(rs)
         }
     }
 
@@ -936,7 +1054,7 @@ class AiChatRepository(
         val where = if (sessionId != null) "c.session_id = :sessionId" else "c.chat_id = :chatId AND c.session_id IS NULL"
         val sql = """
             SELECT c.chat_id, c.session_id, c.asked_at, c.user_id, u.user_nm, c.dept_nm, c.question, c.answer,
-                   $basisSelect, c.response_ms, c.rating_cd, c.is_reask, ${reviewSelect()}
+                   $basisSelect, c.response_ms, c.rating_cd, c.is_reask, ${reviewSelect()}, ${trainSelect()}, ${llmSelect()}
               FROM ax.tb_ai_chat_log c
               LEFT JOIN ax.tb_sys_user u ON u.user_id = c.user_id
              WHERE $where
@@ -951,7 +1069,7 @@ class AiChatRepository(
                 "judgmentBasis" to rs.getString("evidence_summary"), "unansweredReason" to rs.getString("unanswered_reason"),
                 "responseSec" to Rs.intOrNull(rs, "response_ms")?.let { Math.round(it / 100.0) / 10.0 },
                 "rating" to rs.getString("rating_cd"), "reask" to rs.getBoolean("is_reask")
-            ) + reviewFields(rs)
+            ) + reviewFields(rs) + trainFields(rs) + llmFields(rs)
         }
     }
 
@@ -960,6 +1078,7 @@ class AiChatRepository(
      *
      * 평가 = 출처에 따라 관리자 검토(review_cd)와 질의자 평가(rating_cd) 중 하나. 기본은 검토가 있으면 검토, 없으면 질의자 평가.
      * 빈 답·가린 답(AiResponseSanitizer.HIDDEN)은 뺀다.
+     * 학습 답변(train_answer, V70)이 있는 행은 평가와 관계없이 넣는다 — 서비스가 응답 대신 학습 답변을 쓴다.
      *
      * @param rating 평가 코드. null 이면 평가가 있는 건 전체(ALL)
      * @param source REVIEW_OR_USER | REVIEW | USER
@@ -981,15 +1100,18 @@ class AiChatRepository(
         }
         val ratingSource = if (!v55) "'USER'" else
             "CASE WHEN '$source' = 'USER' OR c.review_cd IS NULL THEN 'USER' ELSE 'REVIEW' END"
+        val train = hasTrainColumns()
+        val trainCond = if (train) "c.train_answer IS NOT NULL AND btrim(c.train_answer) <> ''" else "false"
         val sql = StringBuilder(
             """
             SELECT c.chat_id, c.user_id, c.question, c.normalized_question, c.answer, c.rating_cd,
                    ${if (v55) "c.blind_field_keys" else "NULL::text[] AS blind_field_keys"},
+                   ${if (train) "c.train_answer" else "NULL::text AS train_answer"},
                    $eff AS eff_rating, $ratingSource AS rating_source
             FROM ax.tb_ai_chat_log c
             WHERE c.asked_at >= :from
               AND c.asked_at <  :toExclusive
-              AND c.answer IS NOT NULL AND btrim(c.answer) <> '' AND c.answer <> :hidden
+              AND (($trainCond) OR (c.answer IS NOT NULL AND btrim(c.answer) <> '' AND c.answer <> :hidden
               AND $eff IS NOT NULL
             """.trimIndent()
         )
@@ -1004,6 +1126,7 @@ class AiChatRepository(
             sql.append(" AND $eff = :rating")
             params.addValue("rating", rating)
         }
+        sql.append("))")
 
         sql.append("\nORDER BY c.asked_at DESC\nLIMIT :limit")
 
@@ -1016,6 +1139,7 @@ class AiChatRepository(
                 "answer" to rs.getString("answer"),
                 "rating" to rs.getString("eff_rating"),
                 "ratingSource" to rs.getString("rating_source"),
+                "trainAnswer" to rs.getString("train_answer"),
                 "blindFieldKeys" to readKeys(rs, "blind_field_keys")
             )
         }

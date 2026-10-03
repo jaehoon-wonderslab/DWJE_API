@@ -155,7 +155,7 @@ class LlmChatProxyController(
             } catch (e: IOException) {
                 outcome = "화면이 중단"
             }
-            llmChatProxyService.saveAnswer(messageId, publicAnswer, elapsed)
+            llmChatProxyService.saveAnswer(messageId, publicAnswer, elapsed, tap.meta(elapsed))
             log.info("LLM 채팅 : {} {}ms {}B 본문={}자 메시지={}건", outcome, elapsed, bytes, tap.text().length, messages.size)
         }
     }

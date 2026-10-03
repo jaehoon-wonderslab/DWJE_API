@@ -162,7 +162,8 @@ class AccountGwP1DbTest {
         assertNull(jdbc.queryForObject("SELECT dept_id FROM ax.tb_sys_dept_gw_map WHERE gw_dept_nm = 'ZT부서C'", MapSqlParameterSource(), Int::class.java))
         assertThrows(InvalidParameterException::class.java) { gw.saveMapsBulk(GwDeptMapBulkSaveRequest(gwDeptNms = (1..201).map { "ZT$it" })) }
 
-        UserContext.set(UserPrincipal("10001", "품질", 2, "품질보증팀", null, null, false, menuPerms = setOf(MenuId.SYS_GW_DEPT)))
+        // V70 — 화면에 접근하면 쓰기 동작도 된다. 쓰기 동작을 못 하는 것은 미배정 계정뿐이다
+        UserContext.set(UserPrincipal("10001", "품질", 59, "미배정", null, null, false, menuPerms = setOf(MenuId.SYS_GW_DEPT), unassigned = true))
         assertThrows(WriteAccessDeniedException::class.java) { gw.saveMapsBulk(GwDeptMapBulkSaveRequest(gwDeptNms = listOf("ZT부서D"))) }
     }
 }

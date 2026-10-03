@@ -60,7 +60,7 @@ data class RefreshTokenResponse(
  * @param dataFields       적용 중(apply_flg='Y') 항목과 그 API 응답 필드명 — 화면이 「필드명 → 항목」 맵을 만들어 자동 마스킹한다
  * @param servingModelVer  현재 서비스 중인 AI 모델 버전
  * @param impersonated     계정 전환 상태 여부
- * @param writePerms       쓰기 가능한 화면 ID 목록 — 화면이 저장·삭제 버튼을 미리 비활성으로 그린다 (R-06). 통합관리자는 사용 중 전 화면
+ * @param writePerms       호환용 — 쓰기 동작이 허용되는 화면 ID 목록. V70 부터 menuPerms 와 같고 미배정 계정만 빈 목록이다
  * @param pwdChangeRequired 초기 비밀번호를 바꿔야 하는지 (R-04). true 면 권한 목록은 모두 빈 값(최소 정보)이다
  * @param unassigned       미배정 부서 소속 (R-01·R-11, 02 GWD-08) — `dept.unassigned` 와 같은 값. NoAccess 문구·첫 화면 판정용
  */

@@ -133,22 +133,26 @@ class ListExportService(
         return write("sync_${target.lowercase()}", sheet, rows, total, req, MenuId.SYS_SYNC, limit, mapOf("target" to target))
     }
 
-    /** 질의 이력 전체 (08) — view QUERY(질의 단위, 기본) | SESSION(세션 단위). 응답 가림은 화면 조회와 같다 */
-    fun chatHistory(req: ListExportRequest?): ResponseEntity<ByteArrayResource> {
+    /**
+     * 질의 이력 전체 (08) — view QUERY(질의 단위, 기본) | SESSION(세션 단위). 응답 가림은 화면 조회와 같다.
+     * [historyScope] mine(기본)은 본인 질의(chat-history), all 은 전 사용자(sys-chat-history) — V70.
+     */
+    fun chatHistory(req: ListExportRequest?, historyScope: String? = null): ResponseEntity<ByteArrayResource> {
         requireAll(req)
+        val menu = AiAdminService.menuOf(historyScope)
         // 4.4 의 MESSAGE 는 QUERY 의 다른 이름
         val view = (req?.view?.trim()?.uppercase()?.ifEmpty { null } ?: "QUERY").let { if (it == "MESSAGE") "QUERY" else it }
         val (sheet, fetch) = when (view) {
             "QUERY" -> Sheet(
                 "질의 이력",
-                listOf("질의 ID", "일시", "사번", "이름", "부서", "질문", "응답", "판단 근거", "미응답 사유", "응답(초)", "평가", "검토", "재질문", "세션"),
-                listOf("messageId", "ts", "empNo", "name", "dept", "question", "answer", "judgmentBasis", "unansweredReason", "responseSec", "rating", "reviewNm", "reask", "sessionKey")
-            ) to { p: Int -> aiAdminService.getChatHistory(null, null, null, p, PAGE, exporting = true).let { it.rows to it.meta } }
+                listOf("질의 ID", "일시", "사번", "이름", "부서", "질문", "응답", "판단 근거", "미응답 사유", "응답(초)", "답변 시각", "평가", "검토", "학습 답변", "재질문", "세션"),
+                listOf("messageId", "ts", "empNo", "name", "dept", "question", "answer", "judgmentBasis", "unansweredReason", "responseSec", "answeredAt", "rating", "reviewNm", "trainAnswer", "reask", "sessionKey")
+            ) to { p: Int -> aiAdminService.getChatHistory(null, null, null, p, PAGE, exporting = true, scope = historyScope).let { it.rows to it.meta } }
             "SESSION" -> Sheet(
                 "질의 세션",
                 listOf("세션", "시작", "마지막 질의", "사번", "이름", "부서", "질의 수", "첫 질문", "응답 수", "유용", "나쁨", "검토 수", "가린 응답"),
                 listOf("sessionKey", "startedAt", "lastAskedAt", "empNo", "name", "dept", "questionCnt", "firstQuestion", "answeredCnt", "usefulCnt", "badCnt", "reviewedCnt", "hiddenCnt")
-            ) to { p: Int -> aiAdminService.getChatSessions(null, null, null, null, null, p, PAGE, exporting = true) }
+            ) to { p: Int -> aiAdminService.getChatSessions(null, null, null, null, null, p, PAGE, exporting = true, scope = historyScope) }
             else -> throw InvalidParameterException("보기 단위는 QUERY 또는 SESSION 이어야 합니다. [$view]", "view")
         }
         val (rows, total) = collect(EXPORT_MAX, fetch)
@@ -161,11 +165,11 @@ class ListExportService(
         val principal = com.dwje.api.common.security.UserContext.current()
         if (rows.any { it["empNo"] != null && it["empNo"] != principal.userId } || rows.any { it["empNo"] == null }) {
             auditLogService.record(
-                logType = AuditType.EXPORT, menuId = MenuId.CHAT_HISTORY, targetDesc = "질의 이력 내려받기 view=$view",
+                logType = AuditType.EXPORT, menuId = menu, targetDesc = "질의 이력 내려받기 view=$view",
                 resultCd = if (blind.total > 0) "MASKED" else "ALLOW", maskedCnt = blind.total, remark = "rows=${rows.size}, total=$total"
             )
         }
-        return write("chat_history_${view.lowercase()}", sheet, shaped, total, req, MenuId.CHAT_HISTORY, EXPORT_MAX, mapOf("view" to view), blind)
+        return write("chat_history_${view.lowercase()}", sheet, shaped, total, req, menu, EXPORT_MAX, mapOf("view" to view), blind)
     }
 
     /** 쪽을 이어 붙인다 — 상한 또는 마지막 쪽에서 멈춘다 */

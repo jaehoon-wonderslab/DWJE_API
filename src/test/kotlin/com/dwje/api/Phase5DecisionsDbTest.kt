@@ -57,8 +57,7 @@ class Phase5DecisionsDbTest {
     /** 제조팀 — customer 데이터 권한 없음. 관리 화면 쓰기 가능 */
     private val maker = UserPrincipal(
         "10003", "제조", 4, "제조팀", null, null, false,
-        menuPerms = setOf(MenuId.SYS_GLOSS, MenuId.GLOSS_VIEW, MenuId.SYS_UPLOAD_DOC), dataPerms = setOf("qty", "mold", "worker"),
-        writePerms = setOf(MenuId.SYS_GLOSS)
+        menuPerms = setOf(MenuId.SYS_GLOSS, MenuId.GLOSS_VIEW, MenuId.SYS_UPLOAD_DOC), dataPerms = setOf("qty", "mold", "worker")
     )
     /** 품질보증팀 — customer 데이터 권한 있음 */
     private val quality = maker.copy(userId = "10001", deptId = 2, deptName = "품질보증팀", dataPerms = setOf("customer", "qty"))
@@ -153,7 +152,8 @@ class Phase5DecisionsDbTest {
         assertTrue(uploads.listDocsForAdmin().first.any { it["docId"] == 1L })
         assertThrows(BusinessRuleException::class.java) { uploads.restoreDoc(1) }
 
-        UserContext.set(maker)
+        // V70 — 화면에 접근하면 숨김도 된다. 쓰기 동작을 못 하는 것은 미배정 계정뿐이다
+        UserContext.set(maker.copy(deptId = 59, deptName = "미배정", unassigned = true))
         assertThrows(WriteAccessDeniedException::class.java) { uploads.hideDoc(1, "권한 없음") }
     }
 
