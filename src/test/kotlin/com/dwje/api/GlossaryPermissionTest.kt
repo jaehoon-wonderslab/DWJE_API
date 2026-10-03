@@ -39,13 +39,13 @@ class GlossaryPermissionTest {
     private class MemRepo : GlossaryRepository(mock(NamedParameterJdbcTemplate::class.java)) {
         val inserted = mutableListOf<String>()
         val terms = mapOf("불량" to 55, "치수불량" to 56, "LOT" to 15)
-        override fun findSummary(userId: String) = mapOf<String, Any?>("termCnt" to 3L, "variantCnt" to 1L, "domainCnt" to 1L,
+        override fun findSummary(userId: String) = mapOf<String, Any?>("termCnt" to 3L, "variantCnt" to 1L,
             "myVariantCnt" to 1L, "noVariantTermCnt" to 2L)
-        override fun findCountByDomain() = emptyList<Map<String, Any?>>()
-        override fun countTerms(keyword: String?, domainCd: String?, mineOnly: String?, hiddenDomainIds: Collection<Int>) = if (domainCd == "없음") 0L else 1L
-        override fun findTerms(keyword: String?, domainCd: String?, limit: Int, offset: Int, mineOnly: String?, hiddenDomainIds: Collection<Int>) =
-            if (domainCd == "없음") emptyList() else
-                listOf(mapOf<String, Any?>("termId" to 15, "term" to "LOT", "definition" to "로트", "domain" to "생산단위", "updatedAt" to null))
+        override fun findTermFieldKeys() = emptySet<String>()
+        override fun countTerms(keyword: String?, mineOnly: String?, hiddenKeys: Collection<String>) = if (keyword == "없음") 0L else 1L
+        override fun findTerms(keyword: String?, limit: Int, offset: Int, mineOnly: String?, hiddenKeys: Collection<String>) =
+            if (keyword == "없음") emptyList() else
+                listOf(mapOf<String, Any?>("termId" to 15, "term" to "LOT", "definition" to "로트", "fieldKey" to null, "updatedAt" to null))
         override fun findVariantsByTermIds(termIds: List<Int>, userId: String) = mapOf(15 to listOf(
             mapOf<String, Any?>("variantId" to 12, "word" to "로트", "byEmpNo" to "10002", "byName" to "박생산", "byDept" to "생산관리팀",
                 "at" to "2026-09-08 10:00:00", "editable" to (userId == "10002"))))
@@ -58,9 +58,8 @@ class GlossaryPermissionTest {
         }
         override fun findVariantByWord(word: String, excludeVariantId: Int?): Map<String, Any?>? = null
         override fun insertVariant(termId: Int, word: String, ownerUserId: String, ownerDeptNm: String?): Int { inserted += word; return 300 }
-        override fun insertTerm(term: String, definition: String, domainId: Int, actor: String): Int { inserted += term; return 900 }
+        override fun insertTerm(term: String, definition: String, fieldKey: String?, actor: String): Int { inserted += term; return 900 }
         override fun findTermByName(term: String): Map<String, Any?>? = null
-        override fun findDomainId(domainNm: String) = 1
     }
 
     private val repo = MemRepo()
@@ -76,18 +75,18 @@ class GlossaryPermissionTest {
     @DisplayName("GLS-01 공식 용어 편집 — 화면 접근자도 통합관리자가 아니면 403 E-AUTH-002, 미배정이면 E-AUTH-004, 통합관리자는 통과")
     fun termsSuperAdminOnly() {
         login(setOf("sys-gloss"))
-        listOf({ service.createTerm("새용어", "뜻", "생산단위") }, { service.updateTerm(15, "LOT", "뜻", "생산단위") }, { service.deleteTerm(15) })
+        listOf({ service.createTerm("새용어", "뜻") }, { service.updateTerm(15, "LOT", "뜻") }, { service.deleteTerm(15) })
             .forEach { call -> assertEquals(ErrorCode.AUTH_MENU_DENIED, assertThrows(BusinessException::class.java) { call() }.errorCode) }
         login(setOf("sys-gloss"), unassigned = true)
-        assertThrows(WriteAccessDeniedException::class.java) { service.createTerm("새용어", "뜻", "생산단위") }
+        assertThrows(WriteAccessDeniedException::class.java) { service.createTerm("새용어", "뜻") }
         login(setOf("gloss-view"))
-        assertThrows(MenuAccessDeniedException::class.java) { service.createTerm("새용어", "뜻", "생산단위") }
+        assertThrows(MenuAccessDeniedException::class.java) { service.createTerm("새용어", "뜻") }
         assertTrue(repo.inserted.isEmpty())
 
         login(emptySet(), superAdmin = true, user = "10000")
-        assertEquals(900, service.createTerm("새용어", "뜻", "생산단위")["termId"])
-        assertEquals("term", assertThrows(InvalidParameterException::class.java) { service.createTerm("가".repeat(51), "뜻", "생산단위") }.field)
-        assertEquals("definition", assertThrows(InvalidParameterException::class.java) { service.createTerm("용어", "가".repeat(501), "생산단위") }.field)
+        assertEquals(900, service.createTerm("새용어", "뜻")["termId"])
+        assertEquals("term", assertThrows(InvalidParameterException::class.java) { service.createTerm("가".repeat(51), "뜻") }.field)
+        assertEquals("definition", assertThrows(InvalidParameterException::class.java) { service.createTerm("용어", "가".repeat(501)) }.field)
     }
 
     @Test
@@ -98,7 +97,7 @@ class GlossaryPermissionTest {
         assertNull(s["myVariantCnt"]); assertNull(s["noVariantTermCnt"]); assertNull(s["canEditTerm"]); assertNull(s["canWriteVariant"])
         assertEquals(3L, s["termCnt"])
         @Suppress("UNCHECKED_CAST")
-        val v = ((service.getTerms(null, null, 1, 50).first.single()["variants"]) as List<Map<String, Any?>>).single()
+        val v = ((service.getTerms(null, 1, 50).first.single()["variants"]) as List<Map<String, Any?>>).single()
         assertNull(v["byEmpNo"]); assertNull(v["byDept"]); assertEquals(false, v["editable"], "쓰기 권한이 없으면 본인 것도 편집 불가")
         assertEquals("gloss-view", service.exportTerms(GlossaryExportRequest(menuId = "sys-gloss")).menuId, "권한 없는 화면으로 기록하지 않는다")
         assertTrue(service.exportTerms(null).headers.none { it.contains("등록자") })
@@ -120,9 +119,9 @@ class GlossaryPermissionTest {
     fun export() {
         login(setOf("gloss-view"))
         assertThrows(com.dwje.api.common.exception.ResourceNotFoundException::class.java) {
-            service.exportTerms(GlossaryExportRequest(domainCd = "없음"))
+            service.exportTerms(GlossaryExportRequest(keyword = "없음"))
         }
-        assertEquals(1, service.exportTerms(GlossaryExportRequest(domainCd = "없음", scope = "ALL")).rows.size)
+        assertEquals(1, service.exportTerms(GlossaryExportRequest(keyword = "없음", scope = "ALL")).rows.size)
         assertEquals("scopeCd", assertThrows(InvalidParameterException::class.java) { service.exportTerms(GlossaryExportRequest(scopeCd = "PAGE")) }.field)
     }
 

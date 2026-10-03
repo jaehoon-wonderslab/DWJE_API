@@ -61,7 +61,7 @@ class MiscP2DbTest {
     private fun long(sql: String) = jdbc.queryForObject(sql, MapSqlParameterSource(), Long::class.java)!!
 
     @Test
-    @DisplayName("GLS-14 삭제된 용어에 붙은 유사어 중복은 따로 안내 / GLS-13 byDomain 유사어 수 / GLS-06 이력 전에는 용어·유사어 최근 수정자 / GLS-12 등록일 열")
+    @DisplayName("GLS-14 삭제된 용어에 붙은 유사어 중복은 따로 안내 / GLS-13 요약 유사어 수 / GLS-06 이력 전에는 용어·유사어 최근 수정자 / GLS-12 등록일 열")
     fun glossary() {
         exec("UPDATE ax.tb_gls_term SET use_flg = 'N' WHERE term_id = 8")
         val word = jdbc.queryForObject("SELECT word FROM ax.tb_gls_variant WHERE term_id = 8 LIMIT 1", MapSqlParameterSource(), String::class.java)!!
@@ -70,11 +70,11 @@ class MiscP2DbTest {
         exec("UPDATE ax.tb_gls_term SET use_flg = 'Y' WHERE term_id = 8")
         assertTrue(assertThrows(ConflictingValueException::class.java) { glossary.createVariant(5, word) }.message!!.startsWith("이미 등록된 유사어입니다."))
 
-        @Suppress("UNCHECKED_CAST")
-        val byDomain = glossary.getSummary()["byDomain"] as List<Map<String, Any?>>
-        assertTrue(byDomain.all { "variantCnt" in it && "noVariantTermCnt" in it })
+        // 분류별 현황(byDomain)은 V75 로 없앴다 — 요약의 유사어 수는 사용 중 용어에 붙은 것만
+        val summary = glossary.getSummary()
+        assertTrue("byDomain" !in summary && "domainCnt" !in summary)
         assertEquals(long("SELECT count(*) FROM ax.tb_gls_variant v JOIN ax.tb_gls_term t USING (term_id) WHERE t.use_flg = 'Y'"),
-            byDomain.sumOf { it["variantCnt"] as Long })
+            summary["variantCnt"])
 
         if (long("SELECT count(*) FROM ax.tb_gls_change_log") == 0L) {
             exec("UPDATE ax.tb_gls_term SET upd_date = now() + interval '1 minute', upd_user = '10001' WHERE term_id = 5")

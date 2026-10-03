@@ -34,7 +34,6 @@ class GlossaryRepository(
                       FROM ax.tb_gls_variant v
                      INNER JOIN ax.tb_gls_term t ON t.term_id = v.term_id AND t.use_flg = 'Y'
                 ) AS variant_cnt,
-                (SELECT count(*) FROM ax.tb_gls_domain WHERE use_flg = 'Y') AS domain_cnt,
                 (
                     SELECT count(*)
                       FROM ax.tb_gls_variant v
@@ -53,7 +52,6 @@ class GlossaryRepository(
             mapOf(
                 "termCnt" to rs.getLong("term_cnt"),
                 "variantCnt" to rs.getLong("variant_cnt"),
-                "domainCnt" to rs.getLong("domain_cnt"),
                 "myVariantCnt" to rs.getLong("my_variant_cnt"),
                 "noVariantTermCnt" to rs.getLong("no_variant_term_cnt")
             )
@@ -61,46 +59,16 @@ class GlossaryRepository(
     }
 
     /**
-     * 도메인별 용어 건수를 조회한다. (요약 화면 byDomain)
-     */
-    fun findCountByDomain(): List<Map<String, Any?>> {
-        val sql = """
-            SELECT d.domain_id, d.domain_nm, count(t.term_id) AS term_cnt,
-                   coalesce(sum(vc.cnt), 0)                              AS variant_cnt,
-                   count(t.term_id) FILTER (WHERE coalesce(vc.cnt, 0) = 0) AS no_variant_term_cnt
-            FROM ax.tb_gls_domain d
-            LEFT JOIN ax.tb_gls_term t ON t.domain_id = d.domain_id AND t.use_flg = 'Y'
-            LEFT JOIN (SELECT term_id, count(*) AS cnt FROM ax.tb_gls_variant GROUP BY term_id) vc ON vc.term_id = t.term_id
-            WHERE d.use_flg = 'Y'
-            GROUP BY d.domain_id, d.domain_nm, d.sort_seq
-            ORDER BY d.sort_seq, d.domain_nm
-        """.trimIndent()
-
-        return jdbcTemplate.query(sql, MapSqlParameterSource()) { rs, _ ->
-            mapOf(
-                "domainId" to rs.getInt("domain_id"),
-                "domain" to rs.getString("domain_nm"),
-                "termCnt" to rs.getLong("term_cnt"),
-                // 분류별 유사어 수·유사어 없는 용어 수 (07 GLS-13)
-                "variantCnt" to rs.getLong("variant_cnt"),
-                "noVariantTermCnt" to rs.getLong("no_variant_term_cnt")
-            )
-        }
-    }
-
-    /**
      * 용어 목록을 조회한다. (No.171)
      *
-     * @param keyword  용어·정의·유사어 검색어
-     * @param domainCd 도메인명
-     * @param limit    조회 건수
-     * @param offset   건너뛸 건수
-     */
-    /**
-     * @param mineOnly 이 사번이 등록한 유사어가 있는 용어만 (용어 사전 관리의 「내 유사어」 내려받기)
+     * @param keyword    용어·정의·유사어 검색어
+     * @param limit      조회 건수
+     * @param offset     건너뛸 건수
+     * @param mineOnly   이 사번이 등록한 유사어가 있는 용어만 (용어 사전 관리의 「내 유사어」 내려받기)
+     * @param hiddenKeys 열람자가 볼 수 없는 데이터 항목 — 이 항목이 걸린 용어는 검색어에 걸리지 않는다 (R-18)
      */
     fun findTerms(
-        keyword: String?, domainCd: String?, limit: Int, offset: Int, mineOnly: String? = null, hiddenDomainIds: Collection<Int> = emptyList()
+        keyword: String?, limit: Int, offset: Int, mineOnly: String? = null, hiddenKeys: Collection<String> = emptyList()
     ): List<Map<String, Any?>> {
         val sql = StringBuilder(
             """
@@ -108,20 +76,18 @@ class GlossaryRepository(
                 t.term_id,
                 t.term,
                 t.term_def,
-                d.domain_id,
-                d.domain_nm,
+                t.data_field_key,
                 t.ins_date,
                 t.upd_date
             FROM ax.tb_gls_term t
-            INNER JOIN ax.tb_gls_domain d ON d.domain_id = t.domain_id
             WHERE t.use_flg = 'Y'
             """.trimIndent()
         )
 
         val params = MapSqlParameterSource()
-        appendTermFilters(sql, params, keyword, domainCd, mineOnly, hiddenDomainIds)
+        appendTermFilters(sql, params, keyword, mineOnly, hiddenKeys)
 
-        sql.append("\nORDER BY d.sort_seq, t.term\nLIMIT :limit OFFSET :offset")
+        sql.append("\nORDER BY t.term\nLIMIT :limit OFFSET :offset")
         params.addValue("limit", limit).addValue("offset", offset)
 
         return jdbcTemplate.query(sql.toString(), params) { rs, _ ->
@@ -129,8 +95,8 @@ class GlossaryRepository(
                 "termId" to rs.getInt("term_id"),
                 "term" to rs.getString("term"),
                 "definition" to rs.getString("term_def"),
-                "domainId" to rs.getInt("domain_id"),
-                "domain" to rs.getString("domain_nm"),
+                // 이 용어를 볼 때 필요한 데이터 항목 — 서비스가 가림 판정에 쓰고 응답에서는 뺀다 (R-18, V75)
+                "fieldKey" to rs.getString("data_field_key"),
                 // 등록일 — 관리 화면 전체 내려받기 열 (07 GLS-12)
                 "createdAt" to Rs.dateTime(rs, "ins_date"),
                 "updatedAt" to Rs.dateTime(rs, "upd_date")
@@ -139,17 +105,16 @@ class GlossaryRepository(
     }
 
     /** 용어 목록 전체 건수 */
-    fun countTerms(keyword: String?, domainCd: String?, mineOnly: String? = null, hiddenDomainIds: Collection<Int> = emptyList()): Long {
+    fun countTerms(keyword: String?, mineOnly: String? = null, hiddenKeys: Collection<String> = emptyList()): Long {
         val sql = StringBuilder(
             """
             SELECT count(*)
             FROM ax.tb_gls_term t
-            INNER JOIN ax.tb_gls_domain d ON d.domain_id = t.domain_id
             WHERE t.use_flg = 'Y'
             """.trimIndent()
         )
         val params = MapSqlParameterSource()
-        appendTermFilters(sql, params, keyword, domainCd, mineOnly, hiddenDomainIds)
+        appendTermFilters(sql, params, keyword, mineOnly, hiddenKeys)
         return jdbcTemplate.queryForObject(sql.toString(), params, Long::class.java) ?: 0L
     }
 
@@ -158,14 +123,13 @@ class GlossaryRepository(
         sql: StringBuilder,
         params: MapSqlParameterSource,
         keyword: String?,
-        domainCd: String?,
         mineOnly: String? = null,
-        hiddenDomainIds: Collection<Int> = emptyList()
+        hiddenKeys: Collection<String> = emptyList()
     ) {
-        // 열람자가 볼 수 없는 분류의 용어는 검색어에 걸리지 않는다 — 가린 행이 검색어로 「그런 이름이 있다」 를 드러내지 않게 (R-18)
-        if (hiddenDomainIds.isNotEmpty() && SqlLikeUtils.contains(keyword) != null) {
-            sql.append(" AND NOT (t.domain_id = ANY(:hiddenDomainIds))")
-            params.addValue("hiddenDomainIds", hiddenDomainIds.toTypedArray())
+        // 열람자가 볼 수 없는 용어는 검색어에 걸리지 않는다 — 가린 행이 검색어로 「그런 이름이 있다」 를 드러내지 않게 (R-18)
+        if (hiddenKeys.isNotEmpty() && SqlLikeUtils.contains(keyword) != null) {
+            sql.append(" AND (t.data_field_key IS NULL OR NOT (t.data_field_key = ANY(:hiddenKeys)))")
+            params.addValue("hiddenKeys", hiddenKeys.toTypedArray())
         }
         if (mineOnly != null) {
             sql.append(" AND EXISTS (SELECT 1 FROM ax.tb_gls_variant mv WHERE mv.term_id = t.term_id AND mv.owner_user_id = :mineOnly)")
@@ -186,10 +150,6 @@ class GlossaryRepository(
                 """.trimIndent()
             )
             params.addValue("keyword", it)
-        }
-        if (!domainCd.isNullOrBlank()) {
-            sql.append(" AND d.domain_nm = :domainCd")
-            params.addValue("domainCd", domainCd.trim())
         }
     }
 
@@ -243,19 +203,20 @@ class GlossaryRepository(
      *
      * 중복이면 [org.springframework.dao.DuplicateKeyException] — 서비스가 409 로 바꾼다.
      *
+     * @param fieldKey 이 용어를 볼 때 필요한 데이터 항목 (고객사 정보 = customer, 없으면 null)
      * @return 생성된 용어 ID
      */
-    fun insertTerm(term: String, definition: String, domainId: Int, actor: String): Int {
+    fun insertTerm(term: String, definition: String, fieldKey: String?, actor: String): Int {
         val sql = """
-            INSERT INTO ax.tb_gls_term (term, term_def, domain_id, use_flg, ins_user, upd_user)
-            VALUES (btrim(:term), :definition, :domainId, 'Y', :actor, :actor)
+            INSERT INTO ax.tb_gls_term (term, term_def, data_field_key, use_flg, ins_user, upd_user)
+            VALUES (btrim(:term), :definition, :fieldKey, 'Y', :actor, :actor)
             RETURNING term_id
         """.trimIndent()
 
         val params = MapSqlParameterSource()
             .addValue("term", term)
             .addValue("definition", definition)
-            .addValue("domainId", domainId)
+            .addValue("fieldKey", fieldKey)
             .addValue("actor", actor)
 
         return jdbcTemplate.queryForObject(sql, params, Int::class.java) ?: 0
@@ -264,12 +225,12 @@ class GlossaryRepository(
     /**
      * 공식 용어를 수정한다. (No.173)
      */
-    fun updateTerm(termId: Int, term: String, definition: String, domainId: Int, actor: String): Int {
+    fun updateTerm(termId: Int, term: String, definition: String, fieldKey: String?, actor: String): Int {
         val sql = """
             UPDATE ax.tb_gls_term
-               SET term      = btrim(:term),
-                   term_def  = :definition,
-                   domain_id = :domainId,
+               SET term           = btrim(:term),
+                   term_def       = :definition,
+                   data_field_key = :fieldKey,
                    upd_date  = now(),
                    upd_user  = :actor
              WHERE term_id = :termId
@@ -279,7 +240,7 @@ class GlossaryRepository(
             .addValue("termId", termId)
             .addValue("term", term)
             .addValue("definition", definition)
-            .addValue("domainId", domainId)
+            .addValue("fieldKey", fieldKey)
             .addValue("actor", actor)
 
         return jdbcTemplate.update(sql, params)
@@ -413,18 +374,18 @@ class GlossaryRepository(
     /**
      * 사용 중지된 용어를 되살린다. (같은 이름으로 다시 등록할 때)
      *
-     * 정의·분류는 새로 들어온 값으로 갱신한다. 딸린 유사어는 그대로 살아난다 —
+     * 정의·가림 표시(데이터 항목)는 새로 들어온 값으로 갱신한다. 딸린 유사어는 그대로 살아난다 —
      * 정규화 사전이 `t.use_flg = 'Y'` 로 조인하므로 사전에도 함께 돌아온다.
      * 되살아난 유사어 건수는 호출부가 응답에 담아 사용자에게 알린다.
      *
      * @return 변경된 행 수. 이미 사용 중이면 0
      */
-    fun reviveTerm(termId: Int, definition: String, domainId: Int, actor: String): Int {
+    fun reviveTerm(termId: Int, definition: String, fieldKey: String?, actor: String): Int {
         val sql = """
             UPDATE ax.tb_gls_term
-               SET use_flg   = 'Y',
-                   term_def  = :definition,
-                   domain_id = :domainId,
+               SET use_flg        = 'Y',
+                   term_def       = :definition,
+                   data_field_key = :fieldKey,
                    upd_date  = now(),
                    upd_user  = :actor
              WHERE term_id = :termId
@@ -434,7 +395,7 @@ class GlossaryRepository(
         val params = MapSqlParameterSource()
             .addValue("termId", termId)
             .addValue("definition", definition)
-            .addValue("domainId", domainId)
+            .addValue("fieldKey", fieldKey)
             .addValue("actor", actor)
 
         return jdbcTemplate.update(sql, params)
@@ -451,37 +412,6 @@ class GlossaryRepository(
             MapSqlParameterSource("variantId", variantId),
             Boolean::class.java
         ) ?: false
-
-    /**
-     * 용어 분류(도메인) 목록을 조회한다. (용어 등록 선택지)
-     *
-     * 요약(`summary.byDomain`)은 용어 건수 집계라 화면 선택지 원본으로 쓰기에 알맞지 않다.
-     * 분류 자체를 묻는 질문은 이 쿼리로 답한다.
-     */
-    fun findDomains(): List<Map<String, Any?>> {
-        val sql = """
-            SELECT domain_id, domain_nm
-            FROM ax.tb_gls_domain
-            WHERE use_flg = 'Y'
-            ORDER BY sort_seq, domain_nm
-        """.trimIndent()
-
-        return jdbcTemplate.query(sql, MapSqlParameterSource()) { rs, _ ->
-            mapOf(
-                "domainId" to rs.getInt("domain_id"),
-                // 용어 등록(POST /glossary/terms)의 domainCd 에 그대로 넣는 값이다.
-                "code" to rs.getString("domain_nm"),
-                "name" to rs.getString("domain_nm")
-            )
-        }
-    }
-
-    /** 도메인명으로 도메인 ID 를 조회한다. */
-    fun findDomainId(domainNm: String): Int? {
-        val sql = "SELECT domain_id FROM ax.tb_gls_domain WHERE domain_nm = :domainNm AND use_flg = 'Y'"
-        return jdbcTemplate.query(sql, MapSqlParameterSource("domainNm", domainNm)) { rs, _ -> rs.getInt("domain_id") }
-            .firstOrNull()
-    }
 
     /**
      * 유사어를 등록한다. (No.174)
@@ -552,7 +482,7 @@ class GlossaryRepository(
         // sameAsTerm — 이 유사어가 다른 사용 중 공식 용어와 같은 낱말이면 그 용어(정규화에서 뺀다, GLS-02·03)
         val sql = """
             SELECT v.variant_id, v.word, t.term_id, t.term, t.term_def,
-                   (SELECT gd.data_field_key FROM ax.tb_gls_domain gd WHERE gd.domain_id = t.domain_id) AS field_key,
+                   t.data_field_key AS field_key,
                    (SELECT o.term FROM ax.tb_gls_term o
                      WHERE o.use_flg = 'Y' AND o.term_id <> v.term_id
                        AND lower(btrim(o.term)) = lower(btrim(v.word)) LIMIT 1) AS same_as_term
@@ -568,7 +498,7 @@ class GlossaryRepository(
                 "to" to rs.getString("term"),
                 "termId" to rs.getInt("term_id"),
                 "definition" to rs.getString("term_def"),
-                // 분류의 데이터 항목 — 이 항목을 볼 수 없는 열람자에게는 LLM [용어] 블록·응답에서 뺀다 (R-18)
+                // 용어의 데이터 항목 — 이 항목을 볼 수 없는 열람자에게는 LLM [용어] 블록·응답에서 뺀다 (R-18)
                 "fieldKey" to rs.getString("field_key"),
                 "sameAsTerm" to rs.getString("same_as_term")
             )
@@ -635,15 +565,15 @@ class GlossaryRepository(
     fun findTermDetail(termId: Int): Map<String, Any?>? =
         jdbcTemplate.query(
             """
-            SELECT t.term_id, t.term, t.term_def, d.domain_id, d.domain_nm, t.upd_date
-              FROM ax.tb_gls_term t JOIN ax.tb_gls_domain d ON d.domain_id = t.domain_id
+            SELECT t.term_id, t.term, t.term_def, t.data_field_key, t.upd_date
+              FROM ax.tb_gls_term t
              WHERE t.term_id = :termId AND t.use_flg = 'Y'
             """.trimIndent(),
             MapSqlParameterSource("termId", termId)
         ) { rs, _ ->
             mapOf(
                 "termId" to rs.getInt("term_id"), "term" to rs.getString("term"), "definition" to rs.getString("term_def"),
-                "domainId" to rs.getInt("domain_id"), "domain" to rs.getString("domain_nm"), "updatedAt" to Rs.dateTime(rs, "upd_date")
+                "fieldKey" to rs.getString("data_field_key"), "updatedAt" to Rs.dateTime(rs, "upd_date")
             )
         }.firstOrNull()
 
@@ -651,34 +581,32 @@ class GlossaryRepository(
      * 관련 용어 (GLV-04) — 규칙 3종, 이 순서로 최대 [limit] 건.
      * 1. REF_IN_DEF : 이 용어의 뜻에 다른 용어 이름이 들어 있음(그 이름이 3자 이상)
      * 2. REF_BY     : 다른 용어의 뜻에 이 용어 이름이 들어 있음(이 이름이 3자 이상)
-     * 3. SAME_DOMAIN_NAME : 같은 분류에서 이름이 서로를 품음
+     * 3. NAME_OVERLAP : 이름이 서로를 품음 (V75 전에는 같은 분류 안에서만 보던 SAME_DOMAIN_NAME)
      * 대소문자는 가리지 않는다.
      */
     fun findRelatedTerms(termId: Int, limit: Int = 10): List<Map<String, Any?>> =
         jdbcTemplate.query(
             """
-            WITH me AS (SELECT term_id, term, coalesce(term_def, '') AS term_def, domain_id
+            WITH me AS (SELECT term_id, term, coalesce(term_def, '') AS term_def
                           FROM ax.tb_gls_term WHERE term_id = :termId AND use_flg = 'Y'),
             cand AS (
-              SELECT o.term_id, o.term, d.domain_nm,
+              SELECT o.term_id, o.term, o.data_field_key,
                      CASE WHEN char_length(o.term) > 2 AND strpos(lower(me.term_def), lower(o.term)) > 0 THEN 1
                           WHEN char_length(me.term) > 2 AND strpos(lower(coalesce(o.term_def, '')), lower(me.term)) > 0 THEN 2
-                          WHEN o.domain_id = me.domain_id
-                               AND (strpos(lower(o.term), lower(me.term)) > 0 OR strpos(lower(me.term), lower(o.term)) > 0) THEN 3
+                          WHEN strpos(lower(o.term), lower(me.term)) > 0 OR strpos(lower(me.term), lower(o.term)) > 0 THEN 3
                      END AS ord
                 FROM me
                 JOIN ax.tb_gls_term o ON o.use_flg = 'Y' AND o.term_id <> me.term_id
-                JOIN ax.tb_gls_domain d ON d.domain_id = o.domain_id
             )
-            SELECT term_id, term, domain_nm, ord FROM cand WHERE ord IS NOT NULL
+            SELECT term_id, term, data_field_key, ord FROM cand WHERE ord IS NOT NULL
              ORDER BY ord, term
              LIMIT :limit
             """.trimIndent(),
             MapSqlParameterSource().addValue("termId", termId).addValue("limit", limit)
         ) { rs, _ ->
             mapOf(
-                "termId" to rs.getInt("term_id"), "term" to rs.getString("term"), "domain" to rs.getString("domain_nm"),
-                "reasonCd" to when (rs.getInt("ord")) { 1 -> "REF_IN_DEF"; 2 -> "REF_BY"; else -> "SAME_DOMAIN_NAME" }
+                "termId" to rs.getInt("term_id"), "term" to rs.getString("term"), "fieldKey" to rs.getString("data_field_key"),
+                "reasonCd" to when (rs.getInt("ord")) { 1 -> "REF_IN_DEF"; 2 -> "REF_BY"; else -> "NAME_OVERLAP" }
             )
         }
 
@@ -701,22 +629,23 @@ class GlossaryRepository(
             MapSqlParameterSource()
         ) { rs, _ -> com.dwje.api.common.util.Rs.dateTime(rs, "at") }.firstOrNull()
 
-    /** 데이터 항목이 걸린 용어 분류 — 분류 ID·이름·데이터 항목 key (R-18, V66) */
-    fun findDomainFieldKeys(): List<Triple<Int, String, String>> =
+    /** 용어에 걸린 데이터 항목 key 들 (R-18, V75) — 열람자가 못 보는 것을 고르는 재료 */
+    fun findTermFieldKeys(): Set<String> =
         jdbcTemplate.query(
-            "SELECT domain_id, domain_nm, data_field_key FROM ax.tb_gls_domain WHERE data_field_key IS NOT NULL",
+            "SELECT DISTINCT data_field_key FROM ax.tb_gls_term WHERE data_field_key IS NOT NULL",
             MapSqlParameterSource()
-        ) { rs, _ -> Triple(rs.getInt("domain_id"), rs.getString("domain_nm"), rs.getString("data_field_key")) }
+        ) { rs, _ -> rs.getString("data_field_key") }.toSet()
 
-    /** 용어의 분류 ID — 사용 여부 무관 */
-    fun findTermDomainId(termId: Int): Int? =
-        jdbcTemplate.query("SELECT domain_id FROM ax.tb_gls_term WHERE term_id = :id", MapSqlParameterSource("id", termId)) { rs, _ ->
-            rs.getInt("domain_id")
+    /** 용어의 데이터 항목 key — 사용 여부 무관, 없으면 null */
+    fun findTermFieldKey(termId: Int): String? =
+        jdbcTemplate.query("SELECT data_field_key FROM ax.tb_gls_term WHERE term_id = :id", MapSqlParameterSource("id", termId)) { rs, _ ->
+            rs.getString("data_field_key")
         }.firstOrNull()
 
     /**
      * 사전 변경 이력 1행 (07 GLS-07) — 업무 쓰기와 같은 트랜잭션에서 성공 뒤에 부른다. 409 로 롤백되면 이력도 남지 않는다.
-     * JSON 키는 API 응답에 그대로 나가므로 camelCase(term, termDef, domainNm, word)로 쓴다.
+     * JSON 키는 API 응답에 그대로 나가므로 camelCase(term, termDef, customerInfo, word)로 쓴다.
+     * V75 전 이력에는 분류 이름(domainNm)이 남아 있다 — 지우지 않는다.
      */
     fun insertChangeLog(
         actorId: String, actorDeptNm: String?, targetCd: String, actionCd: String,
@@ -739,14 +668,14 @@ class GlossaryRepository(
     fun findTermSnapshot(termId: Int): Map<String, Any?>? =
         jdbcTemplate.query(
             """
-            SELECT t.term, t.term_def, d.domain_nm
+            SELECT t.term, t.term_def, t.data_field_key
             FROM ax.tb_gls_term t
-            LEFT JOIN ax.tb_gls_domain d ON d.domain_id = t.domain_id
             WHERE t.term_id = :termId
             """.trimIndent(),
             MapSqlParameterSource("termId", termId)
         ) { rs, _ ->
-            mapOf<String, Any?>("term" to rs.getString("term"), "termDef" to rs.getString("term_def"), "domainNm" to rs.getString("domain_nm"))
+            mapOf<String, Any?>("term" to rs.getString("term"), "termDef" to rs.getString("term_def"),
+                "customerInfo" to (rs.getString("data_field_key") == com.dwje.api.common.util.DataField.CUSTOMER))
         }.firstOrNull()
 
     /** 이력용 유사어 값 — 낱말·용어·등록자 */
@@ -778,7 +707,7 @@ class GlossaryRepository(
         val sql = StringBuilder(
             """
             SELECT c.change_id, c.changed_at, c.actor_id, u.user_nm AS actor_nm, c.target_cd, c.action_cd,
-                   c.term_id, t.term, t.domain_id, c.variant_id, c.before_json::text AS before_json, c.after_json::text AS after_json
+                   c.term_id, t.term, t.data_field_key, c.variant_id, c.before_json::text AS before_json, c.after_json::text AS after_json
             FROM ax.tb_gls_change_log c
             LEFT JOIN ax.tb_sys_user u ON u.user_id = c.actor_id
             LEFT JOIN ax.tb_gls_term t ON t.term_id = c.term_id
@@ -799,7 +728,7 @@ class GlossaryRepository(
                 "actionCd" to rs.getString("action_cd"),
                 "termId" to rs.getInt("term_id"),
                 "term" to rs.getString("term"),
-                "domainId" to Rs.intOrNull(rs, "domain_id"),
+                "fieldKey" to rs.getString("data_field_key"),
                 "variantId" to Rs.intOrNull(rs, "variant_id"),
                 "before" to rs.getString("before_json")?.let { JSON.readValue(it, Map::class.java) },
                 "after" to rs.getString("after_json")?.let { JSON.readValue(it, Map::class.java) }

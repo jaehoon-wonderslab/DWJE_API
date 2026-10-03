@@ -21,7 +21,7 @@ object GlossaryImportWorkbook {
 
     const val TERM_SHEET = "용어"
     const val GUIDE_SHEET = "안내"
-    val HEADERS = listOf("공식 용어*", "뜻*", "분류", "유사어")
+    val HEADERS = listOf("공식 용어*", "뜻*", "고객사 정보", "유사어")
 
     /** 업로드 상한 — 파일 5MB · 데이터 1,000행 */
     const val MAX_BYTES = 5L * 1024 * 1024
@@ -33,15 +33,26 @@ object GlossaryImportWorkbook {
     /** 유사어 칸 구분자 — 쉼표·줄바꿈(전각 쉼표 포함) */
     private val VARIANT_SPLIT = Regex("[,，\\r\\n]+")
 
-    /** 파일의 한 데이터 행 — [row] 는 엑셀 행 번호(머리글이 1행) */
-    data class Row(val row: Int, val term: String, val definition: String, val domain: String, val variants: List<String>)
+    /** 「고객사 정보」 칸 — 빈칸은 N */
+    private val YES = setOf("Y", "YES", "예", "O", "TRUE", "1")
+    private val NO = setOf("", "N", "NO", "아니오", "X", "FALSE", "0")
 
     /**
-     * 업로드용 템플릿 — 「용어」 시트(머리글 + 예시 2행) · 「안내」 시트(규칙·글자 수·분류 목록)
-     *
-     * @param domains 지금 쓰는 분류 이름 — 「분류」 열에 목록 선택을 건다
+     * 파일의 한 데이터 행 — [row] 는 엑셀 행 번호(머리글이 1행).
+     * [customerInfo] 는 「고객사 정보」 칸(Y/N, 빈칸=N), 알아볼 수 없는 값이면 null 이고 원문은 [customerRaw].
      */
-    fun template(domains: List<String>, termMax: Int, definitionMax: Int, variantMax: Int): ByteArray = XSSFWorkbook().use { wb ->
+    data class Row(
+        val row: Int, val term: String, val definition: String,
+        val customerInfo: Boolean?, val customerRaw: String, val variants: List<String>
+    )
+
+    /** 「고객사 정보」 칸 해석 — Y/N(대소문자 무시)·예/아니오·빈칸(N). 그 밖은 null */
+    fun parseYn(raw: String): Boolean? = raw.trim().uppercase().let { if (it in YES) true else if (it in NO) false else null }
+
+    /**
+     * 업로드용 템플릿 — 「용어」 시트(머리글 + 예시 2행, 「고객사 정보」 열은 Y/N 목록 선택) · 「안내」 시트(규칙·글자 수)
+     */
+    fun template(termMax: Int, definitionMax: Int, variantMax: Int): ByteArray = XSSFWorkbook().use { wb ->
         val header = wb.createCellStyle().apply {
             fillForegroundColor = IndexedColors.GREY_25_PERCENT.index
             fillPattern = FillPatternType.SOLID_FOREGROUND
@@ -57,10 +68,9 @@ object GlossaryImportWorkbook {
 
         val sheet = wb.createSheet(TERM_SHEET)
         sheet.createRow(0).let { r -> HEADERS.forEachIndexed { i, h -> r.createCell(i).apply { setCellValue(h); cellStyle = header } } }
-        val sampleDomain = domains.firstOrNull() ?: ""
         listOf(
-            listOf("$EXAMPLE_MARK 수율", "투입 수량 대비 양품 수량의 비율입니다.", sampleDomain, "양품률, 합격률"),
-            listOf("$EXAMPLE_MARK 타발", "금형으로 소재를 찍어 모양을 내는 공정입니다.", sampleDomain, "펀칭\n프레스 타발")
+            listOf("$EXAMPLE_MARK 수율", "투입 수량 대비 양품 수량의 비율입니다.", "N", "양품률, 합격률"),
+            listOf("$EXAMPLE_MARK 고객사A", "고객사 이름 예시입니다. 고객사 권한이 없는 사람에게는 「비공개 용어」 로 보입니다.", "Y", "A사")
         ).forEachIndexed { i, values ->
             val r = sheet.createRow(i + 1)
             values.forEachIndexed { c, v -> r.createCell(c).apply { setCellValue(v); cellStyle = example } }
@@ -74,37 +84,32 @@ object GlossaryImportWorkbook {
             "" to false,
             "1. 「용어」 시트의 머리글(1행)은 바꾸지 마십시오. 머리글이 다르면 파일 전체를 받지 않습니다." to false,
             "2. 「$EXAMPLE_MARK」 로 시작하는 예시 행은 읽지 않습니다. 지워도 됩니다." to false,
-            "3. 공식 용어가 이미 있으면 그 용어에 유사어만 더합니다. 기존 용어의 뜻·분류는 바꾸지 않습니다." to false,
-            "4. 새 공식 용어는 통합관리자만 등록할 수 있습니다. 새 용어 행은 뜻·분류가 필요합니다." to false,
+            "3. 공식 용어가 이미 있으면 그 용어에 유사어만 더합니다. 기존 용어의 뜻·고객사 정보는 바꾸지 않습니다." to false,
+            "4. 새 공식 용어는 통합관리자만 등록할 수 있습니다. 새 용어 행은 뜻이 필요합니다." to false,
+            "   「고객사 정보」 는 Y 또는 N(빈칸=N)입니다. Y 인 용어는 고객사 데이터 권한이 없는 사람에게 「비공개 용어」 로 보입니다." to false,
+            "   기존 용어의 고객사 정보를 바꾸려면 용어 편집에서 합니다." to false,
             "5. 유사어는 쉼표(,) 또는 줄바꿈으로 여러 개를 적습니다. 이미 있는 유사어와 같은 파일 안 중복은 건너뜁니다." to false,
             "6. 유사어는 2자 이상이어야 하며, 숫자·날짜 표현과 공식 용어와 같은 낱말은 등록하지 않습니다." to false,
             "7. 한 번에 최대 ${"%,d".format(MAX_ROWS)}행, 파일 크기 ${MAX_BYTES / 1024 / 1024}MB 까지 올릴 수 있습니다. 빈 행은 건너뜁니다." to false,
             "8. 올리면 먼저 미리보기로 결과를 보여 줍니다. 오류 행은 빼고 나머지만 등록합니다." to false,
             "" to false,
             "글자 수 제한" to true,
-            "공식 용어 ${termMax}자 · 뜻 ${definitionMax}자 · 유사어 ${variantMax}자" to false,
-            "" to false,
-            "분류 목록 (「분류」 열에 아래 이름 중 하나를 그대로 적습니다)" to true
+            "공식 용어 ${termMax}자 · 뜻 ${definitionMax}자 · 유사어 ${variantMax}자" to false
         )
         lines.forEachIndexed { i, (text, isBold) ->
             guide.createRow(i).createCell(0).apply { setCellValue(text); if (isBold) cellStyle = bold }
         }
-        val domainStart = lines.size
-        domains.forEachIndexed { i, d -> guide.createRow(domainStart + i).createCell(0).setCellValue(d) }
-        guide.setColumnWidth(0, 100 * 256)
+        guide.setColumnWidth(0, 110 * 256)
 
-        // 「분류」 열은 안내 시트의 분류 목록에서 고른다 — 목록에 없는 이름을 적어도 엑셀이 막지는 않게 경고만
-        if (domains.isNotEmpty()) {
-            val helper = sheet.dataValidationHelper
-            val ref = "'$GUIDE_SHEET'!\$A\$${domainStart + 1}:\$A\$${domainStart + domains.size}"
-            val validation = helper.createValidation(
-                helper.createFormulaListConstraint(ref), CellRangeAddressList(1, MAX_ROWS + 1, 2, 2)
-            ).apply {
-                errorStyle = org.apache.poi.ss.usermodel.DataValidation.ErrorStyle.WARNING
-                showErrorBox = true
-            }
-            sheet.addValidationData(validation)
+        // 「고객사 정보」 열은 Y/N 목록 선택 — 다른 값을 적어도 엑셀이 막지는 않게 경고만(업로드가 행 오류로 알린다)
+        val helper = sheet.dataValidationHelper
+        val validation = helper.createValidation(
+            helper.createExplicitListConstraint(arrayOf("Y", "N")), CellRangeAddressList(1, MAX_ROWS + 1, 2, 2)
+        ).apply {
+            errorStyle = org.apache.poi.ss.usermodel.DataValidation.ErrorStyle.WARNING
+            showErrorBox = true
         }
+        sheet.addValidationData(validation)
 
         ByteArrayOutputStream().use { out -> wb.write(out); out.toByteArray() }
     }
@@ -140,7 +145,7 @@ object GlossaryImportWorkbook {
                 if (cells.all { c -> c.isEmpty() }) continue
                 if (cells[0].startsWith(EXAMPLE_MARK)) continue
                 rows += Row(
-                    row = r + 1, term = cells[0], definition = cells[1], domain = cells[2],
+                    row = r + 1, term = cells[0], definition = cells[1], customerInfo = parseYn(cells[2]), customerRaw = cells[2],
                     variants = cells[3].split(VARIANT_SPLIT).map { v -> v.trim() }.filter { v -> v.isNotEmpty() }
                 )
                 if (rows.size > MAX_ROWS) {

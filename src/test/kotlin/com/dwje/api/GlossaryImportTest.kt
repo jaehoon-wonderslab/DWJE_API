@@ -65,12 +65,12 @@ class GlossaryImportTest {
     private fun rows(res: Map<String, Any?>) = res["rows"] as List<Map<String, Any?>>
 
     private val sample = arrayOf(
-        listOf("8D", "무시되는 뜻", "기타", "ZT팔디보고, ZT팔디"),          // 2행 기존 용어 — 유사어만 더함
-        listOf("ZT새용어", "업로드로 넣은 뜻", "품질관리", "ZT새말1\nZT새말2, 8디"), // 3행 새 용어 — 8디는 이미 8D 의 유사어
+        listOf("8D", "무시되는 뜻", "Y", "ZT팔디보고, ZT팔디"),             // 2행 기존 용어 — 유사어만 더함, 고객사 정보 무시
+        listOf("ZT새용어", "업로드로 넣은 뜻", "y", "ZT새말1\nZT새말2, 8디"),  // 3행 새 고객사 용어 — 8디는 이미 8D 의 유사어
         listOf("ZT새용어", "", "", "ZT새말3, ZT새말1"),                   // 4행 같은 파일 앞 행 용어 — ZT새말1 은 파일 안 중복
-        listOf("ZT분류없음", "뜻", "없는분류", "ZT말"),                     // 5행 분류 오류
+        listOf("ZT고객사모름", "뜻", "모름", "ZT말"),                       // 5행 고객사 정보 오류
         listOf("", "", "", ""),                                         // 빈 행 — 건너뜀
-        listOf("(예시) 수율", "예시", "기타", "양품률")                      // 예시 행 — 건너뜀
+        listOf("(예시) 수율", "예시", "N", "양품률")                        // 예시 행 — 건너뜀
     )
 
     @Test
@@ -85,12 +85,13 @@ class GlossaryImportTest {
         assertEquals(listOf(2, 3, 4, 5), r.map { it["row"] })
         assertEquals(listOf("EXISTING_TERM", "NEW_TERM", "EXISTING_TERM", "ERROR"), r.map { it["action"] })
         assertEquals(listOf("ZT팔디보고", "ZT팔디"), r[0]["variantsAdded"])
-        assertTrue((r[0]["notes"] as List<*>).contains("기존 용어 — 뜻·분류는 바꾸지 않음"))
+        assertTrue((r[0]["notes"] as List<*>).contains("기존 용어 — 뜻·고객사 정보는 바꾸지 않음"))
+        assertEquals(true, r[1]["customerInfo"]); assertTrue("domain" !in r[1])
         assertEquals(listOf("ZT새말1", "ZT새말2"), r[1]["variantsAdded"])
         assertEquals("8디", ((r[1]["variantsSkipped"] as List<*>)[0] as Map<*, *>)["word"])
         assertEquals(listOf("ZT새말3"), r[2]["variantsAdded"])
         assertEquals("같은 파일 3행과 중복", ((r[2]["variantsSkipped"] as List<*>)[0] as Map<*, *>)["reason"])
-        assertEquals("domain", ((r[3]["errors"] as List<*>)[0] as Map<*, *>)["field"])
+        assertEquals("customerInfo", ((r[3]["errors"] as List<*>)[0] as Map<*, *>)["field"])
 
         val done = service.importTerms(xlsx(rows = sample), "a.xlsx", false)
         assertEquals(rows(dry).map { it["variantsAdded"] }, rows(done).map { it["variantsAdded"] }, "미리보기와 등록이 같은 판정")
@@ -100,14 +101,16 @@ class GlossaryImportTest {
         val newId = rows(done)[1]["termId"] as Int
         assertEquals(newId, rows(done)[2]["termId"])
         assertEquals(3L, long("SELECT count(*) FROM ax.tb_gls_variant WHERE term_id = $newId"))
+        assertEquals(1L, long("SELECT count(*) FROM ax.tb_gls_term WHERE term_id = $newId AND data_field_key = 'customer'"), "고객사 정보 Y → customer")
+        assertEquals(0L, long("SELECT count(*) FROM ax.tb_gls_term WHERE term_id = 5 AND data_field_key IS NOT NULL"), "기존 용어의 고객사 정보는 그대로")
     }
 
     @Test
-    @DisplayName("기존 용어의 뜻·분류는 파일 값으로 바뀌지 않는다(대소문자 무시)")
+    @DisplayName("기존 용어의 뜻·고객사 정보는 파일 값으로 바뀌지 않는다(대소문자 무시)")
     fun existingTermUntouched() {
-        val sql = "SELECT term_def || '|' || domain_id FROM ax.tb_gls_term WHERE term_id = 5"
+        val sql = "SELECT term_def || '|' || coalesce(data_field_key, '-') FROM ax.tb_gls_term WHERE term_id = 5"
         val before = jdbc.queryForObject(sql, MapSqlParameterSource(), String::class.java)
-        val res = service.importTerms(xlsx(rows = arrayOf(listOf("8d", "다른 뜻", "기타", "ZT팔디보고"))), "a.xlsx", false)
+        val res = service.importTerms(xlsx(rows = arrayOf(listOf("8d", "다른 뜻", "Y", "ZT팔디보고"))), "a.xlsx", false)
         assertEquals(5, rows(res)[0]["termId"])
         assertEquals(before, jdbc.queryForObject(sql, MapSqlParameterSource(), String::class.java))
     }
@@ -116,7 +119,7 @@ class GlossaryImportTest {
     @DisplayName("통합관리자가 아니면 새 용어 행은 ERROR, 기존 용어 유사어는 등록 · 조회 권한만이면 403")
     fun writerRules() {
         UserContext.set(writer)
-        val res = service.importTerms(xlsx(rows = arrayOf(listOf("8D", "", "", "ZT팔디보고"), listOf("ZT새용어", "뜻", "기타", "ZT새말"))), "a.xlsx", false)
+        val res = service.importTerms(xlsx(rows = arrayOf(listOf("8D", "", "", "ZT팔디보고"), listOf("ZT새용어", "뜻", "N", "ZT새말"))), "a.xlsx", false)
         val r = rows(res)
         assertEquals("EXISTING_TERM", r[0]["action"]); assertEquals(listOf("ZT팔디보고"), r[0]["variantsAdded"])
         assertEquals("ERROR", r[1]["action"])
@@ -132,8 +135,12 @@ class GlossaryImportTest {
     }
 
     @Test
-    @DisplayName("머리글이 다르면·xlsx 가 아니면·행이 넘치면 400")
+    @DisplayName("머리글이 다르면(예전 「분류」 템플릿 포함)·xlsx 가 아니면·행이 넘치면 400")
     fun fileRules() {
+        val old = assertThrows(InvalidParameterException::class.java) {
+            service.importTerms(xlsx(listOf("공식 용어*", "뜻*", "분류", "유사어"), listOf("8D", "", "기타", "")), "a.xlsx", true)
+        }
+        assertTrue(old.message!!.startsWith("템플릿의 머리글과 다릅니다"))
         val e = assertThrows(InvalidParameterException::class.java) {
             service.importTerms(xlsx(listOf("용어", "뜻", "분류", "유사어"), listOf("a", "b", "c", "d")), "a.xlsx", true)
         }
@@ -143,11 +150,11 @@ class GlossaryImportTest {
         val many = Array(GlossaryImportWorkbook.MAX_ROWS + 1) { listOf("8D", "", "", "") }
         assertThrows(InvalidParameterException::class.java) { service.importTerms(xlsx(rows = many), "a.xlsx", true) }
         // 필수 표시(*)·앞뒤 공백은 무시한다
-        service.importTerms(xlsx(listOf(" 공식 용어 ", "뜻", "분류", "유사어"), listOf("8D", "", "", "")), "a.xlsx", true)
+        service.importTerms(xlsx(listOf(" 공식 용어 ", "뜻", "고객사 정보", "유사어"), listOf("8D", "", "", "")), "a.xlsx", true)
     }
 
     @Test
-    @DisplayName("템플릿 — 용어·안내 시트, 머리글, 예시 2행, 분류 목록, 그대로 올리면 등록할 행이 없다")
+    @DisplayName("템플릿 — 용어·안내 시트, 머리글(고객사 정보), 예시 2행, 분류 목록 없음, 그대로 올리면 등록할 행이 없다")
     fun template() {
         val bytes = service.importTemplate()
         WorkbookFactory.create(bytes.inputStream()).use { wb ->
@@ -155,7 +162,8 @@ class GlossaryImportTest {
             assertEquals(GlossaryImportWorkbook.HEADERS, (0..3).map { s.getRow(0).getCell(it).stringCellValue })
             assertEquals(2, s.lastRowNum)
             val guide = (0..wb.getSheet("안내").lastRowNum).map { wb.getSheet("안내").getRow(it).getCell(0).stringCellValue }
-            assertTrue(guide.contains("품질관리")); assertTrue(guide.any { it.contains("공식 용어 50자 · 뜻 500자 · 유사어 50자") })
+            assertTrue(guide.none { it.contains("분류") }); assertTrue(guide.any { it.contains("공식 용어 50자 · 뜻 500자 · 유사어 50자") })
+            assertEquals(listOf("N", "Y"), (1..2).map { s.getRow(it).getCell(2).stringCellValue })
         }
         val e = assertThrows(InvalidParameterException::class.java) { service.importTerms(bytes, "t.xlsx", true) }
         assertTrue(e.message!!.startsWith("등록할 행이 없습니다"))

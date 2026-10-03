@@ -31,7 +31,7 @@ import org.springframework.http.MediaType
 /**
  * 용어 사전 관리 컨트롤러 (SY-06)
  *
- * 접근 : 조회 API(요약·분류·목록·상세·내려받기)는 `sys-gloss` 또는 `gloss-view`(용어 사전 조회, GL-01),
+ * 접근 : 조회 API(요약·목록·상세·내려받기)는 `sys-gloss` 또는 `gloss-view`(용어 사전 조회, GL-01),
  *        쓰기·미리보기는 `sys-gloss`, 공식 용어 편집·위험 유사어 점검은 통합관리자 · 값 마스킹 : 없음
  *        (유사어는 쓰기 권한자가 본인 등록 건만 수정·삭제)
  */
@@ -50,26 +50,16 @@ class GlossaryController(
     fun summary(): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(glossaryService.getSummary())
 
-    /** 용어 분류 목록 조회 */
-    @Operation(
-        summary = "용어 분류 목록 조회",
-        description = "용어 등록 화면의 분류 선택지. code 를 용어 등록의 domainCd 에 그대로 넣는다."
-    )
-    @GetMapping("/domains")
-    fun domains(): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(glossaryService.getDomains())
-
     /** 용어 목록 조회 (No.171) */
     @Operation(summary = "용어 목록 조회", description = "공식 용어와 등록된 유사어를 함께 조회한다.")
     @GetMapping("/terms")
     fun terms(
         @RequestParam(required = false) keyword: String?,
-        @Parameter(description = "도메인명") @RequestParam(required = false) domainCd: String?,
         @RequestParam(required = false) page: Int?,
         @RequestParam(required = false) size: Int?,
         @Parameter(description = "내가 등록한 유사어가 있는 용어만 — sys-gloss 호출자에게만 효과") @RequestParam(required = false) mineOnly: Boolean?
     ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta) = glossaryService.getTerms(keyword, domainCd, page, size, mineOnly)
+        val (rows, meta) = glossaryService.getTerms(keyword, page, size, mineOnly)
         return ApiResponse.page(mapOf("items" to rows), meta)
     }
 
@@ -110,7 +100,7 @@ class GlossaryController(
         val export = glossaryService.exportTerms(request)
         val fileName = "glossary_${exportService.timestamp()}"
         val blind = exportService.blindCells()
-        // 가린 분류 용어의 칸(R-18)도 비공개 건수에 넣는다 — 파일 안내와 다운로드 이력 blindCnt 가 같다
+        // 가린 용어의 칸(R-18)도 비공개 건수에 넣는다 — 파일 안내와 다운로드 이력 blindCnt 가 같다
         repeat(export.blindedCells) { blind.mark(com.dwje.api.common.util.DataField.CUSTOMER) }
         val file = exportService.excel(fileName, export.headers, export.keys, export.rows, "용어 사전", blind)
         downloadLogService.record(
@@ -123,7 +113,7 @@ class GlossaryController(
             blindCnt = blind.total,
             blindCells = blind.counts(),
             fileNm = "$fileName.xlsx",
-            params = mapOf("keyword" to request?.keyword, "domainCd" to request?.domainCd, "mineOnly" to request?.mineOnly,
+            params = mapOf("keyword" to request?.keyword, "mineOnly" to request?.mineOnly,
                 "scopeCd" to export.scopeCd, "total" to export.total, "truncated" to (export.total > export.rows.size)),
             fileSize = file.body?.contentLength(),
             scopeCd = export.scopeCd ?: "ALL",
@@ -135,7 +125,7 @@ class GlossaryController(
     /** 용어 사전 업로드용 템플릿 — 내려받기 이력은 서버가 남긴다 */
     @Operation(
         summary = "용어 사전 업로드 템플릿",
-        description = "업로드용 xlsx. 「용어」 시트(머리글 공식 용어*·뜻*·분류·유사어 + 예시 2행) · 「안내」 시트(규칙·글자 수·분류 목록). " +
+        description = "업로드용 xlsx. 「용어」 시트(머리글 공식 용어*·뜻*·고객사 정보·유사어 + 예시 2행) · 「안내」 시트(규칙·글자 수). " +
             "권한 sys-gloss. 다운로드 이력은 서버가 기록한다."
     )
     @GetMapping("/import/template")
@@ -153,7 +143,7 @@ class GlossaryController(
     /** 용어 사전 엑셀 업로드 — dryRun=true(기본) 는 미리보기만 */
     @Operation(
         summary = "용어 사전 엑셀 업로드",
-        description = "multipart: file(xlsx, 5MB · 1,000행 이하) · dryRun(기본 true). 기존 용어에는 유사어만 더하고 뜻·분류는 바꾸지 않는다. " +
+        description = "multipart: file(xlsx, 5MB · 1,000행 이하) · dryRun(기본 true). 기존 용어에는 유사어만 더하고 뜻·고객사 정보는 바꾸지 않는다. " +
             "새 공식 용어는 통합관리자만(그 밖은 그 행 ERROR). dryRun=false 는 ERROR 행을 빼고 등록한다. 머리글이 템플릿과 다르면 400. " +
             "권한 sys-gloss 쓰기(미배정 아님)."
     )
@@ -178,23 +168,23 @@ class GlossaryController(
         ApiResponse.ok(glossaryService.getRiskVariants())
 
     /** 공식 용어 등록 (No.172) */
-    @Operation(summary = "공식 용어 등록", description = "공식 용어와 정의를 등록한다. 통합관리자만.")
+    @Operation(summary = "공식 용어 등록", description = "공식 용어·정의·고객사 정보(customerInfo, 생략 시 false)를 등록한다. 통합관리자만.")
     @PostMapping("/terms")
     fun createTerm(@Valid @RequestBody request: GlossaryTermRequest): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(
-            glossaryService.createTerm(request.term, request.definition, request.domainCd),
+            glossaryService.createTerm(request.term, request.definition, request.customerInfo),
             "용어가 등록되었습니다."
         )
 
     /** 공식 용어 수정 (No.173) */
-    @Operation(summary = "공식 용어 수정", description = "공식 용어와 정의를 수정한다. 통합관리자만.")
+    @Operation(summary = "공식 용어 수정", description = "공식 용어·정의·고객사 정보를 수정한다. customerInfo 를 생략하면 지금 값을 둔다. 통합관리자만.")
     @PutMapping("/terms/{termId}")
     fun updateTerm(
         @PathVariable termId: Int,
         @Valid @RequestBody request: GlossaryTermRequest
     ): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(
-            glossaryService.updateTerm(termId, request.term, request.definition, request.domainCd),
+            glossaryService.updateTerm(termId, request.term, request.definition, request.customerInfo),
             "용어가 수정되었습니다."
         )
 

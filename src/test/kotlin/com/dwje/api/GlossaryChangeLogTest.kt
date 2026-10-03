@@ -98,25 +98,25 @@ class GlossaryChangeLogTest {
     @Test
     @DisplayName("GLS-07 용어 등록·수정·삭제·되살림 이력, 같은 값 수정은 이력 없음 / GLS-10 뜻을 지운 수정 400")
     fun termLog() {
-        val created = service.createTerm("ZT용어", "시험 뜻", "품질관리")
+        val created = service.createTerm("ZT용어", "시험 뜻")
         val termId = created["termId"] as Int
-        latest().let { assertEquals("CREATE", it["actionCd"]); assertEquals(mapOf("term" to "ZT용어", "termDef" to "시험 뜻", "domainNm" to "품질관리"), it["after"]) }
+        latest().let { assertEquals("CREATE", it["actionCd"]); assertEquals(mapOf("term" to "ZT용어", "termDef" to "시험 뜻", "customerInfo" to false), it["after"]) }
 
         assertEquals("definition", assertThrows(InvalidParameterException::class.java) {
-            service.updateTerm(termId, "ZT용어", "  ", "품질관리")
+            service.updateTerm(termId, "ZT용어", "  ")
         }.field)
 
         val before = logCnt()
-        service.updateTerm(termId, "ZT용어", "시험 뜻", "품질관리")
+        service.updateTerm(termId, "ZT용어", "시험 뜻")
         assertEquals(before, logCnt(), "바뀐 것이 없으면 이력 없음")
-        service.updateTerm(termId, "ZT용어", "고친 뜻", "품질관리")
+        service.updateTerm(termId, "ZT용어", "고친 뜻")
         latest().let { assertEquals("UPDATE", it["actionCd"]); assertEquals("시험 뜻", (it["before"] as Map<*, *>)["termDef"]); assertEquals("고친 뜻", (it["after"] as Map<*, *>)["termDef"]) }
 
         service.createVariant(termId, "ZT용어별칭")
         service.deleteTerm(termId)
         latest().let { assertEquals("DELETE", it["actionCd"]); assertEquals(1, (it["before"] as Map<*, *>)["deactivatedVariants"]) }
 
-        service.createTerm("zt용어", "되살린 뜻", "품질관리")
+        service.createTerm("zt용어", "되살린 뜻")
         latest().let {
             assertEquals("RESTORE", it["actionCd"]); assertEquals(termId, it["termId"])
             assertEquals(1, (it["after"] as Map<*, *>)["restoredVariants"])
@@ -150,11 +150,11 @@ class GlossaryChangeLogTest {
     fun filtersAndDefaults() {
         UserContext.set(writer.copy(userId = "10001"))
         val expected = long("SELECT count(DISTINCT v.term_id) FROM ax.tb_gls_variant v JOIN ax.tb_gls_term t USING (term_id) WHERE t.use_flg = 'Y' AND v.owner_user_id = '10001'")
-        assertEquals(expected, service.getTerms(null, null, 1, 10, mineOnly = true).second.total)
+        assertEquals(expected, service.getTerms(null, 1, 10, mineOnly = true).second.total)
         UserContext.set(viewer)
         val all = long("SELECT count(*) FROM ax.tb_gls_term WHERE use_flg = 'Y'")
-        assertEquals(all, service.getTerms(null, null, 1, 10, mineOnly = true).second.total, "조회 화면은 mineOnly 를 무시한다")
-        val (lrr, _) = service.getTerms("lrr", null, 1, 10)
+        assertEquals(all, service.getTerms(null, 1, 10, mineOnly = true).second.total, "조회 화면은 mineOnly 를 무시한다")
+        val (lrr, _) = service.getTerms("lrr", 1, 10)
         assertTrue(lrr.any { it["term"] == "LRR" })
 
         UserContext.set(admin)

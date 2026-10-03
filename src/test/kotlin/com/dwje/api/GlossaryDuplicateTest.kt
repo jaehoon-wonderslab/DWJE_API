@@ -79,23 +79,22 @@ class GlossaryDuplicateTest {
                 .firstOrNull { it["variantId"] != excludeVariantId && key(it["word"] as String) == key(word) }
                 ?.let { it + mapOf("term" to terms[it["termId"]]?.get("term")) }
 
-        override fun findDomainId(domainNm: String) = 4
         override fun existsTerm(termId: Int) = terms[termId]?.get("active") == true
         override fun existsVariant(variantId: Int) = variants.containsKey(variantId)
         override fun countVariantsByTerm(termId: Int) = variants.values.count { it["termId"] == termId }.toLong()
 
-        override fun insertTerm(term: String, definition: String, domainId: Int, actor: String): Int {
+        override fun insertTerm(term: String, definition: String, fieldKey: String?, actor: String): Int {
             termIndexGuard(term, null)
             return seedTerm(term)
         }
 
-        override fun updateTerm(termId: Int, term: String, definition: String, domainId: Int, actor: String): Int {
+        override fun updateTerm(termId: Int, term: String, definition: String, fieldKey: String?, actor: String): Int {
             termIndexGuard(term, termId)
             terms[termId]!!["term"] = term.trim()
             return 1
         }
 
-        override fun reviveTerm(termId: Int, definition: String, domainId: Int, actor: String): Int {
+        override fun reviveTerm(termId: Int, definition: String, fieldKey: String?, actor: String): Int {
             terms[termId]!!["active"] = true
             return 1
         }
@@ -138,24 +137,24 @@ class GlossaryDuplicateTest {
         val repo = repoWith("CAN")
         val svc = service(repo)
 
-        val e = assertThrows(ConflictingValueException::class.java) { svc.createTerm("can", "정의", "치공구") }
+        val e = assertThrows(ConflictingValueException::class.java) { svc.createTerm("can", "정의") }
         assertEquals("term", e.field)
         assertEquals(409, e.errorCode.status.value())
         assertTrue(e.message.startsWith("이미 등록된 용어입니다. [CAN]"), e.message)
         assertTrue(e.message.contains("입력: can"), "입력한 표기도 함께 알려 준다 : ${e.message}")
 
         // 앞뒤 공백도 같은 용어로 본다 — 인덱스가 btrim 기준이다
-        assertThrows(ConflictingValueException::class.java) { svc.createTerm("  CAN  ", "정의", "치공구") }
+        assertThrows(ConflictingValueException::class.java) { svc.createTerm("  CAN  ", "정의") }
         // 표기가 같으면 군더더기 없이 한 줄
         assertEquals("이미 등록된 용어입니다. [CAN]",
-            assertThrows(ConflictingValueException::class.java) { svc.createTerm("CAN", "정의", "치공구") }.message)
+            assertThrows(ConflictingValueException::class.java) { svc.createTerm("CAN", "정의") }.message)
     }
 
     @Test
     @DisplayName("용어 등록 — 사전 조회를 통과한 뒤 경합으로 유니크에 걸려도 같은 409 (500 이 나가지 않는다)")
     fun createTermRace() {
         val repo = repoWith("CAN").apply { blindTo = "can" }
-        val e = assertThrows(ConflictingValueException::class.java) { service(repo).createTerm(" can ", "정의", "치공구") }
+        val e = assertThrows(ConflictingValueException::class.java) { service(repo).createTerm(" can ", "정의") }
         assertEquals("term", e.field)
         assertEquals(409, e.errorCode.status.value())
         assertEquals("이미 등록된 용어입니다. [can]", e.message, "중단된 트랜잭션에서 다시 조회하지 않고 입력값으로 안내한다")
@@ -165,7 +164,7 @@ class GlossaryDuplicateTest {
     @DisplayName("용어 등록 — 사용 중지된 동명 용어는 대소문자가 달라도 되살린다 (표기는 저장된 것을 유지)")
     fun createTermRevive() {
         val repo = MemRepo().apply { seedTerm("CAN", active = false).also { seedVariant(it, "캔") } }
-        val out = service(repo).createTerm("can", "정의", "치공구")
+        val out = service(repo).createTerm("can", "정의")
         assertEquals(true, out["restored"])
         assertEquals("CAN", out["term"], "되살린 행의 표기를 그대로 알려 준다")
         assertEquals(1L, out["restoredVariants"])
@@ -178,10 +177,10 @@ class GlossaryDuplicateTest {
         val repo = repoWith("CAN", "버(burr)")
         val svc = service(repo)
 
-        val e = assertThrows(ConflictingValueException::class.java) { svc.updateTerm(2, "can", "정의", "치공구") }
+        val e = assertThrows(ConflictingValueException::class.java) { svc.updateTerm(2, "can", "정의") }
         assertTrue(e.message.startsWith("이미 등록된 용어입니다. [CAN]"), e.message)
 
-        assertEquals(true, svc.updateTerm(1, "  Can  ", "정의", "치공구")["success"])
+        assertEquals(true, svc.updateTerm(1, "  Can  ", "정의")["success"])
         assertEquals("Can", repo.terms[1]!!["term"], "앞뒤 공백을 떼고 저장한다")
     }
 
@@ -189,7 +188,7 @@ class GlossaryDuplicateTest {
     @DisplayName("용어 수정 — 삭제된 용어가 이름을 점유하면 되살리라고 안내한다 (409)")
     fun updateTermBlockedByDeleted() {
         val repo = MemRepo().apply { seedTerm("CAN", active = false); seedTerm("버(burr)") }
-        val e = assertThrows(ConflictingValueException::class.java) { service(repo).updateTerm(2, "can", "정의", "치공구") }
+        val e = assertThrows(ConflictingValueException::class.java) { service(repo).updateTerm(2, "can", "정의") }
         assertEquals("term", e.field)
         assertTrue(e.message.contains("삭제된 용어가 이 이름을 쓰고 있어"), e.message)
         assertTrue(e.message.contains("[CAN]"), "삭제된 쪽의 표기를 보여 준다 : ${e.message}")
@@ -233,7 +232,7 @@ class GlossaryDuplicateTest {
     @DisplayName("중복 409 는 E-RULE-001 로 나간다 — 회원가입 중복(400 E-VALID-002) 규약은 건드리지 않는다")
     fun errorCodeContract() {
         val e: BusinessException = assertThrows(ConflictingValueException::class.java) {
-            service(repoWith("CAN")).createTerm("can", "정의", "치공구")
+            service(repoWith("CAN")).createTerm("can", "정의")
         }
         assertEquals("E-RULE-001", e.errorCode.code)
         assertEquals(409, e.errorCode.status.value())

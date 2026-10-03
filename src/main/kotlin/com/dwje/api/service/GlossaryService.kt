@@ -5,6 +5,7 @@ import com.dwje.api.common.exception.ConflictingValueException
 import com.dwje.api.common.exception.InvalidParameterException
 import com.dwje.api.common.exception.ResourceNotFoundException
 import com.dwje.api.common.response.PageMeta
+import com.dwje.api.common.util.DataField
 import com.dwje.api.common.util.MenuId
 import com.dwje.api.common.util.PageRequestParam
 import com.dwje.api.model.request.GlossaryExportRequest
@@ -21,7 +22,7 @@ import org.springframework.transaction.annotation.Transactional
  *
  * 공식 용어는 **통합관리자만** 관리하고(07 GLS-01), 현장 유사어는 `sys-gloss` 쓰기 권한자가 본인 등록 건에 한해 관리한다.
  *
- * 접근 : 조회(요약·분류·목록·상세·내려받기)는 `sys-gloss` 또는 `gloss-view`(용어 사전 조회, 13 GL-01),
+ * 접근 : 조회(요약·목록·상세·내려받기)는 `sys-gloss` 또는 `gloss-view`(용어 사전 조회, 13 GL-01),
  *        쓰기·미리보기·점검은 `sys-gloss` · 값 마스킹 : 없음 (gloss-view 만 가진 사람에게는 등록자 사번·부서·관리 지표를 주지 않는다)
  */
 @Service
@@ -47,6 +48,8 @@ class GlossaryService(
 
         /** 가린 용어의 표시 이름 (R-18) */
         const val BLIND_TERM = "비공개 용어"
+
+        private const val HIDDEN_TERM_MESSAGE = "데이터 접근 권한이 없는 용어라 고칠 수 없습니다."
     }
 
     /** 조회 API 공통 — 두 화면 중 하나의 조회 권한. 관리 화면(sys-gloss) 권한이 있는지 함께 돌려준다 (GLV-02) */
@@ -55,39 +58,48 @@ class GlossaryService(
         return principal to principal.canAccessMenu(MenuId.SYS_GLOSS)
     }
 
-    /** 가린 분류 — 열람자가 데이터 항목을 볼 수 없는 분류(R-18). 통합관리자는 비어 있다 */
-    private data class HiddenDomains(val ids: Set<Int>, val names: Set<String>, val fieldKeys: Set<String>) {
-        fun isEmpty() = ids.isEmpty()
+    /**
+     * 가릴 데이터 항목 — 용어에 걸린 데이터 항목(V75 `tb_gls_term.data_field_key`) 중 열람자가 볼 수 없는 것(R-18).
+     * 통합관리자는 비어 있다. V75 전에는 분류(tb_gls_domain) 단위였다.
+     */
+    private data class HiddenKeys(val keys: Set<String>) {
+        fun isEmpty() = keys.isEmpty()
+        fun hides(row: Map<String, Any?>) = row["fieldKey"] in keys
     }
 
-    private fun hiddenDomainsOf(principal: com.dwje.api.common.security.UserPrincipal): HiddenDomains {
-        if (principal.superAdmin) return HiddenDomains(emptySet(), emptySet(), emptySet())
-        val hidden = glossaryRepository.findDomainFieldKeys().filterNot { principal.canReadField(it.third) }
-        return HiddenDomains(hidden.map { it.first }.toSet(), hidden.map { it.second }.toSet(), hidden.map { it.third }.toSet())
+    private fun hiddenKeysOf(principal: com.dwje.api.common.security.UserPrincipal): HiddenKeys {
+        if (principal.superAdmin) return HiddenKeys(emptySet())
+        return HiddenKeys(glossaryRepository.findTermFieldKeys().filterNot { principal.canReadField(it) }.toSet())
     }
+
+    /**
+     * 응답용 용어 행 — 내부 판정값 fieldKey 를 빼고 「고객사 정보」 표시(customerInfo)를 넣는다.
+     * customerInfo 는 관리 화면(sys-gloss) 호출자에게만 준다 — 조회 화면에는 null.
+     */
+    private fun shapeTerm(row: Map<String, Any?>, manager: Boolean): Map<String, Any?> =
+        row - "fieldKey" + ("customerInfo" to (if (manager) row["fieldKey"] == DataField.CUSTOMER else null))
 
     /** 가린 용어 행 — 이름은 「비공개 용어」, 뜻·유사어는 null (13 GLV-08 · 공통 11.2) */
     private fun blindTerm(row: Map<String, Any?>): Map<String, Any?> =
         row + mapOf("term" to BLIND_TERM, "definition" to null, "variants" to null, "blinded" to true)
 
     /** 가린 건이 있으면 MASK 감사 1행 — 대상 데이터 항목과 건수 (R-18) */
-    private fun auditBlind(cnt: Int, hidden: HiddenDomains, menuId: String, target: String) {
+    private fun auditBlind(cnt: Int, hidden: HiddenKeys, menuId: String, target: String) {
         if (cnt == 0) return
         auditLogService?.record(
             logType = com.dwje.api.common.util.AuditType.MASK, menuId = menuId,
-            fieldKey = hidden.fieldKeys.sorted().joinToString(",").take(30),
+            fieldKey = hidden.keys.sorted().joinToString(",").take(30),
             targetDesc = target, resultCd = com.dwje.api.common.util.AuditResult.MASKED, maskedCnt = cnt
         )
     }
 
-    /** 가린 분류의 용어는 고칠 수 없다 — 보이지 않는 대상을 고치지 않게 (409, 공통 11.2) */
+    /** 가린 용어는 고칠 수 없다 — 보이지 않는 대상을 고치지 않게 (409, 공통 11.2) */
     private fun requireTermVisible(principal: com.dwje.api.common.security.UserPrincipal, termId: Int) {
-        val hidden = hiddenDomainsOf(principal)
-        if (hidden.isEmpty()) return
-        if (glossaryRepository.findTermDomainId(termId) in hidden.ids) {
-            throw BusinessRuleException("데이터 접근 권한이 없는 분류의 용어라 고칠 수 없습니다.")
-        }
+        if (isTermHidden(hiddenKeysOf(principal), termId)) throw BusinessRuleException(HIDDEN_TERM_MESSAGE)
     }
+
+    private fun isTermHidden(hidden: HiddenKeys, termId: Int): Boolean =
+        !hidden.isEmpty() && glossaryRepository.findTermFieldKey(termId) in hidden.keys
 
     /**
      * 유사어 목록 후처리 — 쓰기 권한이 없으면 editable 은 항상 false, 조회 화면에는 등록자 사번·부서를 주지 않는다 (GLV-02·07)
@@ -104,7 +116,6 @@ class GlossaryService(
         val (principal, manager) = requireViewer()
 
         val summary = glossaryRepository.findSummary(principal.userId).toMutableMap()
-        summary["byDomain"] = glossaryRepository.findCountByDomain()
         if (manager) {
             // 쓰기 권한(R-06, 07 GLS-16) — false 면 화면은 유사어 추가 버튼을 그리지 않는다
             summary["canWriteVariant"] = principal.canWriteMenu(MenuId.SYS_GLOSS)
@@ -128,17 +139,6 @@ class GlossaryService(
     }
 
     /**
-     * 용어 분류(도메인) 목록 — 용어 등록 화면의 분류 선택지
-     *
-     * `code` 를 [createTerm] 의 `domainCd` 에 그대로 넣을 수 있다.
-     */
-    @Transactional(readOnly = true)
-    fun getDomains(): Map<String, Any?> {
-        requireViewer()
-        return mapOf("domains" to glossaryRepository.findDomains())
-    }
-
-    /**
      * 용어 목록 조회 (No.171)
      *
      * 각 용어의 유사어를 함께 반환하며, 본인 등록 유사어만 editable = true 로 표시한다.
@@ -146,7 +146,6 @@ class GlossaryService(
     @Transactional(readOnly = true)
     fun getTerms(
         keyword: String?,
-        domainCd: String?,
         page: Int?,
         size: Int?,
         mineOnly: Boolean? = null
@@ -155,20 +154,20 @@ class GlossaryService(
         val paging = PageRequestParam.of(page, size)
         // 「내 유사어만」 은 관리 화면 호출자에게만 효과가 있다 — 조회 화면은 무시한다(07 GLS-08, 내려받기와 같은 규칙)
         val mine = if (manager && mineOnly == true) principal.userId else null
-        val hidden = hiddenDomainsOf(principal)
+        val hidden = hiddenKeysOf(principal)
 
-        val total = glossaryRepository.countTerms(keyword, domainCd, mine, hidden.ids)
-        val terms = glossaryRepository.findTerms(keyword, domainCd, paging.limit, paging.offset, mine, hidden.ids)
+        val total = glossaryRepository.countTerms(keyword, mine, hidden.keys)
+        val terms = glossaryRepository.findTerms(keyword, paging.limit, paging.offset, mine, hidden.keys)
 
         // 유사어는 한 번에 조회해 N+1 을 피한다.
         val termIds = terms.mapNotNull { it["termId"] as? Int }
         val variants = glossaryRepository.findVariantsByTermIds(termIds, principal.userId)
         val canWrite = principal.canWriteMenu(MenuId.SYS_GLOSS)
 
-        // 볼 수 없는 분류의 용어는 목록에서 빼지 않고 「비공개 용어」 행으로 남긴다 (R-18, 13 Q5 기본안)
+        // 볼 수 없는 용어는 목록에서 빼지 않고 「비공개 용어」 행으로 남긴다 (R-18, 13 Q5 기본안)
         val items = terms.map {
-            if (it["domainId"] in hidden.ids) blindTerm(it)
-            else it + mapOf("variants" to shapeVariants(variants[it["termId"]] ?: emptyList(), canWrite, manager), "blinded" to false)
+            if (hidden.hides(it)) shapeTerm(blindTerm(it), manager)
+            else shapeTerm(it, manager) + mapOf("variants" to shapeVariants(variants[it["termId"]] ?: emptyList(), canWrite, manager), "blinded" to false)
         }
         auditBlind(items.count { it["blinded"] == true }, hidden, if (manager) MenuId.SYS_GLOSS else MenuId.GLOSS_VIEW, "용어 목록 가림")
 
@@ -177,7 +176,7 @@ class GlossaryService(
 
     /** 공식 용어 등록 (No.172) */
     @Transactional
-    fun createTerm(term: String?, definition: String?, domainCd: String?): Map<String, Any?> {
+    fun createTerm(term: String?, definition: String?, customerInfo: Boolean? = null): Map<String, Any?> {
         // 공식 용어는 통합관리자만 (07 GLS-01). 화면 권한·쓰기 권한부터 보고(E-AUTH-002·004), 그다음 통합관리자(E-AUTH-002)
         authorizationService.requireWrite(MenuId.SYS_GLOSS)
         val principal = authorizationService.requireSuperAdmin()
@@ -187,17 +186,14 @@ class GlossaryService(
         val def = definition?.trim()?.takeIf { it.isNotBlank() }
             ?: throw InvalidParameterException("용어 정의를 입력해 주세요.", "definition")
         checkTermLength(termName, def)
-        val domain = domainCd?.trim()
-            ?: throw InvalidParameterException("도메인을 선택해 주세요.", "domainCd")
+        // 고객사 정보 — 고객사 데이터 권한이 없는 열람자에게 가린다 (R-18). 생략하면 가리지 않는다
+        val fieldKey = if (customerInfo == true) DataField.CUSTOMER else null
 
         // 대소문자·앞뒤 공백을 무시하고 먼저 본다 — DB 의 uq_gls_term_lower 와 같은 기준이다.
         val existing = glossaryRepository.findTermByName(termName)
         if (existing?.get("active") == true) {
             throw duplicatedTerm(existing, termName)
         }
-
-        val domainId = glossaryRepository.findDomainId(domain)
-            ?: throw ResourceNotFoundException("도메인을 찾을 수 없습니다. [$domain]")
 
         // 삭제된 동명 용어가 있으면 되살린다.
         // tb_gls_term 은 UNIQUE (term) 이고 부분 인덱스가 아니라, 사용 중지된 행도 이름을
@@ -208,9 +204,9 @@ class GlossaryService(
             // 새 정의에 붙은 것을 모르고 지나치지 않게 한다.
             val restoredVariants = glossaryRepository.countVariantsByTerm(revivedId)
             val before = glossaryRepository.findTermSnapshot(revivedId)
-            glossaryRepository.reviveTerm(revivedId, def, domainId, principal.userId)
+            glossaryRepository.reviveTerm(revivedId, def, fieldKey, principal.userId)
             changeLog("TERM", "RESTORE", revivedId, null, before,
-                mapOf("term" to existing["term"], "termDef" to def, "domainNm" to domain, "restoredVariants" to restoredVariants))
+                mapOf("term" to existing["term"], "termDef" to def, "customerInfo" to (fieldKey != null), "restoredVariants" to restoredVariants))
             log.info(
                 "공식 용어 되살림 : termId={} term={} 함께 복원된 유사어={}건",
                 revivedId, termName, restoredVariants
@@ -229,19 +225,19 @@ class GlossaryService(
         // 앞에서 봤어도 그 사이 다른 요청이 같은 이름을 넣을 수 있다.
         // 유니크 위반은 500 이 아니라 위와 같은 409 로 나가야 한다.
         val termId = try {
-            glossaryRepository.insertTerm(termName, def, domainId, principal.userId)
+            glossaryRepository.insertTerm(termName, def, fieldKey, principal.userId)
         } catch (e: DuplicateKeyException) {
             throw duplicatedTerm(null, termName)
         }
         log.info("공식 용어 등록 : termId={} term={}", termId, termName)
-        changeLog("TERM", "CREATE", termId, null, null, mapOf("term" to termName, "termDef" to def, "domainNm" to domain))
+        changeLog("TERM", "CREATE", termId, null, null, mapOf("term" to termName, "termDef" to def, "customerInfo" to (fieldKey != null)))
 
         return mapOf("termId" to termId, "term" to termName)
     }
 
     /** 공식 용어 수정 (No.173) */
     @Transactional
-    fun updateTerm(termId: Int, term: String?, definition: String?, domainCd: String?): Map<String, Any?> {
+    fun updateTerm(termId: Int, term: String?, definition: String?, customerInfo: Boolean? = null): Map<String, Any?> {
         // 공식 용어는 통합관리자만 (07 GLS-01). 화면 권한·쓰기 권한부터 보고(E-AUTH-002·004), 그다음 통합관리자(E-AUTH-002)
         authorizationService.requireWrite(MenuId.SYS_GLOSS)
         val principal = authorizationService.requireSuperAdmin()
@@ -271,18 +267,21 @@ class GlossaryService(
             )
         }
 
-        val domainId = domainCd?.let {
-            glossaryRepository.findDomainId(it) ?: throw ResourceNotFoundException("도메인을 찾을 수 없습니다. [$it]")
-        } ?: throw InvalidParameterException("도메인을 선택해 주세요.", "domainCd")
+        // 고객사 정보 — 생략(null)이면 지금 값을 그대로 둔다. 옛 화면이 보내지 않아 가림이 풀리는 일이 없게
+        val fieldKey = when (customerInfo) {
+            true -> DataField.CUSTOMER
+            false -> null
+            null -> glossaryRepository.findTermFieldKey(termId)
+        }
 
         val before = glossaryRepository.findTermSnapshot(termId)
         try {
-            glossaryRepository.updateTerm(termId, termName, def, domainId, principal.userId)
+            glossaryRepository.updateTerm(termId, termName, def, fieldKey, principal.userId)
         } catch (e: DuplicateKeyException) {
             throw duplicatedTerm(null, termName)
         }
         val after = glossaryRepository.findTermSnapshot(termId)
-            ?: mapOf<String, Any?>("term" to termName, "termDef" to def, "domainNm" to domainCd)
+            ?: mapOf<String, Any?>("term" to termName, "termDef" to def, "customerInfo" to (fieldKey == DataField.CUSTOMER))
         if (before == null || before != after) changeLog("TERM", "UPDATE", termId, null, before, after)
 
         return mapOf("success" to true, "term" to termName)
@@ -469,14 +468,14 @@ class GlossaryService(
         val (f, t) = if (termId != null && from.isNullOrBlank() && to.isNullOrBlank()) null to null
         else com.dwje.api.common.util.DateUtils.periodOf(from, to, 30)
         val total = glossaryRepository.countChanges(termId, f, t)
-        val hidden = hiddenDomainsOf(authorizationService.requireMenu(MenuId.SYS_GLOSS))
-        // 가린 분류 용어의 이력은 이름·전후 값을 가린다 (R-18)
+        val hidden = hiddenKeysOf(authorizationService.requireMenu(MenuId.SYS_GLOSS))
+        // 가린 용어의 이력은 이름·전후 값을 가린다 (R-18)
         val rows = glossaryRepository.findChanges(termId, f, t, paging.limit, paging.offset).map {
-            if (it["domainId"] in hidden.ids) it + mapOf("term" to BLIND_TERM, "before" to null, "after" to null, "blinded" to true)
+            if (hidden.hides(it)) it + mapOf("term" to BLIND_TERM, "before" to null, "after" to null, "blinded" to true)
             else it + ("blinded" to false)
         }
         auditBlind(rows.count { it["blinded"] == true }, hidden, MenuId.SYS_GLOSS, "용어 변경 이력 가림")
-        return rows.map { it - "domainId" } to PageMeta.of(paging.page, paging.size, total)
+        return rows.map { it - "fieldKey" } to PageMeta.of(paging.page, paging.size, total)
     }
 
     /**
@@ -599,19 +598,19 @@ class GlossaryService(
             glossaryRepository.findVariantsByTermIds(listOf(termId), principal.userId)[termId] ?: emptyList(),
             principal.canWriteMenu(MenuId.SYS_GLOSS), manager
         ).map { v -> v.filterKeys { it in setOf("variantId", "word", "byName", "byEmpNo", "at", "editable") } }
-        val hidden = hiddenDomainsOf(principal)
-        // 관련 용어 중 가린 분류는 이름을 가린다
+        val hidden = hiddenKeysOf(principal)
+        // 관련 용어 중 가린 용어는 이름을 가린다
         val related = glossaryRepository.findRelatedTerms(termId, 10).map {
-            if (it["domain"] in hidden.names) it + mapOf("term" to BLIND_TERM, "blinded" to true) else it + ("blinded" to false)
+            (if (hidden.hides(it)) it + mapOf("term" to BLIND_TERM, "blinded" to true) else it + ("blinded" to false)) - "fieldKey"
         }
         val menu = if (manager) MenuId.SYS_GLOSS else MenuId.GLOSS_VIEW
-        if (term["domainId"] in hidden.ids) {
+        if (hidden.hides(term)) {
             auditBlind(1 + related.count { it["blinded"] == true }, hidden, menu, "용어 상세 가림 [termId=$termId]")
-            return blindTerm(term) + mapOf("relatedTerms" to related)
+            return shapeTerm(blindTerm(term), manager) + mapOf("relatedTerms" to related)
         }
         auditBlind(related.count { it["blinded"] == true }, hidden, menu, "용어 상세 가림 [termId=$termId]")
-        return term + mapOf(
-            // 고객사 분류 가림(R-18) — 볼 수 있는 용어
+        return shapeTerm(term, manager) + mapOf(
+            // 고객사 가림(R-18) — 볼 수 있는 용어
             "blinded" to false,
             "variants" to variants,
             "relatedTerms" to related
@@ -649,45 +648,42 @@ class GlossaryService(
         }
         val all = scopeCd == "ALL"
         val keyword = if (all) null else req?.keyword?.takeIf { it.isNotBlank() }
-        val domainCd = if (all) null else req?.domainCd?.takeIf { it.isNotBlank() }
         val mineOnly = if (!all && manager && req?.mineOnly == true) principal.userId else null
 
-        val hidden = hiddenDomainsOf(principal)
-        val total = glossaryRepository.countTerms(keyword, domainCd, mineOnly, hidden.ids)
-        val terms = glossaryRepository.findTerms(keyword, domainCd, EXPORT_MAX, 0, mineOnly, hidden.ids)
+        val hidden = hiddenKeysOf(principal)
+        val total = glossaryRepository.countTerms(keyword, mineOnly, hidden.keys)
+        val terms = glossaryRepository.findTerms(keyword, EXPORT_MAX, 0, mineOnly, hidden.keys)
         if (terms.isEmpty()) throw ResourceNotFoundException("내려받을 용어가 없습니다. 조건을 바꿔 주세요.")
         val variants = glossaryRepository.findVariantsByTermIds(terms.map { it["termId"] as Int }, principal.userId)
         val mask = com.dwje.api.service.BlindCells.MASK
         val rows = terms.map { t ->
-            // 가린 분류의 용어는 이름 「비공개 용어」, 뜻·유사어·등록자는 「비공개」 (R-18)
-            if (t["domainId"] in hidden.ids) return@map t + mapOf("term" to BLIND_TERM, "definition" to mask, "variants" to mask, "byName" to mask)
+            // 가린 용어는 이름 「비공개 용어」, 뜻·유사어·등록자는 「비공개」 (R-18)
+            if (hidden.hides(t)) return@map t + mapOf("term" to BLIND_TERM, "definition" to mask, "variants" to mask, "byName" to mask)
             val vs = variants[t["termId"]] ?: emptyList()
             t + mapOf(
                 "variants" to vs.joinToString(" · ") { it["word"] as String },
                 "byName" to vs.mapNotNull { it["byName"] as String? }.distinct().joinToString(", ")
             )
         }
-        val blindedRows = terms.count { it["domainId"] in hidden.ids }
+        val blindedRows = terms.count { hidden.hides(it) }
         val (headers, keys) = if (menuId == MenuId.SYS_GLOSS) {
-            listOf("공식 용어", "뜻", "분류", "유사어", "유사어 등록자", "등록일", "최근 수정") to
-                listOf("term", "definition", "domain", "variants", "byName", "createdAt", "updatedAt")
+            listOf("공식 용어", "뜻", "유사어", "유사어 등록자", "등록일", "최근 수정") to
+                listOf("term", "definition", "variants", "byName", "createdAt", "updatedAt")
         } else {
-            listOf("공식 용어", "뜻", "분류", "유사어", "최근 수정") to listOf("term", "definition", "domain", "variants", "updatedAt")
+            listOf("공식 용어", "뜻", "유사어", "최근 수정") to listOf("term", "definition", "variants", "updatedAt")
         }
         val cond = req?.condSummary?.takeIf { it.isNotBlank() }
-            ?: if (all) "전체" else "검색=${keyword ?: ""}, 분류=${domainCd ?: "전체"}" + (if (mineOnly != null) ", 내 유사어" else "")
+            ?: if (all) "전체" else "검색=${keyword ?: ""}" + (if (mineOnly != null) ", 내 유사어" else "")
         auditBlind(blindedRows, hidden, menuId, "용어 사전 내려받기 가림")
         // 가린 칸 = 행마다 뜻·유사어(관리 화면 파일은 등록자 열도)
         val cellsPerRow = if (menuId == MenuId.SYS_GLOSS) 3 else 2
         return ExportRows(menuId, scopeCd ?: "VIEW", headers, keys, rows, total, cond.take(500), blindedRows * cellsPerRow)
     }
 
-    /** 업로드용 템플릿 — sys-gloss 접근이면 누구나. 분류 목록은 지금 쓰는 분류 이름 */
-    @Transactional(readOnly = true)
+    /** 업로드용 템플릿 — sys-gloss 접근이면 누구나 */
     fun importTemplate(): ByteArray {
         authorizationService.requireMenu(MenuId.SYS_GLOSS)
-        val domains = glossaryRepository.findDomains().map { it["name"] as String }
-        return GlossaryImportWorkbook.template(domains, TERM_MAX, DEFINITION_MAX, VARIANT_MAX)
+        return GlossaryImportWorkbook.template(TERM_MAX, DEFINITION_MAX, VARIANT_MAX)
     }
 
     /** 같은 파일 앞 행에서 정한 용어 — 뒤 행의 같은 용어는 기존 용어처럼 유사어만 더한다 */
@@ -696,7 +692,7 @@ class GlossaryService(
     /**
      * 용어 사전 엑셀 업로드 — 권한 sys-gloss 쓰기(미배정 아님)
      *
-     * - 공식 용어가 이미 있으면 유사어만 더하고 뜻·분류는 바꾸지 않는다. 삭제된 같은 이름은 새 용어 등록처럼 되살린다([createTerm] 과 같다).
+     * - 공식 용어가 이미 있으면 유사어만 더하고 뜻·고객사 정보는 바꾸지 않는다. 삭제된 같은 이름은 새 용어 등록처럼 되살린다([createTerm] 과 같다).
      * - 새 공식 용어는 통합관리자만 — 그 밖의 계정이 올린 새 용어 행은 ERROR.
      * - 유사어는 개별 등록과 같은 규칙. 어긋나거나 이미 있거나 같은 파일 안에서 겹치면 그 낱말만 건너뛴다(variantsSkipped).
      * - [dryRun] 이면 아무것도 쓰지 않는다. 아니면 ERROR 행을 빼고 행 단위로 등록하고, 변경 이력·감사를 개별 등록과 같게 남긴다.
@@ -714,8 +710,7 @@ class GlossaryService(
         XlsxUploadGuard.assertPlainXlsx(bytes, original)
         val rows = GlossaryImportWorkbook.parse(bytes)
 
-        val hidden = hiddenDomainsOf(principal)
-        val domains = glossaryRepository.findDomains().associate { (it["name"] as String).lowercase() to (it["name"] as String to it["domainId"] as Int) }
+        val hidden = hiddenKeysOf(principal)
         val fileTerms = mutableMapOf<String, FileTerm>()
         val fileVariants = mutableMapOf<String, Int>()
         var termNew = 0; var termExisting = 0; var variantNew = 0; var variantSkipped = 0; var errorCnt = 0
@@ -731,22 +726,18 @@ class GlossaryService(
             val stored = if (prior == null && r.term.isNotEmpty()) glossaryRepository.findTermByName(r.term) else null
             var termId: Int? = prior?.termId ?: (stored?.takeIf { it["active"] == true }?.get("termId") as Int?)
             val existing = prior != null || stored?.get("active") == true
-            var domainNm: String? = null
             when {
                 r.term.isEmpty() -> error("term", "공식 용어를 입력해 주세요.")
                 r.term.length > TERM_MAX -> error("term", "공식 용어는 ${TERM_MAX}자 이하로 입력해 주세요.")
                 existing -> {
-                    notes += if (prior != null) "같은 파일 ${prior.row}행의 용어 — 유사어만 더함" else "기존 용어 — 뜻·분류는 바꾸지 않음"
-                    if (termId != null && hidden.ids.isNotEmpty() && glossaryRepository.findTermDomainId(termId) in hidden.ids) {
-                        error("term", "데이터 접근 권한이 없는 분류의 용어라 고칠 수 없습니다.")
-                    }
+                    notes += if (prior != null) "같은 파일 ${prior.row}행의 용어 — 유사어만 더함" else "기존 용어 — 뜻·고객사 정보는 바꾸지 않음"
+                    if (termId != null && isTermHidden(hidden, termId)) error("term", HIDDEN_TERM_MESSAGE)
                 }
                 !principal.superAdmin -> error("term", "공식 용어 등록은 통합관리자만 할 수 있습니다.")
                 else -> {
                     if (r.definition.isEmpty()) error("definition", "용어 정의를 입력해 주세요.")
                     else if (r.definition.length > DEFINITION_MAX) error("definition", "뜻은 ${DEFINITION_MAX}자 이하로 입력해 주세요.")
-                    if (r.domain.isEmpty()) error("domain", "새 공식 용어는 분류를 입력해 주세요.")
-                    else domainNm = domains[r.domain.lowercase()]?.first ?: run { error("domain", "분류를 찾을 수 없습니다. [${r.domain}]"); null }
+                    if (r.customerInfo == null) error("customerInfo", "고객사 정보는 Y 또는 N 으로 적어 주십시오. [${r.customerRaw}]")
                     if (stored != null) notes += "삭제된 용어를 되살림 — 예전 유사어 ${glossaryRepository.countVariantsByTerm(stored["termId"] as Int)}건이 함께 돌아옴"
                 }
             }
@@ -760,7 +751,7 @@ class GlossaryService(
             val isNew = !existing
             if (isNew) {
                 termNew++
-                if (!dryRun) termId = writeImportedTerm(r.term, r.definition, domainNm!!, domains[domainNm.lowercase()]!!.second, stored, principal.userId)
+                if (!dryRun) termId = writeImportedTerm(r.term, r.definition, r.customerInfo == true, stored, principal.userId)
             } else termExisting++
             fileTerms.putIfAbsent(key, FileTerm(termId, prior?.term ?: (stored?.get("term") as String? ?: r.term), prior?.row ?: r.row))
 
@@ -797,7 +788,7 @@ class GlossaryService(
             buildMap<String, Any?> {
                 put("row", r.row); put("term", r.term); put("termId", termId)
                 put("action", if (isNew) "NEW_TERM" else "EXISTING_TERM")
-                if (isNew) { put("definition", r.definition); put("domain", domainNm); put("restored", stored != null) }
+                if (isNew) { put("definition", r.definition); put("customerInfo", r.customerInfo == true); put("restored", stored != null) }
                 put("variantsAdded", added); put("variantsSkipped", skipped)
                 put("errors", emptyList<Map<String, String>>()); put("notes", notes); put("warnings", warnings)
             }
@@ -815,23 +806,24 @@ class GlossaryService(
 
     /** 업로드의 새 공식 용어 1건 — [createTerm] 과 같게 쓰고 이력을 남긴다(삭제된 같은 이름은 되살림) */
     private fun writeImportedTerm(
-        term: String, def: String, domainNm: String, domainId: Int, stored: Map<String, Any?>?, actor: String
+        term: String, def: String, customerInfo: Boolean, stored: Map<String, Any?>?, actor: String
     ): Int {
+        val fieldKey = if (customerInfo) DataField.CUSTOMER else null
         val revivedId = stored?.get("termId") as Int?
         if (revivedId != null) {
             val restoredVariants = glossaryRepository.countVariantsByTerm(revivedId)
             val before = glossaryRepository.findTermSnapshot(revivedId)
-            glossaryRepository.reviveTerm(revivedId, def, domainId, actor)
+            glossaryRepository.reviveTerm(revivedId, def, fieldKey, actor)
             changeLog("TERM", "RESTORE", revivedId, null, before,
-                mapOf("term" to stored["term"], "termDef" to def, "domainNm" to domainNm, "restoredVariants" to restoredVariants))
+                mapOf("term" to stored["term"], "termDef" to def, "customerInfo" to customerInfo, "restoredVariants" to restoredVariants))
             return revivedId
         }
         val termId = try {
-            glossaryRepository.insertTerm(term, def, domainId, actor)
+            glossaryRepository.insertTerm(term, def, fieldKey, actor)
         } catch (e: DuplicateKeyException) {
             throw duplicatedTerm(null, term)
         }
-        changeLog("TERM", "CREATE", termId, null, null, mapOf("term" to term, "termDef" to def, "domainNm" to domainNm))
+        changeLog("TERM", "CREATE", termId, null, null, mapOf("term" to term, "termDef" to def, "customerInfo" to customerInfo))
         return termId
     }
 

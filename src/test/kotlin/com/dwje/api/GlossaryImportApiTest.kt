@@ -57,7 +57,7 @@ class GlossaryImportApiTest {
     @DisplayName("multipart 업로드 — dryRun 생략이면 미리보기, 머리글이 다르면 400")
     fun upload() {
         val file = MockMultipartFile("file", "용어.xlsx", null,
-            xlsx(GlossaryImportWorkbook.HEADERS, listOf("8D", "", "", "ZT팔디보고, 8디"), listOf("ZT새용어", "뜻", "품질관리", "ZT새말")))
+            xlsx(GlossaryImportWorkbook.HEADERS, listOf("8D", "", "", "ZT팔디보고, 8디"), listOf("ZT새용어", "뜻", "N", "ZT새말")))
         val r = mvc.perform(multipart("/api/v1/glossary/import").file(file).header("Authorization", bearer)).andReturn()
         assertEquals(200, r.response.status, r.response.getContentAsString(Charsets.UTF_8))
         val data = json.readTree(r.response.getContentAsString(Charsets.UTF_8)).path("data")

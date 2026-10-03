@@ -7,13 +7,17 @@ package com.dwje.api.model.request
  * 나머지는 조용히 버려서, 키 이름을 잘못 보내도 200 이 나가고 값은 반영되지 않는다.
  * 사용자가 직접 입력하는 폼이라 오타 경로가 실제로 있다.
  *
- * @param term       공식 용어
- * @param definition 용어 정의
- * @param domainCd   분류명 — GET /api/v1/glossary/domains 의 code
+ * @param term         공식 용어
+ * @param definition   용어 정의
+ * @param customerInfo 고객사 정보 — true 면 고객사 데이터 권한(customer)이 없는 열람자에게 「비공개 용어」 로 가린다(R-18, V75).
+ *                     등록에서 생략하면 false, 수정에서 생략하면 지금 값을 그대로 둔다.
+ * @param domainCd     분류 — V75 로 분류를 없앴다. 옛 화면이 보내도 400 이 나지 않게 받기만 하고 버린다
  */
 data class GlossaryTermRequest(
     val term: String? = null,
     val definition: String? = null,
+    val customerInfo: Boolean? = null,
+    @Deprecated("V75 로 분류를 없앰 — 받고 버린다")
     val domainCd: String? = null
 )
 
@@ -31,7 +35,7 @@ data class GlossaryVariantRequest(
  * 용어 사전 내려받기 — POST /api/v1/glossary/terms/export (07 GLS-12 · 13 GLV-05)
  *
  * @param keyword     검색어 (scopeCd=ALL 이면 무시)
- * @param domainCd    분류 이름 (scopeCd=ALL 이면 무시)
+ * @param domainCd    분류 — V75 로 없앰. 받고 버린다
  * @param mineOnly    내가 등록한 유사어가 있는 용어만 — 용어 사전 관리 화면에서만 뜻이 있다
  * @param menuId      부르는 화면 — sys-gloss | gloss-view (그 화면 권한이 없으면 가진 화면으로 기록)
  * @param format      xlsx 만 (생략 가능)
@@ -41,6 +45,7 @@ data class GlossaryVariantRequest(
  */
 data class GlossaryExportRequest(
     val keyword: String? = null,
+    @Deprecated("V75 로 분류를 없앰 — 받고 버린다")
     val domainCd: String? = null,
     val mineOnly: Boolean? = null,
     val menuId: String? = null,

@@ -42,7 +42,7 @@ class GlossaryDetailTest {
         assertEquals(long("SELECT count(*) FROM ax.tb_gls_variant WHERE term_id = $lot").toInt(), variants.size)
         @Suppress("UNCHECKED_CAST") val related = d["relatedTerms"] as List<Map<String, Any?>>
         assertTrue(related.size <= 10)
-        assertTrue(related.all { it["reasonCd"] in setOf("REF_IN_DEF", "REF_BY", "SAME_DOMAIN_NAME") })
+        assertTrue(related.all { it["reasonCd"] in setOf("REF_IN_DEF", "REF_BY", "NAME_OVERLAP") })
         assertEquals(false, d["blinded"])
         jdbc.queryForList("SELECT term_id FROM ax.tb_gls_term WHERE use_flg = 'N' LIMIT 1", MapSqlParameterSource(), Int::class.java)
             .firstOrNull()?.let { gone -> assertThrows(ResourceNotFoundException::class.java) { service.getTermDetail(gone) } }
@@ -58,6 +58,6 @@ class GlossaryDetailTest {
         assertEquals(items.map { order.indexOf(it["riskCd"]) }.sorted(), items.map { order.indexOf(it["riskCd"]) })
         val active = long("SELECT count(*) FROM ax.tb_gls_term WHERE use_flg = 'Y'")
         assertEquals(minOf(active, GlossaryService.EXPORT_MAX.toLong()).toInt(),
-            service.exportTerms(com.dwje.api.model.request.GlossaryExportRequest(scopeCd = "ALL", domainCd = "불량유형")).rows.size)
+            service.exportTerms(com.dwje.api.model.request.GlossaryExportRequest(scopeCd = "ALL", keyword = "불량")).rows.size)
     }
 }

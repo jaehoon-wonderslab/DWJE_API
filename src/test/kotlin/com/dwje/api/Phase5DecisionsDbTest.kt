@@ -73,19 +73,19 @@ class Phase5DecisionsDbTest {
     private fun exec(sql: String) = jdbc.update(sql, MapSqlParameterSource())
     private fun maskCalls() = mockingDetails(audit).invocations.filter { it.method.name == "record" && it.arguments[0] == "MASK" }
 
-    private val hiddenSql = "SELECT t.term_id FROM ax.tb_gls_term t JOIN ax.tb_gls_domain d USING (domain_id) " +
-        "WHERE d.data_field_key = 'customer' AND t.use_flg = 'Y' ORDER BY t.term_id LIMIT 1"
+    private val hiddenSql = "SELECT t.term_id FROM ax.tb_gls_term t " +
+        "WHERE t.data_field_key = 'customer' AND t.use_flg = 'Y' ORDER BY t.term_id LIMIT 1"
 
     @Test
-    @DisplayName("R-18 고객사 분류 용어 — customer 권한 없으면 목록·상세·변경 이력·내려받기에서 「비공개 용어」 와 MASK 감사, 검색어에 걸리지 않음, 고치면 409 / 권한 있으면·통합관리자는 그대로")
+    @DisplayName("R-18 고객사 정보 용어(V75 용어별 표시) — customer 권한 없으면 목록·상세·변경 이력·내려받기에서 「비공개 용어」 와 MASK 감사, 검색어에 걸리지 않음, 고치면 409 / 권한 있으면·통합관리자는 그대로")
     fun customerTermsHidden() {
         val termId = long(hiddenSql).toInt()
         val name = str("SELECT term FROM ax.tb_gls_term WHERE term_id = $termId")
-        val hiddenCnt = long("SELECT count(*) FROM ax.tb_gls_term t JOIN ax.tb_gls_domain d USING (domain_id) WHERE d.data_field_key = 'customer' AND t.use_flg = 'Y'")
+        val hiddenCnt = long("SELECT count(*) FROM ax.tb_gls_term t WHERE t.data_field_key = 'customer' AND t.use_flg = 'Y'")
 
         UserContext.set(maker)
         clearInvocations(audit)
-        val (rows, meta) = glossary.getTerms(null, null, 1, 1000)
+        val (rows, meta) = glossary.getTerms(null, 1, 1000)
         val blinded = rows.filter { it["blinded"] == true }
         assertEquals(hiddenCnt, blinded.size.toLong())
         assertTrue(blinded.all { it["term"] == GlossaryService.BLIND_TERM && it["definition"] == null && it["variants"] == null })
@@ -94,7 +94,7 @@ class Phase5DecisionsDbTest {
         assertEquals(1, maskCalls().size)
         assertEquals("customer", maskCalls().single().arguments[2]); assertEquals(hiddenCnt.toInt(), maskCalls().single().arguments[5])
 
-        assertTrue(glossary.getTerms(name, null, 1, 50).first.none { it["termId"] == termId }, "가린 용어는 검색어에 걸리지 않는다")
+        assertTrue(glossary.getTerms(name, 1, 50).first.none { it["termId"] == termId }, "가린 용어는 검색어에 걸리지 않는다")
         glossary.getTermDetail(termId).let { assertEquals(true, it["blinded"]); assertEquals(GlossaryService.BLIND_TERM, it["term"]); assertNull(it["definition"]) }
         assertThrows(BusinessRuleException::class.java) { glossary.createVariant(termId, "ZT새유사어") }
 
@@ -107,13 +107,13 @@ class Phase5DecisionsDbTest {
         assertEquals(hiddenCnt.toInt() * 3, export.blindedCells)
 
         UserContext.set(quality)
-        assertTrue(glossary.getTerms(name, null, 1, 50).first.any { it["termId"] == termId && it["blinded"] == false })
+        assertTrue(glossary.getTerms(name, 1, 50).first.any { it["termId"] == termId && it["blinded"] == false })
         UserContext.set(admin)
         assertEquals(name, glossary.getTermDetail(termId)["term"])
     }
 
     @Test
-    @DisplayName("R-18 덕반장 AI — 볼 수 없는 분류의 치환은 응답·[용어] 블록에서 빠지고, 미리보기 문장은 원문을 남긴다")
+    @DisplayName("R-18 덕반장 AI — 볼 수 없는 용어의 치환은 응답·[용어] 블록에서 빠지고, 미리보기 문장은 원문을 남긴다")
     fun aiReplacementsFiltered() {
         val r = listOf(
             mapOf("from" to "a", "to" to "고객A", "fieldKey" to "customer", "start" to 0, "end" to 1),
