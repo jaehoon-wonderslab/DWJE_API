@@ -1,6 +1,7 @@
 package com.dwje.api.service
 
 import com.dwje.api.common.response.PageMeta
+import com.dwje.api.common.util.CustomerFilterGuard
 import com.dwje.api.common.util.DataField
 import com.dwje.api.common.util.DateUtils
 import com.dwje.api.common.util.MaskingSupport
@@ -258,9 +259,9 @@ class ReportService(
         val priceAllowed = if (amountMode) mask.check(DataField.PRICE) else true
         val customerAllowed = mask.check(DataField.CUSTOMER)
 
-        if (!planAllowed || !priceAllowed) {
-            return mapOf("months" to fiscalMonths(year), "rows" to emptyList<Any>()) to mask
-        }
+        // 계획(금액이면 단가도) 권한이 없어도 표는 그대로 준다 — 행(모델)은 두고 값만 null (2026-10-03 사용자 요구: 값만 가림)
+        val valuesAllowed = planAllowed && priceAllowed
+        requireCustomerFilterAllowed(customerCd, customerAllowed)
 
         val raw = reportRepository.findShipPlan(year, modelCd, customerCd)
         val months = fiscalMonths(year)
@@ -271,13 +272,13 @@ class ReportService(
                 val byMonth = list.associate { "${it["year"]}-${it["month"]}" to it }
                 val values = months.map { m ->
                     val cell = byMonth["${m.year}-${m.monthValue}"]
-                    if (amountMode) cell?.get("planAmount") else cell?.get("planQty")
+                    if (!valuesAllowed) null else if (amountMode) cell?.get("planAmount") else cell?.get("planQty")
                 }
                 mapOf(
                     "model" to key.first,
                     "customer" to if (customerAllowed) key.second else null,
                     "values" to values,
-                    "total" to values.filterNotNull().sumOf { (it as Number).toDouble() }
+                    "total" to if (valuesAllowed) values.filterNotNull().sumOf { (it as Number).toDouble() } else null
                 )
             }
             .sortedBy { it["model"] as String }
@@ -296,11 +297,12 @@ class ReportService(
             "unit" to (unit ?: "qty"),
             "months" to months.map { it.format(DateUtils.YEAR_MONTH) },
             "rows" to rows,
-            "monthTotals" to monthTotals,
-            "grandTotal" to monthTotals.sum(),
+            "monthTotals" to if (valuesAllowed) monthTotals else months.map { null },
+            "grandTotal" to if (valuesAllowed) monthTotals.sum() else null,
             "modelCnt" to rows.map { it["model"] }.distinct().size,
             "customerCnt" to rows.mapNotNull { it["customer"] }.distinct().size,
-            "peakMonth" to months.getOrNull(peakIndex)?.format(DateUtils.YEAR_MONTH)
+            // 최다 출하 월도 계획 값에서 나오므로 가린다
+            "peakMonth" to if (valuesAllowed) months.getOrNull(peakIndex)?.format(DateUtils.YEAR_MONTH) else null
         ) to mask
     }
 
@@ -419,6 +421,7 @@ class ReportService(
         val qtyAllowed = mask.check(DataField.QTY)
         val yieldAllowed = mask.check(DataField.YIELD)
         val customerAllowed = mask.check(DataField.CUSTOMER)
+        requireCustomerFilterAllowed(customerCd, customerAllowed)
 
         val raw = reportRepository.findLrrByCustomer(year, customerCd)
         val byDefect = reportRepository.findLrrByDefectType(year, customerCd)
@@ -458,7 +461,10 @@ class ReportService(
                 "yoyImprovement" to if (yieldAllowed) Math.round((prevRate - curRate) * 10000) / 10000.0 else null
             ),
             "byDefectType" to aggregateByUnit(byDefect, unit, qtyAllowed),
-            "byCustomerMonth" to aggregateByUnit(current, unit, qtyAllowed),
+            // 고객사별 월 추이의 label 은 고객사 이름이다 — 권한이 없으면 값만 null(행은 그대로)
+            "byCustomerMonth" to aggregateByUnit(current, unit, qtyAllowed).let { list ->
+                if (customerAllowed) list else list.map { it + ("label" to null) }
+            },
             "byCustomer" to byCustomer
         ) to mask
     }
@@ -466,6 +472,13 @@ class ReportService(
     // ---------------------------------------------------------------------------------
     // 내부 보조
     // ---------------------------------------------------------------------------------
+
+    /**
+     * 고객사 권한이 없으면 고객사 조건(customerCd)을 받지 않는다 — 걸러진 행으로 「이 고객사 = 이 모델」 을 짐작할 수 있다.
+     * 조용히 무시하면 화면이 거른 줄 알고 잘못 읽으므로 400 으로 알린다 (2026-10-03).
+     */
+    private fun requireCustomerFilterAllowed(customerCd: String?, customerAllowed: Boolean) =
+        CustomerFilterGuard.require(customerCd, customerAllowed)
 
     /**
      * 달성률로 신호등 상태를 판정한다.

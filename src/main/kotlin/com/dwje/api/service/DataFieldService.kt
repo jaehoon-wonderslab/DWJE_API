@@ -52,6 +52,9 @@ class DataFieldService(
         /** 문장에서 가릴 때 넣는 말 */
         const val MASK = "비공개"
 
+        /** 문서 제목 맨 앞 대괄호 표기 — 고객사·사업부 */
+        private val LEADING_BRACKET = Regex("^\\s*\\[[^\\]]{1,60}\\]")
+
         /**
          * 값 토막 — (1) 숫자: 천 단위 콤마 · 소수 · 바로(또는 한 칸 뒤에) 붙는 단위(%, 원, 개, EA, 건, kg, mm, 장, 매, 톤)
          *          (2) 코드형 식별자: 영문 1~6자 + 숫자(하이픈 구간 포함) — L260824-031 · PR-03 · W-1023
@@ -433,7 +436,45 @@ class DataFieldService(
         }
         val (title, c2) = maskText(hit["title"] as? String, principal); hit["title"] = title; cnt += c2
         val (heading, c3) = maskText(hit["heading"] as? String, principal); hit["heading"] = heading; cnt += c3
+        // 고객사 권한이 없으면 제목·소제목·발췌의 고객사 이름을 가린다 — 「[Cowell] …」 처럼 제목에 그대로 나왔다 (2026-10-03)
+        if (!principal.canReadField(com.dwje.api.common.util.DataField.CUSTOMER)) {
+            listOf("title", "heading", "snippet").forEach { key ->
+                val (out, c) = maskCustomerNames(hit[key] as? String)
+                if (c > 0) { hit[key] = out; cnt += c }
+            }
+        }
         return cnt
+    }
+
+    /**
+     * 고객사 이름 가림 — 맨 앞 대괄호 표기는 통째로 `[비공개]`, 본문 속 이름은 `비공개`.
+     * 이름 앞뒤가 영문자면 다른 낱말의 일부로 보고 두지 않는다(대소문자 무시).
+     *
+     * @return 가린 문장과 가린 곳 수
+     */
+    fun maskCustomerNames(text: String?): Pair<String?, Int> {
+        if (text.isNullOrEmpty()) return text to 0
+        var cnt = 0
+        var out: String = LEADING_BRACKET.replace(text) { cnt++; "[$MASK]" }
+        customerNamePattern()?.let { re -> out = re.replace(out) { cnt++; MASK } }
+        return out to cnt
+    }
+
+    @Volatile
+    private var customerCache: Pair<Long, Regex?>? = null
+
+    /** 고객사 이름 정규식 — 이름과 그 첫 낱말(3자 이상 영문, 「LGIT CM」 → 「LGIT」). [CACHE_TTL_MS] 캐시 */
+    private fun customerNamePattern(): Regex? {
+        val now = System.currentTimeMillis()
+        customerCache?.let { (at, re) -> if (now - at < CACHE_TTL_MS) return re }
+        val names = runCatching { dataFieldRepository.findCustomerNames() }.getOrDefault(emptyList())
+            .flatMap { n -> listOf(n.trim()) + n.trim().split(Regex("\\s+")).first().takeIf { it.length >= 3 && it.all { c -> c.isLetter() } }.let(::listOfNotNull) }
+            .filter { it.length >= 2 }.distinct().sortedByDescending { it.length }
+        val re = names.takeIf { it.isNotEmpty() }?.let { list ->
+            Regex("(?<![A-Za-z])(" + list.joinToString("|") { Regex.escape(it) } + ")(?![A-Za-z])", RegexOption.IGNORE_CASE)
+        }
+        customerCache = now to re
+        return re
     }
 
     /** 이 사용자가 열람할 수 없는 적용 중 항목의 키워드 — 항목명 전체 · `·`/`,`/`()` 조각(2자 이상) · 응답 필드명. 공백으로는 나누지 않는다. 긴 것부터 */

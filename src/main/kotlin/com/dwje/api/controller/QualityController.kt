@@ -169,7 +169,7 @@ class QualityController(
         val (data, mask) = qualityDefectService.getByType(req.from, req.to, req.processId)
         val items = itemsOf(data)
 
-        val blind = exportService.blindCells()
+        val blind = exportService.blindCells(QualityDefectWorkbook.EXTRA_ATTRS)
         val bytes = defectWorkbook.byType(conditionsOf(req, fromDate, toDate, mask.maskedKeys()), items, blind)
         val fileName = "불량_유형별_분포_${fromDate}_${toDate}.xlsx"
         val response = exportService.xlsx(bytes, fileName)
@@ -198,7 +198,7 @@ class QualityController(
         val levels = DefectTreeLevel.parse(req.levels)
         val (tree, _) = qualityDefectService.getDefectTree(req.from, req.to, req.processId, req.levels)
 
-        val blind = exportService.blindCells()
+        val blind = exportService.blindCells(QualityDefectWorkbook.EXTRA_ATTRS)
         val bytes = defectWorkbook.byLine(
             conditionsOf(req, fromDate, toDate, mask.maskedKeys()), items, levels, itemsOf(tree), blind
         )

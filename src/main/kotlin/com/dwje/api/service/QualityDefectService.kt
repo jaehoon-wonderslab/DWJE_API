@@ -60,14 +60,13 @@ class QualityDefectService(
         val (_, mask) = authorizationService.guard(MenuId.QC_DEFECT)
         val (fromDate, toDate) = DateUtils.periodOf(from, to)
 
-        if (!mask.check(DataField.YIELD)) {
-            return mapOf("items" to emptyList<Any>()) to mask
-        }
-
+        // 비율(비중) 권한이 없어도 표는 준다 — 유형·수량은 두고 비율만 null (2026-10-03: 행·표를 통째로 빼지 않는다)
+        val yieldAllowed = mask.check(DataField.YIELD)
         val qtyAllowed = mask.check(DataField.QTY)
         val items = qualityRepository
             .findDefectByType(appProperties.defaultPlantCd, fromDate, toDate, processId)
             .map { row -> if (qtyAllowed) row else row + mapOf("cnt" to null) }
+            .let { if (yieldAllowed) it else maskRates(it) }
 
         return mapOf("items" to items) to mask
     }
@@ -89,15 +88,13 @@ class QualityDefectService(
         val (_, mask) = authorizationService.guard(MenuId.QC_DEFECT)
         val (fromDate, toDate) = DateUtils.periodOf(from, to)
 
-        if (!mask.check(DataField.YIELD)) {
-            return mapOf("items" to emptyList<Any>()) to mask
-        }
-
+        val yieldAllowed = mask.check(DataField.YIELD)
         val limit = topN?.takeIf { it > 0 }?.coerceAtMost(MAX_LINE_TOP_N)
         val qtyAllowed = mask.check(DataField.QTY)
         val items = qualityRepository
             .findDefectByLine(appProperties.defaultPlantCd, fromDate, toDate, processId, limit)
             .map { row -> if (qtyAllowed) row else maskLineQty(row) }
+            .let { if (yieldAllowed) it else maskRates(it) }
 
         return mapOf("items" to items) to mask
     }
@@ -124,9 +121,7 @@ class QualityDefectService(
         val parsed = DefectTreeLevel.parse(levels)
         val levelKeys = parsed.map { it.key }
 
-        if (!mask.check(DataField.YIELD)) {
-            return mapOf("levels" to levelKeys, "items" to emptyList<Any>(), "totals" to null) to mask
-        }
+        val yieldAllowed = mask.check(DataField.YIELD)
 
         val plantCd = appProperties.defaultPlantCd
         val base = qualityRepository.findDefectTreeBase(plantCd, fromDate, toDate, processId)
@@ -143,14 +138,14 @@ class QualityDefectService(
         val totals = mapOf(
             "okQty" to if (qtyAllowed) ok else null,
             "ngQty" to if (qtyAllowed) ng else null,
-            "defectRate" to com.dwje.api.common.util.safeRate(
+            "defectRate" to if (!yieldAllowed) null else com.dwje.api.common.util.safeRate(
                 java.math.BigDecimal.valueOf(ng), java.math.BigDecimal.valueOf(ok + ng)
             )
         )
 
         return mapOf(
             "levels" to levelKeys,
-            "items" to if (qtyAllowed) items else DefectTreeAssembler.maskQty(items),
+            "items" to (if (qtyAllowed) items else DefectTreeAssembler.maskQty(items)).let { if (yieldAllowed) it else maskRates(it) },
             "totals" to totals,
             "period" to mapOf("from" to fromDate.format(DateUtils.DATE), "to" to toDate.format(DateUtils.DATE))
         ) to mask
@@ -169,9 +164,7 @@ class QualityDefectService(
         val (_, mask) = authorizationService.guard(MenuId.QC_DEFECT)
         val (fromDate, toDate) = DateUtils.periodOf(from, to)
 
-        if (!mask.check(DataField.YIELD)) {
-            return mapOf("items" to emptyList<Any>(), "totals" to null) to mask
-        }
+        val yieldAllowed = mask.check(DataField.YIELD)
 
         val plantCd = appProperties.defaultPlantCd
         val base = qualityRepository.findDefectTreeBase(plantCd, fromDate, toDate, processId)
@@ -185,14 +178,14 @@ class QualityDefectService(
             "totalQty" to if (qtyAllowed) ok + ng else null,
             "okQty" to if (qtyAllowed) ok else null,
             "ngQty" to if (qtyAllowed) ng else null,
-            "defectRate" to com.dwje.api.common.util.safeRate(
+            "defectRate" to if (!yieldAllowed) null else com.dwje.api.common.util.safeRate(
                 java.math.BigDecimal.valueOf(ng), java.math.BigDecimal.valueOf(ok + ng)
             ),
             "itemCnt" to items.size
         )
 
         return mapOf(
-            "items" to if (qtyAllowed) items else ProductDefectTreeAssembler.maskQty(items),
+            "items" to (if (qtyAllowed) items else ProductDefectTreeAssembler.maskQty(items)).let { if (yieldAllowed) it else maskRates(it) },
             "totals" to totals,
             "period" to mapOf("from" to fromDate.format(DateUtils.DATE), "to" to toDate.format(DateUtils.DATE))
         ) to mask
@@ -206,6 +199,21 @@ class QualityDefectService(
     }
 
     companion object {
+        /** 비율 항목(YIELD) 응답 필드 — 불량률 · 비중 */
+        private val RATE_KEYS = listOf("defectRate", "ratio")
+
+        /**
+         * 수율(비율) 권한이 없을 때 — 모든 단계(children 포함)의 불량률·비중만 null. 유형·설비·수량은 남긴다.
+         * 예전에는 표 전체를 비워(items=[]) 엑셀 시트가 머리글만 남았다 (2026-10-03 누출 수정: 값만 가림)
+         */
+        @Suppress("UNCHECKED_CAST")
+        internal fun maskRates(items: List<Map<String, Any?>>): List<Map<String, Any?>> = items.map { node ->
+            val m = LinkedHashMap(node)
+            RATE_KEYS.forEach { if (m.containsKey(it)) m[it] = null }
+            (node["children"] as? List<Map<String, Any?>>)?.let { m["children"] = maskRates(it) }
+            m
+        }
+
         /**
          * 라인별 조회 상위 대수 상한.
          *

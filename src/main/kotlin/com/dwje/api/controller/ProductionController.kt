@@ -363,8 +363,8 @@ class ProductionController(
         @RequestParam(required = false) page: Int?,
         @RequestParam(required = false) size: Int?
     ): ApiResponse<Map<String, Any?>> {
-        val (rows, meta) = dayTargetService.getTargets(product, processId, date, page, size)
-        return ApiResponse.page(mapOf("items" to rows), meta)
+        val (rows, meta, mask) = dayTargetService.getTargets(product, processId, date, page, size)
+        return ApiResponse.page(mapOf("items" to rows), meta, mask.maskedKeys())
     }
 
     /** 일목표 등록 */

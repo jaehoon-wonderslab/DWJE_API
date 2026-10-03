@@ -1,6 +1,7 @@
 package com.dwje.api.service
 
 import com.dwje.api.common.response.PageMeta
+import com.dwje.api.common.util.CustomerFilterGuard
 import com.dwje.api.common.util.DataField
 import com.dwje.api.common.util.MaskingSupport
 import com.dwje.api.common.util.PageRequestParam
@@ -78,6 +79,8 @@ class CommonMasterService(
         val paging = PageRequestParam.of(page, size)
         val orderBy = SortResolver.resolve(sort, productSortColumns, "f.rank_no, p.seq_in_family")
         val mask = authorizationService.masking()
+        // 고객사 권한이 없으면 고객사 조건으로 거를 수 없다 — 걸러진 행으로 고객사를 짐작하게 된다 (2026-10-03)
+        CustomerFilterGuard.require(customerCd, mask.allowed(DataField.CUSTOMER))
 
         val total = commonMasterRepository.countProducts(keyword, familyCd, customerCd, projectCd)
         val rows = commonMasterRepository.findProducts(

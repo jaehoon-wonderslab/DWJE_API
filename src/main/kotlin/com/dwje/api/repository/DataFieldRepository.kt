@@ -251,4 +251,24 @@ class DataFieldRepository(
             MapSqlParameterSource().addValue("fieldKey", fieldKey).addValue("unassigned", unassignedDeptName).addValue("actor", actor)
         )
 
+    /**
+     * 고객사 이름 후보 — 근거 문서 제목·발췌에서 고객사(customer) 권한이 없는 사람에게 가릴 낱말 (2026-10-03).
+     *
+     * - 문서 제목 맨 앞 대괄호 표기(`[LGIT CM]`·`[Cowell]`) — 사내 문서 적재 규칙상 고객사·사업부 표기다
+     * - 고객사 마스터(`ax.tb_prod_customer`)의 코드·이름
+     * - 문서 메타(`vec.vw_doc_context.customer_nm`)
+     *
+     * 용어 사전의 고객사 분류는 「고객」·「업체」 같은 일반 낱말이 섞여 있어 쓰지 않는다.
+     */
+    fun findCustomerNames(): List<String> = jdbcTemplate.queryForList(
+        """
+        SELECT DISTINCT n FROM (
+            SELECT substring(title FROM '^\[([^]]+)\]') AS n FROM vec.tb_doc WHERE del_flg = 'N'
+            UNION ALL SELECT customer_cd FROM ax.tb_prod_customer
+            UNION ALL SELECT customer_nm FROM ax.tb_prod_customer
+            UNION ALL SELECT customer_nm FROM vec.vw_doc_context
+        ) x WHERE n IS NOT NULL AND length(trim(n)) >= 2
+        """.trimIndent(),
+        MapSqlParameterSource(), String::class.java
+    )
 }

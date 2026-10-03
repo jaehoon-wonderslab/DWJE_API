@@ -5,6 +5,8 @@ import com.dwje.api.common.exception.InvalidParameterException
 import com.dwje.api.common.exception.ResourceNotFoundException
 import com.dwje.api.common.response.PageMeta
 import com.dwje.api.common.security.UserContext
+import com.dwje.api.common.util.DataField
+import com.dwje.api.common.util.MaskingSupport
 import com.dwje.api.common.util.DateUtils
 import com.dwje.api.common.util.MenuId
 import com.dwje.api.common.util.PageRequestParam
@@ -63,8 +65,8 @@ class DayTargetService(
         date: String?,
         page: Int?,
         size: Int?
-    ): Pair<List<Map<String, Any?>>, PageMeta> {
-        authorizationService.requireMenu(MenuId.PROD_DAILY)
+    ): Triple<List<Map<String, Any?>>, PageMeta, MaskingSupport> {
+        val (_, mask) = authorizationService.guard(MenuId.PROD_DAILY)
         val plantCd = appProperties.defaultPlantCd
 
         val productCd = product?.trim()?.takeIf { it.isNotBlank() }
@@ -81,7 +83,9 @@ class DayTargetService(
         )
 
         val meta = if (paging.isAll) PageMeta.all(total) else PageMeta.of(paging.page, paging.size, total)
-        return rows to meta
+        // 목표 수량은 수량(qty) 항목이다 — 권한이 없으면 행은 두고 값만 null, 응답 masked 에 qty (2026-10-03 누출 수정)
+        val masked = rows.map { row -> row.toMutableMap().also { mask.applyTo(it, mapOf("targetQty" to DataField.QTY)) }.toMap() }
+        return Triple(masked, meta, mask)
     }
 
     /** 일목표를 등록한다. */

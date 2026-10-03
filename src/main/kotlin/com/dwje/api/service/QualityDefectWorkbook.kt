@@ -54,9 +54,15 @@ class QualityDefectWorkbook {
             "정상 수량", "불량 수량", "불량률(%)", "유형 비중(%)"
         )
 
+        /**
+         * 응답 필드명 카탈로그(DB tb_sys_data_field_attr)에 없는 이 파일의 비율 열 — 비중(`ratio`)은 yield 항목이다.
+         * [BlindCells] 가 이 열을 가린 열로 알아보게 컨트롤러가 `exportService.blindCells(EXTRA_ATTRS)` 로 넘긴다.
+         */
+        val EXTRA_ATTRS = mapOf("ratio" to DataField.YIELD)
+
         private val FIELD_LABELS = mapOf(
             DataField.QTY to "수량(정상·불량·유형별 수량)",
-            DataField.YIELD to "비율(불량률·비중) — 표 전체가 비어 있음"
+            DataField.YIELD to "비율(불량률·비중) — 칸에 「비공개」"
         )
     }
 
@@ -79,7 +85,7 @@ class QualityDefectWorkbook {
             st.text(row, 0, it["defectCd"] as? String, key = "defectCd")
             st.text(row, 1, it["defectType"] as? String, key = "defectType")
             st.number(row.createCell(2), it["cnt"], st.qty, "ngQty") // 유형별 불량 수량 — 수량 항목(qty)
-            st.number(row.createCell(3), it["ratio"], st.rate)
+            st.number(row.createCell(3), it["ratio"], st.rate, "ratio") // 비중 — 비율 항목(yield)
         }
         finish(sheet, items.size, listOf(16, 28, 14, 10))
         st.blind.writeNoticeSheet(wb)
@@ -148,7 +154,7 @@ class QualityDefectWorkbook {
                 st.text(row, 2, c["defectCd"] as? String, key = "defectCd")
                 st.text(row, 3, c["defectType"] as? String, key = "defectType")
                 st.number(row.createCell(4), c["ngQty"], st.qty, "ngQty")
-                st.number(row.createCell(5), c["ratio"], st.rate)
+                st.number(row.createCell(5), c["ratio"], st.rate, "ratio")
             }
         }
         finish(detail, r - 1, listOf(12, 30, 16, 28, 14, 10))
@@ -183,7 +189,7 @@ class QualityDefectWorkbook {
             st.number(row.createCell(10), n["okQty"], st.qtyOf(depth), "okQty")
             st.number(row.createCell(11), n["ngQty"], st.qtyOf(depth), "ngQty")
             st.number(row.createCell(12), n["defectRate"], st.rateOf(depth), "defectRate")
-            st.number(row.createCell(13), n["ratio"], st.rateOf(depth))
+            st.number(row.createCell(13), n["ratio"], st.rateOf(depth), "ratio")
         }
         // 깊이 d 의 행 아래에 이어지는 더 깊은 행들을 한 그룹으로. 깊이 1..(최대-1) 순서로 묶으면 단계가 쌓인다.
         val maxDepth = flat.maxOfOrNull { it.first } ?: 0
