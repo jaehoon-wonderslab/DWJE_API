@@ -269,3 +269,19 @@ MES 품목코드 규칙에서 파생시켰다.
 **MES 스키마는 조회 전용이다.**
 `mes.*` 에 대한 쓰기는 API 코드·SQL 전체에서 금지되며, 빌드 시 `MesReadOnlyContractTest` 가 검사한다.
 웹에서도 MES 원본을 바꾸는 기능은 만들지 않는다.
+
+
+### 발송 채널 — 연동된 채널만 저장 (2026-10-04, V76)
+
+- 채널은 MAIL · POPUP 2개만 쓴다(결정). 공통코드 `ALM_CHANNEL.attr1` = 알림 엔진 어댑터 코드 — MAIL · POPUP 만 채움. SMS · MSG 는 사용 중지(use_flg N)라 「알 수 없는 발송 채널」 400.
+- `POST/PUT /alert-recipient-groups` · `POST/PUT /alert-conditions` 의 `channels` 에 `attr1` 이 빈 채널이 있으면 400 `field=channels`
+  「아직 발송 연동이 안 된 채널입니다. [SMS] 고를 수 있는 채널은 MAIL · POPUP 입니다.」
+- `GET /common/codes` 응답의 `attr1` 로 화면이 선택지를 거른다. 연동이 붙으면 그 코드의 `attr1` 만 채우면 된다.
+- 순서: V76 → 새 API. 새 API 가 V76 전 DB 를 만나면 모든 채널 저장이 400 이 된다.
+
+### 내 팝업 알림 — `GET /api/v1/alerts/popups` (2026-10-04)
+
+- 권한: 알림 목록(alert-list). 발송 로그 중 `channel_cd='POPUP'` · `send_result_cd='SENT'` · `user_id = 나` 만.
+- `after` 없음 → `{ items: [], lastSendId }`(기준점 — 지난 팝업은 주지 않음). `after=n` → n 뒤 최대 5건 오름차순 + `lastSendId`.
+- 행: sendId · sentAt · alertId · title · level · levelNm · occurredAt · eqptCd · eqptNm · condNm · test.
+- WEB 상단 종이 20초마다 불러 오른쪽 위 토스트(5초)로 띄운다.

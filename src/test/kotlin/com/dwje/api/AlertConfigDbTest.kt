@@ -169,15 +169,23 @@ class AlertConfigDbTest {
     }
 
     @Test
-    @DisplayName("ALC-03 SMS 만인 조건 — 그룹이 받지 않는 채널이라 대기열 0·알림 없음")
+    @DisplayName("ALC-03 그룹이 받지 않는 채널만인 조건(시스템 팝업) — 대기열 0·알림 없음 / 사용 안 하는 채널(SMS)은 저장 400(V76)")
     fun channelMismatch() {
-        val condId = newCond(channels = listOf("SMS"))
+        val condId = newCond(channels = listOf("POPUP"))
         val (data, _) = service.testSendCondition(condId)
         assertNull(data["alertId"])
         assertEquals(0, data["queuedCnt"])
         @Suppress("UNCHECKED_CAST")
         val skipped = data["skipped"] as List<Map<String, Any?>>
-        assertTrue(skipped.any { it["reason"] == "CHANNEL_MISMATCH" && it["reasonNm"] == "그룹이 받지 않는 채널(SMS)" })
+        assertTrue(skipped.any { it["reason"] == "CHANNEL_MISMATCH" && (it["reasonNm"] as String).startsWith("그룹이 받지 않는 채널") })
+
+        // 발송 연동 전 채널은 조건 · 그룹 모두 저장하지 않는다
+        // SMS 는 사용 중지 코드(V76 — 채널은 메일 · 시스템 팝업 2개만)라 「알 수 없는 발송 채널」 로 막힌다
+        val e = assertThrows(InvalidParameterException::class.java) {
+            service.createCondition(AlertConditionRequest(name = "ZT SMS 조건", severity = "WARN", threshold = "5", channels = listOf("SMS"), groupIds = listOf(11)))
+        }
+        assertTrue(e.message!!.contains("알 수 없는 발송 채널") || e.message!!.contains("발송 연동이 안 된 채널"), e.message)
+        assertEquals("channels", e.field)
     }
 
     @Test

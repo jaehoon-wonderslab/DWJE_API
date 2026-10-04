@@ -902,6 +902,19 @@ class AlertConfigService(
         channels.map { it.trim().uppercase() }.filter { it.isNotEmpty() }.distinct()
             .ifEmpty { throw InvalidParameterException("발송 채널을 1개 이상 선택해 주십시오.", "channels") }
             .onEach { if (!codeValidator.exists("ALM_CHANNEL", it)) throw InvalidParameterException("알 수 없는 발송 채널입니다. [$it]", "channels") }
+            .onEach { requireChannelReady(it) }
+
+    /**
+     * 발송 연동이 된 채널인지 — ALM_CHANNEL.attr1(엔진 어댑터 코드)이 비어 있으면 엔진이 보내지 않으므로 저장하지 않는다(V76).
+     * 저장해 두면 「SMS 로 알렸다」 는 설정만 남고 아무도 받지 못한다.
+     */
+    private fun requireChannelReady(channel: String) {
+        if (codeValidator.attr1Of("ALM_CHANNEL", channel) != null) return
+        val ready = codeValidator.codesWithAttr1("ALM_CHANNEL")
+        throw InvalidParameterException(
+            "아직 발송 연동이 안 된 채널입니다. [$channel] 고를 수 있는 채널은 ${ready.joinToString(" · ")} 입니다.", "channels"
+        )
+    }
 
     /** 수신 그룹 — 1개 이상, 있고 사용 중이어야 한다 (05 ALC-06) */
     private fun requireGroupIds(groupIds: List<Int>): List<Int> {
@@ -993,6 +1006,7 @@ class AlertConfigService(
         channels.map { it.trim().uppercase() }.filter { it.isNotEmpty() }.distinct()
             .ifEmpty { throw InvalidParameterException("수신 채널을 1개 이상 선택해 주십시오.", "channels") }
             .onEach { if (!codeValidator.exists("ALM_CHANNEL", it)) throw InvalidParameterException("알 수 없는 발송 채널입니다. [$it]", "channels") }
+            .onEach { requireChannelReady(it) }
 
     private fun requireMail(mail: String): String {
         if (mail.length > 200 || !Regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$").matches(mail)) {

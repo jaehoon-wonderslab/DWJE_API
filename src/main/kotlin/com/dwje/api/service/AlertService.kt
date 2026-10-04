@@ -124,6 +124,23 @@ class AlertService(
     }
 
     /**
+     * 나에게 온 팝업 알림 (2026-10-04) — 웹 우측 상단 토스트용. 발송 채널 POPUP 으로 나에게 보낸 것만.
+     *
+     * [after] 없이 부르면 지금까지의 마지막 번호만 준다(items 빈 목록) — 화면을 연 순간 지난 팝업이 쏟아지지 않게.
+     * 그 뒤로는 받은 lastSendId 를 [after] 로 넘겨 새 것만 받는다. 한 번에 최대 5건.
+     */
+    @Transactional(readOnly = true)
+    fun getMyPopups(after: Long?): Map<String, Any?> {
+        val principal = authorizationService.requireMenu(MenuId.ALERT_LIST)
+        if (after == null || after < 0) {
+            return mapOf("items" to emptyList<Any>(), "lastSendId" to alertRepository.lastMyPopupSendId(principal.userId))
+        }
+        val items = alertRepository.findMyPopups(principal.userId, after, appProperties.defaultPlantCd, POPUP_MAX)
+        val last = items.maxOfOrNull { it["sendId"] as Long } ?: after
+        return mapOf("items" to items, "lastSendId" to last)
+    }
+
+    /**
      * 알림 발송 로그 조회 (No.106)
      *
      * 알림 조건(`alert-cond`) 또는 수신자 관리(`sys-recip`) 화면 권한이 있어야 한다. 알림 목록(`alert-list`)은
@@ -211,5 +228,10 @@ class AlertService(
             "90d" -> today.minusDays(89) to today
             else -> today.minusDays(6) to today
         }
+    }
+
+    companion object {
+        /** 팝업 토스트 한 번에 받는 최대 건수 — 그 뒤 것은 다음 주기에 받는다 */
+        private const val POPUP_MAX = 5
     }
 }

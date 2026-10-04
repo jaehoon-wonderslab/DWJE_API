@@ -300,6 +300,50 @@ class AlertRepository(
     }
 
     /**
+     * 나에게 온 팝업 알림 — 발송 로그의 POPUP · 발송 성공 행 중 [afterSendId] 뒤(오름차순, 최대 [limit]건).
+     * 웹 우측 상단 토스트가 1분마다 읽는다(2026-10-04). 테스트 발송도 포함한다(test 표시).
+     */
+    fun findMyPopups(userId: String, afterSendId: Long, plantCd: String, limit: Int): List<Map<String, Any?>> =
+        jdbcTemplate.query(
+            """
+            SELECT s.send_id, s.sent_at, a.alert_id, a.title, a.severity_cd, sv.code_nm AS severity_nm,
+                   a.occurred_at, a.eqpt_cd, e.eqpt_nm, a.test_flg, c.cond_nm
+              FROM ax.tb_alm_send_log s
+              JOIN ax.tb_alm_alert a ON a.alert_id = s.alert_id
+              LEFT JOIN mes.tb_md_eqpt e  ON e.plant_cd = :plantCd AND e.eqpt_cd = a.eqpt_cd
+              LEFT JOIN ax.tb_alm_cond c  ON c.cond_id  = a.cond_id
+              LEFT JOIN ax.tb_sys_code sv ON sv.group_cd = 'ALM_SEVERITY' AND sv.code = a.severity_cd
+             WHERE s.user_id = :userId AND s.channel_cd = 'POPUP' AND s.send_result_cd = 'SENT'
+               AND s.send_id > :after
+             ORDER BY s.send_id
+             LIMIT :limit
+            """.trimIndent(),
+            MapSqlParameterSource().addValue("userId", userId).addValue("after", afterSendId)
+                .addValue("plantCd", plantCd).addValue("limit", limit)
+        ) { rs, _ ->
+            mapOf(
+                "sendId" to rs.getLong("send_id"),
+                "sentAt" to Rs.dateTime(rs, "sent_at"),
+                "alertId" to rs.getLong("alert_id"),
+                "title" to rs.getString("title"),
+                "level" to rs.getString("severity_cd"),
+                "levelNm" to rs.getString("severity_nm"),
+                "occurredAt" to Rs.dateTime(rs, "occurred_at"),
+                "eqptCd" to rs.getString("eqpt_cd"),
+                "eqptNm" to rs.getString("eqpt_nm"),
+                "condNm" to rs.getString("cond_nm"),
+                "test" to (rs.getString("test_flg") == "Y")
+            )
+        }
+
+    /** 나에게 온 팝업 발송 로그의 마지막 번호 — 처음 부를 때 기준점(그 전 것은 띄우지 않음). 없으면 0 */
+    fun lastMyPopupSendId(userId: String): Long =
+        jdbcTemplate.queryForObject(
+            "SELECT coalesce(max(send_id), 0) FROM ax.tb_alm_send_log WHERE user_id = :userId AND channel_cd = 'POPUP' AND send_result_cd = 'SENT'",
+            MapSqlParameterSource("userId", userId), Long::class.java
+        ) ?: 0L
+
+    /**
      * 알림 발송 로그를 조회한다. (No.106)
      */
     fun findSendLogs(

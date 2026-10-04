@@ -68,6 +68,16 @@ class AlertController(
     }
 
     /**
+     * 나에게 온 팝업 알림 (2026-10-04) — 웹 우측 상단 토스트(5초)용. 발송 채널 POPUP 으로 나에게 보낸 것만.
+     * `after` 없이 부르면 마지막 번호만(items 빈 목록), 그 뒤로는 받은 lastSendId 를 after 로 넘긴다.
+     */
+    @Operation(summary = "내 팝업 알림 조회", description = "발송 채널 시스템 팝업으로 나에게 온 알림을 after(sendId) 뒤부터 최대 5건 반환한다.")
+    @GetMapping("/popups")
+    fun popups(
+        @Parameter(description = "이 발송 로그 번호 뒤부터 — 없으면 기준점(lastSendId)만") @RequestParam(required = false) after: Long?
+    ): ApiResponse<Map<String, Any?>> = ApiResponse.ok(alertService.getMyPopups(after))
+
+    /**
      * 알림 상세 조회 (No.103)
      */
     @Operation(summary = "알림 상세 조회", description = "발생 근거·임계값·원인 후보·권고 조치를 반환한다.")

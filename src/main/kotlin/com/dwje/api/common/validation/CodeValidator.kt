@@ -54,6 +54,23 @@ class CodeValidator(
             Boolean::class.java
         ) ?: false
 
+    /**
+     * 사용 중 코드의 부가 속성 1(attr1). 없거나 비었으면 null.
+     * ALM_CHANNEL 에서는 알림 엔진 어댑터 코드다 — 비어 있으면 발송 연동 전 채널(V76).
+     */
+    fun attr1Of(groupCd: String, code: String): String? =
+        jdbcTemplate.query(
+            "SELECT attr1 FROM ax.tb_sys_code WHERE group_cd = :groupCd AND code = :code AND use_flg = 'Y'",
+            MapSqlParameterSource().addValue("groupCd", groupCd).addValue("code", code)
+        ) { rs, _ -> rs.getString("attr1") }.firstOrNull()?.takeIf { it.isNotBlank() }
+
+    /** 사용 중이고 attr1 이 채워진 코드 — ALM_CHANNEL 에서는 실제로 보낼 수 있는 채널 */
+    fun codesWithAttr1(groupCd: String): List<String> =
+        jdbcTemplate.query(
+            "SELECT code FROM ax.tb_sys_code WHERE group_cd = :groupCd AND use_flg = 'Y' AND coalesce(attr1, '') <> '' ORDER BY sort_seq",
+            MapSqlParameterSource("groupCd", groupCd)
+        ) { rs, _ -> rs.getString("code") }
+
     /** 그룹의 코드 목록 — 오류 메시지에 허용 값을 적기 위함 */
     fun codesOf(groupCd: String): List<String> =
         jdbcTemplate.query(
