@@ -52,6 +52,7 @@ class WritePermissionTest {
         doReturn(row).`when`(repo).findUserWithDept("U1")
         doReturn(menus).`when`(repo).findEffectiveMenuPermissions("U1")
         doReturn(data).`when`(repo).findDataPermissions(9)
+        doReturn(data to data).`when`(repo).findDataPermSets(9)
         return AuthorizationService(repo)
     }
 

@@ -83,15 +83,11 @@ data class MyInfoResponse(
  *
  * @param key        항목 key (dataPerms · blindFields 와 같은 값)
  * @param name       항목명
- * @param category   분류 코드 (DATA_FIELD_CATEGORY, 없으면 null)
- * @param categoryNm 분류명 (예: 원가)
  * @param attrs      이 항목에 속한 API 응답 JSON 필드명 — 대소문자 구분, 전역에서 한 항목에만 속한다
  */
 data class DataFieldInfo(
     val key: String,
     val name: String,
-    val category: String?,
-    val categoryNm: String?,
     val attrs: List<String>
 )
 

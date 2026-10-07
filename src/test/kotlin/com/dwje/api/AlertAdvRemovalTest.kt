@@ -102,6 +102,32 @@ class AlertAdvRemovalTest {
     }
 
     @Test
+    @DisplayName("설비 검색 kind=PRESS — 작업장 이름에 「프레스」 든 설비만, factory=M-1공장 과 함께면 1공장 프레스 작업장만(W110·S141), 모르는 kind 는 400")
+    fun equipmentsPress() {
+        val all = masters.getEquipments(null, null)
+        val press = masters.getEquipments(null, null, null, "PRESS")
+        @Suppress("UNCHECKED_CAST")
+        val wcNms = { rows: List<Map<String, Any?>> -> rows.flatMap { it["wcNms"] as List<String> } }
+        assertTrue(press.isNotEmpty() && press.size < all.size)
+        assertTrue(wcNms(press).all { it.contains("프레스") })
+
+        val m1Press = masters.getEquipments(null, null, "M-1공장", "press")
+        assertTrue(m1Press.isNotEmpty())
+        assertEquals(m1Press.size, m1Press.map { it["eqptCd"] }.distinct().size, "설비코드 한 행")
+        wcNms(m1Press).forEach { assertTrue(it.contains("프레스") && WorkcenterNames.plantOf(it) == "M-1공장", it) }
+        val m1 = masters.getEquipments(null, null, "M-1공장")
+        assertTrue(m1Press.size < m1.size, "1공장의 프레스 아닌 설비는 빠진다")
+        @Suppress("UNCHECKED_CAST")
+        assertEquals(setOf("W110", "S141"), m1Press.flatMap { it["wcCds"] as List<String> }.toSet())
+
+        assertEquals(all.size, masters.getEquipments(null, null, null, " ").size, "빈 kind 는 조건이 아니다")
+        val e = org.junit.jupiter.api.Assertions.assertThrows(com.dwje.api.common.exception.InvalidParameterException::class.java) {
+            masters.getEquipments(null, null, null, "LASER")
+        }
+        assertEquals("kind", e.field)
+    }
+
+    @Test
     @DisplayName("승격 규칙 기능 제거 — 승격 API 경로가 없고, 수신 그룹 목록·상세·수신자 관리 요약에 승격 항목이 없다")
     fun escalationRemoved() {
         val paths = mapping.handlerMethods.keys.flatMap { it.patternValues }

@@ -107,7 +107,8 @@ class AoiBriefingService(
      * 집계는 [AoiDimensionService] 캐시에서 다시 읽으므로 화면이 표를 먼저 그린 뒤 이 API 를 부르면 원천을 다시 읽지 않는다.
      */
     fun briefing(from: String?, to: String?, wcCd: String, eqptCd: String?): Pair<Map<String, Any?>, MaskingSupport> {
-        val (_, mask) = authorizationService.guard(MenuId.QC_AOI)
+        // 규칙 문장 · LLM 프롬프트를 만든다 — 엄격한 판정(V82, 그 묶음 항목을 모두 볼 수 있을 때만)
+        val (_, mask) = authorizationService.guardStrict(MenuId.QC_AOI)
         val qtyAllowed = mask.check(DataField.QTY)
         val yieldAllowed = mask.check(DataField.YIELD)
 

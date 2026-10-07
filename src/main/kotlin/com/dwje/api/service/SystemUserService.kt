@@ -1065,7 +1065,7 @@ class SystemUserService(
             val key = f["key"] as String
             // 미적용 항목은 권한과 무관하게 가려지지 않는다 — 실제 노출 기준으로 보인다(04 DTP-10)
             val applied = f["applyFlg"] == "Y"
-            val masked = applied && !target.canReadField(key)
+            val masked = applied && !com.dwje.api.common.response.DataFieldMaskingAdvice.readableForMasking(target, key)
             mapOf(
                 "fieldKey" to key,
                 "name" to f["name"],

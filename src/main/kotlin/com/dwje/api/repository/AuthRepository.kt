@@ -125,6 +125,51 @@ class AuthRepository(
     }
 
     /**
+     * 부서의 데이터 권한 — 느슨한 집합 · 엄격한 집합 (V82, 2026-10-07 항목 단위 권한)
+     *
+     * 권한은 항목(tb_sys_data_field) 단위다. V82 가 기본 7종(qty · yield …)의 응답 필드명을 항목마다 나눴고,
+     * 원래 어느 묶음 것인지는 ax.tb_sys_data_attr_origin 에 남겼다. 서버 코드는 여전히 기본 7종 key 로 가린다
+     * ([com.dwje.api.common.util.MaskingSupport]) — 그 key 의 권한을 항목 권한에서 계산한다.
+     *
+     * - 필드명 하나를 「볼 수 있음」 = 어느 항목에도 없음(통제 밖) · 그 항목이 미적용 · 그 항목을 부서가 허용
+     * - 느슨한(lenient) 기본 묶음 G = G 에서 온 필드명 중 하나라도 볼 수 있음. JSON 응답을 만드는 코드가 쓴다 —
+     *   그 응답에서 실제로 어느 키를 가릴지는 공통 마스킹(DataFieldMaskingAdvice)이 항목 권한으로 정한다.
+     * - 엄격한(strict) 기본 묶음 G = G 에서 온 필드명을 모두 볼 수 있음. AI 프롬프트 · 메일 · 문장처럼 키가 없는 출력이 쓴다.
+     * - 기록표에 G 의 필드명이 없거나(V82 전) 기록표 자체가 없으면 G 는 예전처럼 G 행의 부서 권한으로 판정한다.
+     * - 항목 key 들(i_* · f_* 등)은 두 집합 모두 그대로 들어간다.
+     *
+     * @return first = 느슨한 집합, second = 엄격한 집합
+     */
+    fun findDataPermSets(deptId: Int): Pair<Set<String>, Set<String>> {
+        val allowed = findDataPermissions(deptId)
+        val hasOriginTable = jdbcTemplate.queryForObject(
+            "SELECT to_regclass('ax.tb_sys_data_attr_origin') IS NOT NULL", MapSqlParameterSource(), Boolean::class.java
+        ) == true
+        if (!hasOriginTable) return allowed to allowed
+
+        val sql = """
+            SELECT o.origin_key,
+                   (a.field_key IS NULL OR f.field_key IS NULL OR f.apply_flg <> 'Y'
+                    OR EXISTS (SELECT 1 FROM ax.tb_sys_dept_data_perm p
+                                WHERE p.dept_id = :deptId AND p.field_key = a.field_key AND p.is_allowed = true)) AS readable
+              FROM ax.tb_sys_data_attr_origin o
+              LEFT JOIN ax.tb_sys_data_field_attr a ON a.attr_name = o.attr_name
+              LEFT JOIN ax.tb_sys_data_field f ON f.field_key = a.field_key AND f.use_flg = 'Y'
+        """.trimIndent()
+        val rows = jdbcTemplate.query(sql, MapSqlParameterSource("deptId", deptId)) { rs, _ ->
+            rs.getString("origin_key") to rs.getBoolean("readable")
+        }
+        val byOrigin = rows.groupBy({ it.first }, { it.second })
+        val lenient = allowed.filterTo(linkedSetOf()) { it !in byOrigin.keys }
+        val strict = linkedSetOf<String>().apply { addAll(lenient) }
+        byOrigin.forEach { (origin, readable) ->
+            if (readable.any { it }) lenient += origin
+            if (readable.all { it }) strict += origin
+        }
+        return lenient to strict
+    }
+
+    /**
      * 로그인 이력을 기록한다. (성공/실패 모두 기록)
      *
      * @param userId     사번

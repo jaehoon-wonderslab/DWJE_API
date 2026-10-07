@@ -277,11 +277,23 @@
 
 허용 키 — `newFields`, `moves`, `screenId`
 
+> `newFields[].category` 는 사용 중지 — 받기만 하고 무시한다(데이터 항목 분류 제거, 2026-10-07).
+
 - `PUT /api/v1/system/data-fields/mapping`
+
+### `DataItemPermRequest`
+
+허용 키 — `name`, `attrs`, `perms`
+
+> 항목 단위 권한(V82, 2026-10-07). `perms` 는 부서 ID(문자열) → 열람 허용 여부 — 넣은 부서만 바꾼다. 통합관리자 · 미배정 부서는 409.
+
+- `PUT /api/v1/system/data-fields/item-perms`
 
 ### `DataFieldSaveRequest`
 
 허용 키 — `fieldKey`, `name`, `desc`, `category`
+
+> 사용 중지 — `category` : 옛 WEB 번들 호환으로 받기만 하고 값은 무시한다. 모든 WEB 배포 뒤 키를 지운다.
 
 - `POST /api/v1/system/data-fields`
 - `PUT /api/v1/system/data-fields/{fieldKey}`

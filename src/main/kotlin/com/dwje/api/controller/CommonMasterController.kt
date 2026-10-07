@@ -53,16 +53,19 @@ class CommonMasterController(
     @Operation(
         summary = "설비 목록 조회",
         description = "공정별 설비 목록을 조회한다. 설비코드 기준 한 행이다(작업장 여러 곳에 걸린 설비는 wcCds·wcNms 에 모두, wcCd·wcNm 은 첫 작업장). " +
-            "factory 를 주면 작업장 이름의 (M-1공장) 표기로 그 공장 설비만 — 표기가 없는 작업장·작업장 없는 설비는 빠진다."
+            "factory 를 주면 작업장 이름의 (M-1공장) 표기로 그 공장 설비만 — 표기가 없는 작업장·작업장 없는 설비는 빠진다. " +
+            "kind=PRESS 면 작업장 이름에 '프레스' 가 든 설비만(factory 와 함께 쓰면 두 조건을 모두 만족하는 작업장). 그 밖의 kind 값은 400."
     )
     @GetMapping("/masters/equipments")
     fun equipments(
         @Parameter(description = "공정(작업장) 코드") @RequestParam(required = false) processId: String?,
         @Parameter(description = "설비코드·설비명 검색어") @RequestParam(required = false) keyword: String?,
         @Parameter(description = "공장 — 작업장 이름의 괄호 표기와 같은 값(예: M-1공장). 비우면 전체")
-        @RequestParam(required = false) factory: String?
+        @RequestParam(required = false) factory: String?,
+        @Parameter(description = "설비 종류 — PRESS(작업장 이름에 '프레스'). 비우면 전체, 그 밖의 값은 400")
+        @RequestParam(required = false) kind: String?
     ): ApiResponse<Map<String, Any?>> =
-        ApiResponse.ok(mapOf("equipments" to commonMasterService.getEquipments(processId, keyword, factory)))
+        ApiResponse.ok(mapOf("equipments" to commonMasterService.getEquipments(processId, keyword, factory, kind)))
 
     /**
      * 제품 목록 조회 (No.10) — 제품 선택 팝업(113종) 검색·필터·정렬 대응

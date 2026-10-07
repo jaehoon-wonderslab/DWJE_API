@@ -57,8 +57,22 @@ class CommonMasterService(
      * @param keyword   설비코드/설비명 검색어
      */
     @Transactional(readOnly = true)
-    fun getEquipments(processId: String?, keyword: String?, factory: String? = null): List<Map<String, Any?>> =
-        mergeEquipments(commonMasterRepository.findEquipments(appProperties.defaultPlantCd, processId, keyword), factory)
+    fun getEquipments(processId: String?, keyword: String?, factory: String? = null, kind: String? = null): List<Map<String, Any?>> {
+        // 종류를 먼저 검사한다 — 알 수 없는 값을 조용히 무시하면 화면이 거른 줄 알고 전체 설비를 프레스로 읽는다
+        val kindWord = equipmentKindWord(kind)
+        return mergeEquipments(commonMasterRepository.findEquipments(appProperties.defaultPlantCd, processId, keyword), factory, kindWord)
+    }
+
+    /**
+     * 설비 종류 → 작업장 이름에 들어 있어야 하는 낱말 (2026-10-07). 비면 null(조건 없음), 모르는 값은 400.
+     * 설비 마스터에 종류 열이 없어 작업장 이름(`A-프레스 작업장(M-1공장)`)으로 가른다 — 공장 표기와 같은 방식.
+     */
+    internal fun equipmentKindWord(kind: String?): String? {
+        val k = kind?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        return EQUIPMENT_KIND_WORDS[k.uppercase()]
+            ?: throw com.dwje.api.common.exception.InvalidParameterException(
+                "설비 종류는 ${EQUIPMENT_KIND_WORDS.keys.joinToString("·")} 만 쓸 수 있습니다. [$kind]", "kind")
+    }
 
     /**
      * 제품 목록 조회 (No.10) — 제품 선택 팝업의 검색·필터·정렬을 지원한다.
@@ -158,16 +172,26 @@ class CommonMasterService(
     /**
      * 설비 목록 정리 (2026-10-03)
      * 1. [factory] 를 주면 작업장 이름의 공장 표기([WorkcenterNames.plantOf])가 같은 행만 남긴다 — 표기 없는 작업장·작업장 없는 설비는 빠진다
+     *    [kindWord] 를 주면(kind=PRESS → 「프레스」) 작업장 이름에 그 낱말이 든 행만 남긴다(2026-10-07) — factory 와 함께면 둘 다 맞는 작업장
      * 2. 설비코드 기준 한 행으로 합친다 — 작업장 2곳에 걸린 설비가 두 행으로 와서 화면이 같은 key 로 그리다 오류가 났다(로컬 21대).
      *    wcCd·wcNm 은 첫 작업장(작업장 코드순), wcCds·wcNms 에 걸린 작업장 전부.
      */
-    internal fun mergeEquipments(rows: List<Map<String, Any?>>, factory: String?): List<Map<String, Any?>> {
+    internal fun mergeEquipments(rows: List<Map<String, Any?>>, factory: String?, kindWord: String? = null): List<Map<String, Any?>> {
         val plant = factory?.trim()?.takeIf { it.isNotEmpty() }
-        val kept = if (plant == null) rows else rows.filter { WorkcenterNames.plantOf(it["wcNm"] as String?) == plant }
+        // 작업장 행 단위로 거른 뒤 합친다 — 공장·종류가 모두 맞는 작업장만 wcCds 에 남는다
+        val kept = rows.filter { r ->
+            val wcNm = r["wcNm"] as String?
+            (plant == null || WorkcenterNames.plantOf(wcNm) == plant) && (kindWord == null || wcNm?.contains(kindWord) == true)
+        }
         return kept.groupBy { it["eqptCd"] }.values.map { same ->
             val first = same.first()
             if (same.size == 1) first + mapOf("wcCds" to listOfNotNull(first["wcCd"]), "wcNms" to listOfNotNull(first["wcNm"]))
             else first + mapOf("wcCds" to same.mapNotNull { it["wcCd"] }.distinct(), "wcNms" to same.mapNotNull { it["wcNm"] }.distinct())
         }
+    }
+
+    companion object {
+        /** 설비 검색 종류 → 작업장 이름 낱말 (kind 파라미터) */
+        private val EQUIPMENT_KIND_WORDS = mapOf("PRESS" to "프레스")
     }
 }

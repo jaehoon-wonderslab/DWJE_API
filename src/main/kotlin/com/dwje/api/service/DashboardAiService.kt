@@ -734,7 +734,7 @@ class DashboardAiService(
      */
     @Transactional(readOnly = true)
     fun getBriefing(date: String?, from: String?, to: String?): Map<String, Any?> {
-        val (_, mask) = authorizationService.guard(MenuId.DASH_AI)
+        val (_, mask) = authorizationService.guardStrict(MenuId.DASH_AI)  // 프롬프트 · 근거 문장 — 엄격한 판정(V82)
         val window = windowOf(date, from, to)
 
         // 모델에 넘길 지표는 지금부터 모은다 — 권한 필터를 모델보다 먼저 세워 둔다.
@@ -807,7 +807,7 @@ class DashboardAiService(
         eqptCd: String?,
         threshold: Double?
     ): Map<String, Any?> {
-        val (_, mask) = authorizationService.guard(MenuId.DASH_AI)
+        val (_, mask) = authorizationService.guardStrict(MenuId.DASH_AI)  // 프롬프트 · 근거 문장 — 엄격한 판정(V82)
         val window = windowOf(date, from, to)
         val cfg = appProperties.ai
         // 대상은 불량률로 고른다. 수율 권한이 없으면 기준값을 바꿔 가며 불러 대상이 나타나는 경계로

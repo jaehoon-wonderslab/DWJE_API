@@ -8,7 +8,7 @@ import org.springframework.stereotype.Repository
  * 데이터 접근 항목 · 응답 필드명 Repository (SY-03, V33)
  *
  * 참조 테이블
- * - 항목       : ax.tb_sys_data_field (category_cd · apply_flg 는 V33)
+ * - 항목       : ax.tb_sys_data_field (apply_flg 는 V33). 분류(category_cd · DATA_FIELD_CATEGORY)는 2026-10-07 에 없앴다 — 읽지도 쓰지도 않는다
  * - 응답 필드명 : ax.tb_sys_data_field_attr (attr_name 전역 UNIQUE)
  * - 참조 확인   : ax.tb_alm_cond · ax.tb_met_metric_std · ax.tb_rpt_form_field · vec.tb_doc_data_field · ax.tb_sys_dept_data_perm
  *
@@ -20,20 +20,14 @@ class DataFieldRepository(
     private val jdbcTemplate: NamedParameterJdbcTemplate
 ) {
 
-    companion object {
-        /** 항목 분류 공통코드 그룹 (V33) */
-        const val CATEGORY_GROUP = "DATA_FIELD_CATEGORY"
-    }
-
     /** 항목 한 건 — 없으면 null. use_flg 와 무관하게 찾는다(삭제·수정 대상 확인용). */
     fun findField(fieldKey: String): Map<String, Any?>? {
         val sql = """
-            SELECT f.field_key, f.field_nm, f.field_desc, f.category_cd, c.code_nm AS category_nm,
+            SELECT f.field_key, f.field_nm, f.field_desc,
                    f.apply_flg, f.use_flg, f.sort_seq,
                    (SELECT string_agg(a.attr_name, ',' ORDER BY a.attr_name)
                       FROM ax.tb_sys_data_field_attr a WHERE a.field_key = f.field_key) AS attrs
             FROM ax.tb_sys_data_field f
-            LEFT JOIN ax.tb_sys_code c ON c.group_cd = '$CATEGORY_GROUP' AND c.code = f.category_cd
             WHERE f.field_key = :fieldKey
         """.trimIndent()
         return jdbcTemplate.query(sql, MapSqlParameterSource("fieldKey", fieldKey)) { rs, _ ->
@@ -41,8 +35,6 @@ class DataFieldRepository(
                 "key" to rs.getString("field_key"),
                 "name" to rs.getString("field_nm"),
                 "desc" to rs.getString("field_desc"),
-                "category" to rs.getString("category_cd"),
-                "categoryNm" to rs.getString("category_nm"),
                 "applyFlg" to rs.getString("apply_flg"),
                 "useFlg" to rs.getString("use_flg"),
                 "sortSeq" to rs.getInt("sort_seq"),
@@ -64,11 +56,10 @@ class DataFieldRepository(
      */
     fun findAppliedFields(): List<Map<String, Any?>> {
         val sql = """
-            SELECT f.field_key, f.field_nm, f.category_cd, c.code_nm AS category_nm, f.sort_seq,
+            SELECT f.field_key, f.field_nm, f.sort_seq,
                    (SELECT string_agg(a.attr_name, ',' ORDER BY a.attr_name)
                       FROM ax.tb_sys_data_field_attr a WHERE a.field_key = f.field_key) AS attrs
             FROM ax.tb_sys_data_field f
-            LEFT JOIN ax.tb_sys_code c ON c.group_cd = '$CATEGORY_GROUP' AND c.code = f.category_cd
             WHERE f.use_flg = 'Y' AND f.apply_flg = 'Y'
             ORDER BY f.sort_seq, f.field_key
         """.trimIndent()
@@ -76,8 +67,6 @@ class DataFieldRepository(
             mapOf(
                 "key" to rs.getString("field_key"),
                 "name" to rs.getString("field_nm"),
-                "category" to rs.getString("category_cd"),
-                "categoryNm" to rs.getString("category_nm"),
                 "attrs" to (rs.getString("attrs")?.split(",") ?: emptyList())
             )
         }
@@ -102,31 +91,31 @@ class DataFieldRepository(
         ) ?: 1
 
     /** 항목 등록 — apply_flg 는 'N'(미적용)으로 시작한다(2단계 스위치). */
-    fun insertField(fieldKey: String, name: String, desc: String?, category: String?, sortSeq: Int, actor: String): Int {
+    fun insertField(fieldKey: String, name: String, desc: String?, sortSeq: Int, actor: String): Int {
         val sql = """
             INSERT INTO ax.tb_sys_data_field
-                (field_key, field_nm, field_desc, category_cd, sort_seq, use_flg, apply_flg, ins_user, upd_user)
-            VALUES (:fieldKey, :name, :desc, :category, :sortSeq, 'Y', 'N', :actor, :actor)
+                (field_key, field_nm, field_desc, sort_seq, use_flg, apply_flg, ins_user, upd_user)
+            VALUES (:fieldKey, :name, :desc, :sortSeq, 'Y', 'N', :actor, :actor)
         """.trimIndent()
         return jdbcTemplate.update(
             sql,
             MapSqlParameterSource()
                 .addValue("fieldKey", fieldKey).addValue("name", name).addValue("desc", desc)
-                .addValue("category", category).addValue("sortSeq", sortSeq).addValue("actor", actor)
+                .addValue("sortSeq", sortSeq).addValue("actor", actor)
         )
     }
 
-    fun updateField(fieldKey: String, name: String, desc: String?, category: String?, actor: String): Int {
+    fun updateField(fieldKey: String, name: String, desc: String?, actor: String): Int {
         val sql = """
             UPDATE ax.tb_sys_data_field
-               SET field_nm = :name, field_desc = :desc, category_cd = :category, upd_date = now(), upd_user = :actor
+               SET field_nm = :name, field_desc = :desc, upd_date = now(), upd_user = :actor
              WHERE field_key = :fieldKey
         """.trimIndent()
         return jdbcTemplate.update(
             sql,
             MapSqlParameterSource()
                 .addValue("fieldKey", fieldKey).addValue("name", name).addValue("desc", desc)
-                .addValue("category", category).addValue("actor", actor)
+                .addValue("actor", actor)
         )
     }
 

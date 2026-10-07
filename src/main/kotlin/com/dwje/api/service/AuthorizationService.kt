@@ -98,7 +98,9 @@ class AuthorizationService(
             unassigned -> effective.filterTo(linkedSetOf()) { it in MenuId.UNASSIGNED_SCREENS }
             else -> effective
         }
-        val dataPerms = if (superAdmin || unassigned) emptySet() else authRepository.findDataPermissions(deptId)
+        // 기본 7종은 항목 권한에서 계산한 느슨한 · 엄격한 두 집합(V82) — AuthRepository.findDataPermSets
+        val (dataPerms, dataPermsStrict) =
+            if (superAdmin || unassigned) emptySet<String>() to emptySet() else authRepository.findDataPermSets(deptId)
         if (unassigned) warnClampedUnassigned(userId, deptId, effective - MenuId.UNASSIGNED_SCREENS)
 
         return UserPrincipal(
@@ -111,6 +113,7 @@ class AuthorizationService(
             superAdmin = superAdmin,
             menuPerms = menuPerms,
             dataPerms = dataPerms,
+            dataPermsStrict = dataPermsStrict,
             impersonated = impersonated,
             pwdChangeRequired = user["pwdChangeRequired"] == true,
             unassigned = unassigned,
@@ -210,5 +213,14 @@ class AuthorizationService(
     fun guard(menuId: String): Pair<UserPrincipal, MaskingSupport> {
         val principal = requireMenu(menuId)
         return principal to MaskingSupport(principal)
+    }
+
+    /**
+     * [guard] 와 같되 엄격한 판정(V82) — 기본 7종 key 는 그 묶음에서 온 항목을 모두 볼 수 있을 때만 통과한다.
+     * AI 프롬프트 · 브리핑 문장 · 근거 대조처럼 응답 키 단위로 다시 가릴 수 없는 출력을 만드는 API 가 쓴다.
+     */
+    fun guardStrict(menuId: String): Pair<UserPrincipal, MaskingSupport> {
+        val principal = requireMenu(menuId)
+        return principal to MaskingSupport(principal, strict = true)
     }
 }

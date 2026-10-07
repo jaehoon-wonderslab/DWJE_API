@@ -18,7 +18,9 @@ import org.springframework.transaction.annotation.Transactional
 class QualityDefectService(
     private val qualityRepository: QualityRepository,
     private val authorizationService: AuthorizationService,
-    private val appProperties: AppProperties
+    private val appProperties: AppProperties,
+    /** 항목 단위 판정(V82) — 시험에서 넣지 않으면 기본 묶음 판정만 쓴다 */
+    private val dataFieldService: DataFieldService? = null
 ) {
 
     /**
@@ -61,8 +63,11 @@ class QualityDefectService(
         val (fromDate, toDate) = DateUtils.periodOf(from, to)
 
         // 비율(비중) 권한이 없어도 표는 준다 — 유형·수량은 두고 비율만 null (2026-10-03: 행·표를 통째로 빼지 않는다)
-        val yieldAllowed = mask.check(DataField.YIELD)
-        val qtyAllowed = mask.check(DataField.QTY)
+        // V82 — cnt 는 「불량 수량」, ratio 는 「불량 비중」 이다. 화면마다 뜻이 다른 이름이라 항목 표에 넣지 않았으므로
+        // 묶음(qty · yield) 판정만 쓰면 불량 수량만 숨긴 부서에게도 보인다 — 그 뜻의 항목 필드명으로 판정한다
+        val principal = com.dwje.api.common.security.UserContext.current()
+        val yieldAllowed = mask.check(DataField.YIELD) && (dataFieldService?.canReadAttr(principal, "sharePct", DataField.YIELD) ?: true)
+        val qtyAllowed = mask.check(DataField.QTY) && (dataFieldService?.canReadAttr(principal, "ngQty", DataField.QTY) ?: true)
         val items = qualityRepository
             .findDefectByType(appProperties.defaultPlantCd, fromDate, toDate, processId)
             .map { row -> if (qtyAllowed) row else row + mapOf("cnt" to null) }

@@ -10,9 +10,9 @@ DB 는 V33(DB 담당), API 는 여기. 연결 열쇠는 **API 응답 JSON 필드
 
 | 메서드 | 경로 | 본문 | 응답 `data` |
 | :--- | :--- | :--- | :--- |
-| GET | `/system/data-fields` | — | `items[{key,name,desc,category,categoryNm,applyFlg,sortSeq,attrs[]}]` — 사용 중 항목 전체(미적용 포함) |
-| POST | `/system/data-fields` | `{fieldKey,name,desc?,category?}` | 등록된 항목(위 한 건 꼴). **`applyFlg='N'`** 으로 시작 |
-| PUT | `/system/data-fields/{fieldKey}` | `{name,desc?,category?}` | 수정된 항목. key 는 바꿀 수 없다 |
+| GET | `/system/data-fields` | — | `items[{key,name,desc,applyFlg,sortSeq,attrs[]}]` — 사용 중 항목 전체(미적용 포함) |
+| POST | `/system/data-fields` | `{fieldKey,name,desc?}` (`category` 는 받고 버림 — 2026-10-07 분류 제거) | 등록된 항목(위 한 건 꼴). **`applyFlg='N'`** 으로 시작 |
+| PUT | `/system/data-fields/{fieldKey}` | `{name,desc?}` (`category` 받고 버림) | 수정된 항목. key 는 바꿀 수 없다 |
 | DELETE | `/system/data-fields/{fieldKey}` | — | `{success,fieldKey,deletedDeptPerms,deletedAttrs}` |
 | POST | `/system/data-fields/{fieldKey}/attrs` | `{attrName,remark?}` | `{fieldKey,attrName,attrs[]}` |
 | DELETE | `/system/data-fields/{fieldKey}/attrs/{attrName}` | — | `{fieldKey,attrName,attrs[]}` |
@@ -20,7 +20,7 @@ DB 는 V33(DB 담당), API 는 여기. 연결 열쇠는 **API 응답 JSON 필드
 
 규칙과 오류
 - `fieldKey` — 소문자로 시작, 소문자·숫자·`_`·`-`, 2~30자. 어긋나면 400 `E-VALID-001`(`field: fieldKey`). 같은 key 는 409 `E-RULE-001`.
-- `name` 필수 50자 이내, `desc` 300자 이내, `category` 는 공통코드 `DATA_FIELD_CATEGORY`(QTY·QUALITY·COST·CUSTOMER·PLAN·EQUIP·HR) 안의 값 — 아니면 400 에 허용 값 안내.
+- `name` 필수 50자 이내, `desc` 300자 이내. 분류(`category`, 공통코드 `DATA_FIELD_CATEGORY`)는 판정·관리에 쓰이지 않아 2026-10-07 에 없앴다 — 옛 화면이 보내도 400 없이 버리고 응답에도 내지 않는다.
 - `attrName` — JSON 키 꼴(`^[A-Za-z_$][A-Za-z0-9_$]{0,59}$`), 대소문자 구분. 어긋나면 400(`field: attrName`).
 - **`attrName` 중복은 409 `E-RULE-001`** — 다른 항목에 붙어 있으면 `"이미 단가·금액에 등록된 필드명입니다. [unitPrice]"`, 같은 항목이면 `"이미 이 항목에 등록된 필드명입니다. [...]"`.
   저장 전에 먼저 보고, 동시 등록으로 DB UNIQUE 에 걸려도 다시 조회해 같은 409 를 낸다(500 이 나가지 않는다).
@@ -43,11 +43,11 @@ WEB 의 `endpoints.js` 카탈로그로 세는 쪽이 맞다. 등록된 필드명
 "dataPerms":  ["qty","worker"],
 "blindFields": ["yield","price","customer","plan","mold"],
 "dataFields": [
-  {"key":"price","name":"단가·금액","category":"COST","categoryNm":"원가","attrs":["unitPrice","unitCost","amount"]}
+  {"key":"price","name":"단가·금액","attrs":["unitPrice","unitCost","amount"]}
 ]
 ```
 - `dataFields` 는 **`use_flg='Y' AND apply_flg='Y'`** 항목만. `attrs` 가 비어 있어도 항목이 켜져 있으면 나온다.
-- `category` 는 코드(`COST`), `categoryNm` 이 표시명(`원가`) — 지시서 예시의 `"category":"원가"` 는 `categoryNm` 으로 받으면 된다.
+- 분류(`category`·`categoryNm`)는 2026-10-07 에 없앴다(응답에서 빠짐).
 - `dataPerms`·`blindFields` 도 코드 상수 7개가 아니라 사용 중 항목 표 기준이다(미적용 항목도 들어간다 — 권한 자체는 항목이 켜지기 전에 채우는 것이 2단계 순서라서).
 - 매 호출 DB 를 읽는다(캐시 없음). 화면 반영 시점이 재로그인이라 무효화 장치는 두지 않았다.
 
@@ -111,7 +111,7 @@ ON CONFLICT (attr_name) DO NOTHING;
 | `repository/DataFieldRepository.kt` (신규) | 항목·필드명 CRUD · 적용 중 attr 맵 · 참조 건수 |
 | `service/DataFieldService.kt` (신규) | 검증 · 409 · 삭제 가드 · 감사 · 카탈로그(blindColumns · 차단 키워드 · 문서 필터 키) |
 | `controller/DataFieldController.kt` (신규) · `model/request/DataFieldRequests.kt` (신규) | 6개 엔드포인트 · DTO 3종 |
-| `repository/SystemUserRepository.kt` | `findDataFields()` — attr 표 · category · applyFlg |
+| `repository/SystemUserRepository.kt` | `findDataFields()` — attr 표 · applyFlg |
 | `service/SystemUserService.kt` | 매트릭스·권한 변경·계정별 결과의 항목 기준을 항목 표로 |
 | `service/AuthService.kt` · `model/response/AuthResponses.kt` | `/auth/me` `dataFields`(`DataFieldInfo`) · dataPerms/blindFields 항목 표 기준 |
 | `service/AiChatService.kt` · `repository/AiChatRepository.kt` | 출력 마스킹(문장 `maskText` · 발췌 `maskHit` · 표 블록 blindColumns/null) · `blindFields`·`blindAppliedCnt` · 문서 태그 조회. 데이터 권한 `denied` 없음 |
@@ -130,3 +130,27 @@ ON CONFLICT (attr_name) DO NOTHING;
 - 삭제: `qty` 409(기본 항목) · 없는 key 404 · 필드명 해제 후 재해제 404 · 항목 삭제 200 `deletedDeptPerms=1` → 표·권한·필드명 0행.
 - 이력: `tb_sys_perm_log` DATA_PERM 6행(등록·필드명 등록·수정·적용 ON·필드명 해제·삭제), `tb_log_audit` PERM_CHANGE 7행.
 - 실제 항목 7개의 데이터·권한은 건드리지 않았다. 로컬 `tb_ai_chat_log` 에 검증 질의 7행이 남아 있다(10004, 로컬 전용).
+
+## 9. 항목 단위 권한 (V82, 2026-10-07)
+
+WEB 데이터 접근 권한 화면을 「항목 × 부서」 표 하나로 바꿨다(사용자 결정 — 묶음 없이 항목마다 부서 체크). 설계: WEB `docs/DATA_ITEM_MASKING_DESIGN_20261007.md`.
+
+**DB (V82, 로컬 dwjedb 적용 2026-10-07)**
+- 기본 7종에 든 응답 필드명 35개를 필드명마다 항목(`i_<필드명 소문자>`)으로 나누고 부서 권한을 원래 묶음에서 복사했다 — 적용 직후 바뀌는 사람은 없다.
+- 코드만 가리던 같은 뜻의 다른 이름 54개를 등록했다(불량 수량 = ngQty · failCnt · ngCnt · prodNgCnt …, 불량률 = defectRate · failRate · ngRate …, 새 항목 24개). 화면마다 뜻이 다른 이름(rate · ratio · total · cnt · value · actual · label · spec · name)은 넣지 않았다.
+- `ax.tb_sys_data_attr_origin(attr_name, origin_key)` — 필드명이 원래 어느 기본 묶음 것인지. 필드명을 옮기거나 풀어도 남는다.
+- 기본 7종 행과 그 부서 권한 행은 남긴다(알림 조건 · 지표 기준 · 문서 태그가 key 를 참조).
+
+**판정 (`AuthRepository.findDataPermSets`)**
+- 서버 코드는 여전히 기본 7종 key 로 가린다(`MaskingSupport` 약 150곳). 그 key 의 권한을 항목 권한에서 계산한다.
+  - 느슨한(`canReadField`) — 그 묶음에서 온 필드명 중 하나라도 볼 수 있음. JSON 응답을 만드는 코드가 쓴다. 실제로 어느 키를 가릴지는 공통 마스킹(advice)이 항목 권한으로 정한다.
+  - 엄격한(`canReadFieldStrict`) — 그 묶음에서 온 필드명을 모두 볼 수 있음. 응답 키가 없는 출력이 쓴다: AI 원인·처방 / 브리핑(`guardStrict`), AOI 브리핑, AI 도구 · 근거 문장(`AiDataToolService`), AI 표 블록 칸(`AiChatService`), 용어 치환 · 용어 가림, 문서 태그(`blindKeysFor`), 고객사명 치환, 엑셀 extra 열, 필드명이 아직 기본 key 에 직접 붙은 경우(`DataFieldMaskingAdvice.readableForMasking`).
+  - 필드명 「볼 수 있음」 = 어느 항목에도 없음 · 그 항목 미적용 · 부서가 그 항목 허용. 기록표가 없거나 그 묶음 기록이 없으면 예전처럼 기본 key 행으로 판정.
+- 화면마다 뜻이 다른 이름으로 나가는 값 — 불량 현황 유형표(`/quality/defects/by-type`)의 `cnt`(불량 수량) · `ratio`(불량 비중)는 `DataFieldService.canReadAttr` 로 그 뜻의 항목 필드명(ngQty · sharePct)에 맞춰 가린다.
+- 알려진 한계 — 그 밖의 뜻이 다른 이름(rate · total · value · actual · segments 값 등)은 항목에 넣지 않았으므로, 그 묶음 항목 중 하나라도 볼 수 있으면 보인다. 같은 방법(canReadAttr)으로 자리마다 고치거나, 응답 키 이름을 바꾸거나, 범위 별칭(설계 5.1)을 넣어야 풀린다. 자리 목록은 2026-10-07 전수 조사(WEB 세션 기록) 기준.
+
+**API**
+- `PUT /api/v1/system/data-fields/item-perms` `{name, attrs[], perms{deptId: boolean}}` — 한 트랜잭션.
+  필드명들이 이미 「그 필드명만 가진 항목」 하나에 있으면 재사용, 아니면 새 항목(`i_<시각36진><난수>`, 적용 켬)을 만들고 옮긴다(새 항목의 부서 권한 = 필드명이 있던 곳을 모두 볼 수 있던 부서만 허용). 비게 된 항목은 지운다(기본 7종 · 참조 있음 제외). 그다음 perms 반영. 감사 `PERM_CHANGE` · `tb_sys_perm_log DATA_PERM`.
+- 시험: `./gradlew test` 556건 통과(DataFieldRuntimeTest blindKeysFor 기대값 · WritePermissionTest 목 갱신). 실측: WEB `tests/system/data-item-perm-live.cjs` — 전산팀에게 불량 수량만 숨기면 /auth/me 의 qty 는 남고, /dashboard/ai/summary 의 ngQty 만 null(okQty · todayQty 값 그대로), 되돌림.
+- 되돌리기: `rollback/V82__down.sql` (필드명을 원래 묶음으로 돌리고 V82 항목 · 기록표 삭제).

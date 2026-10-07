@@ -4,6 +4,7 @@ import com.dwje.api.common.response.ApiResponse
 import com.dwje.api.model.request.DataFieldApplyRequest
 import com.dwje.api.model.request.DataFieldAttrRequest
 import com.dwje.api.model.request.DataFieldMappingRequest
+import com.dwje.api.model.request.DataItemPermRequest
 import com.dwje.api.model.request.DataFieldSaveRequest
 import com.dwje.api.service.DataFieldService
 import io.swagger.v3.oas.annotations.Operation
@@ -21,7 +22,7 @@ import org.springframework.web.bind.annotation.RestController
 /**
  * 데이터 접근 항목 운영 컨트롤러 (SY-03, V33)
  *
- * 항목 목록 `GET /system/data-fields` 는 [SystemUserController] 에 그대로 있고(attrs · applyFlg · category 로 확장),
+ * 항목 목록 `GET /system/data-fields` 는 [SystemUserController] 에 그대로 있고(attrs · applyFlg 로 확장, 분류는 2026-10-07 에 없앰),
  * 여기는 등록·수정·삭제 · 응답 필드명 · 적용 스위치다.
  * 접근 : 화면 권한 `sys-data`(ax.tb_sys_dept_menu_perm) · 값 마스킹 : 없음
  */
@@ -38,6 +39,11 @@ class DataFieldController(
         summary = "화면 열 매핑 일괄 저장",
         description = "새 종류 만들기·열 옮기기·풀기·적용 켜기를 한 트랜잭션으로 저장한다. 하나라도 틀리면 아무것도 바뀌지 않는다(04 DTP-02)."
     )
+    /** 항목별 부서 열람 저장 (V82, 2026-10-07) — 필드명들을 항목 하나로 모으고 부서별 열람을 정한다 */
+    @PutMapping("/item-perms")
+    fun saveItemPerms(@Valid @RequestBody request: DataItemPermRequest): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(dataFieldService.saveItemPerms(request), "항목 권한을 저장했습니다.")
+
     @PutMapping("/mapping")
     fun saveMapping(@Valid @RequestBody request: DataFieldMappingRequest): ApiResponse<Map<String, Any?>> =
         ApiResponse.ok(

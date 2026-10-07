@@ -284,8 +284,6 @@ class AuthService(
             DataFieldInfo(
                 key = it["key"] as String,
                 name = it["name"] as String,
-                category = it["category"] as String?,
-                categoryNm = it["categoryNm"] as String?,
                 attrs = it["attrs"] as List<String>
             )
         }

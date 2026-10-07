@@ -242,7 +242,7 @@ class AiDataToolService(
     /** 엑셀 내보내기도 채팅 근거와 동일한 고정 SELECT·권한 판정을 사용한다. */
     fun defectTopForExport(from: LocalDate, to: LocalDate, limit: Int, principal: UserPrincipal): Pair<List<Map<String, Any?>>, Int> {
         require(limit in 1..10 && !from.isAfter(to) && ChronoUnit.DAYS.between(from, to) <= 92)
-        val mask = MaskingSupport(principal)
+        val mask = MaskingSupport(principal, strict = true)
         val rows = aiFactRepository.topDefects(appProperties.defaultPlantCd, AiBusinessPeriod(from, to), limit)
             .mapIndexed { index, row ->
                 mapOf<String, Any?>("rank" to index + 1, "from" to from.toString(), "to" to to.toString(),
@@ -300,7 +300,7 @@ class AiDataToolService(
                 throw InvalidParameterException("최대 31개 업무일만 조회할 수 있습니다.", "to")
             val limit = args["limit"]?.let { it as? Int ?: throw InvalidParameterException("표 행 수가 올바르지 않습니다.", "limit") } ?: 200
             if (limit !in 1..200) throw InvalidParameterException("표 행 수는 1~200이어야 합니다.", "limit")
-            if (!MaskingSupport(principal).allowed(DataField.QTY))
+            if (!MaskingSupport(principal, strict = true).allowed(DataField.QTY))
                 return mapOf("reason" to "불량 수량 열람 권한이 없습니다.", "executionCode" to "DENIED_FIELDS", "rows" to emptyList<Any>())
             val rows = aiFactRepository.dailyProductDefects(appProperties.defaultPlantCd, AiBusinessPeriod(from, to), limit)
             return mapOf("from" to from.toString(), "to" to to.toString(), "limit" to limit,
@@ -308,7 +308,7 @@ class AiDataToolService(
         }
         if (name == PRODUCTION_PRODUCT_LIST) {
             val period = AiBusinessPeriod(from, to)
-            val mask = MaskingSupport(principal)
+            val mask = MaskingSupport(principal, strict = true)
             val groupByDate = (args["groupByDate"] as? Boolean) == true
             if (groupByDate) {
                 val rows = aiFactRepository.producedProductsDaily(appProperties.defaultPlantCd, period)
@@ -326,7 +326,7 @@ class AiDataToolService(
             val limit = (args["limit"] as? Number)?.toInt()
                 ?: throw InvalidParameterException("순위는 1~20 사이여야 합니다.", "limit")
             if (limit !in 1..20) throw InvalidParameterException("순위는 1~20 사이여야 합니다.", "limit")
-            val mask = MaskingSupport(principal)
+            val mask = MaskingSupport(principal, strict = true)
             if (!mask.allowed(DataField.YIELD)) return mapOf("reason" to "불량률 항목의 열람 권한이 없습니다.", "rows" to emptyList<Any>())
             val rows = aiFactRepository.topDefectRates(appProperties.defaultPlantCd, AiBusinessPeriod(from, to), limit)
             return mapOf("from" to from.toString(), "to" to to.toString(), "limit" to limit,
@@ -339,7 +339,7 @@ class AiDataToolService(
             val limit = (args["limit"] as? Number)?.toInt()
                 ?: throw InvalidParameterException("순위는 1~10 사이여야 합니다.", "limit")
             if (limit !in 1..10) throw InvalidParameterException("순위는 1~10 사이여야 합니다.", "limit")
-            val mask = MaskingSupport(principal)
+            val mask = MaskingSupport(principal, strict = true)
             val rows = aiFactRepository.topDefects(appProperties.defaultPlantCd, AiBusinessPeriod(from, to), limit)
             return mapOf("from" to from.toString(), "to" to to.toString(), "limit" to limit,
                 "rows" to rows.mapIndexed { index, row -> mapOf("rank" to index + 1, "name" to row["name"],
@@ -349,7 +349,7 @@ class AiDataToolService(
         val cf = date("compareFrom", false)
         val ct = date("compareTo", false)
         val compare = if (cf != null && ct != null) Period(cf, ct, args["compareLabel"]?.toString() ?: "비교 기간") else null
-        return aggregate(main, compare, MaskingSupport(principal))
+        return aggregate(main, compare, MaskingSupport(principal, strict = true))
     }
 
     private fun aoiArguments(wcCd: String, eqptCd: String?, from: String?, to: String?): AiQuestionPlanner.Decision.AoiSummary {
@@ -485,7 +485,7 @@ class AiDataToolService(
                         null, projection.rows.size, null, (System.currentTimeMillis() - started).toInt(), projection.rows)
                 }
             } else if (dailyDefect != null) {
-                if (!MaskingSupport(principal).allowed(DataField.QTY)) {
+                if (!MaskingSupport(principal, strict = true).allowed(DataField.QTY)) {
                     val evidence = listOf(mapOf<String, Any?>("title" to "불량 수량 열람 제한",
                         "text" to "불량 수량 열람 권한이 없습니다.", "tool" to DAILY_PRODUCT_DEFECT,
                         "args" to emptyMap<String, Any>()))
@@ -511,7 +511,7 @@ class AiDataToolService(
                         (System.currentTimeMillis() - started).toInt(), rows)
                 }
             } else if (product != null) {
-                val mask = MaskingSupport(principal)
+                val mask = MaskingSupport(principal, strict = true)
                 if (product.groupByDate) {
                     val rows = aiFactRepository.producedProductsDaily(appProperties.defaultPlantCd, product.period)
                     val text = if (rows.isEmpty()) "${product.period.from}~${product.period.to} 교대 영업일에 등록된 생산 제품이 없습니다."
@@ -549,7 +549,7 @@ class AiDataToolService(
                         (System.currentTimeMillis() - started).toInt(), rows, isDaily = false)
                 }
             } else if (rate != null) {
-                val mask = MaskingSupport(principal)
+                val mask = MaskingSupport(principal, strict = true)
                 if (!mask.allowed(DataField.YIELD)) {
                     val evidence = listOf(mapOf<String, Any?>("title" to "불량률 열람 제한", "text" to "불량률 항목의 열람 권한이 없습니다.",
                         "tool" to "defect_rate_top", "args" to emptyMap<String, Any>()))
@@ -575,7 +575,7 @@ class AiDataToolService(
                         (System.currentTimeMillis() - started).toInt(), rows)
                 }
             } else if (decision is AiQuestionPlanner.Decision.DefectTop) {
-                val mask = MaskingSupport(principal)
+                val mask = MaskingSupport(principal, strict = true)
                 val rows = aiFactRepository.topDefects(appProperties.defaultPlantCd, decision.period, decision.limit)
                 val evidence = rows.mapIndexed { index, row ->
                     val qty = mask.on(DataField.QTY) { row["quantity"] as? BigDecimal }
@@ -603,7 +603,7 @@ class AiDataToolService(
                 val main = Period(decision.period.from, decision.period.to, "조회 기간")
                 val compare = decision.compare?.let { Period(it.from, it.to, "비교 기간") }
                 @Suppress("UNCHECKED_CAST")
-                val periods = aggregate(main, compare, MaskingSupport(principal))["periods"] as List<Map<String, Any?>>
+                val periods = aggregate(main, compare, MaskingSupport(principal, strict = true))["periods"] as List<Map<String, Any?>>
                 val totals = periods.map { it["total"] as? ProcessPeriodRow }
                 val rateDeltaPt = totals.getOrNull(0)?.defectRate?.let { current ->
                     totals.getOrNull(1)?.defectRate?.let { previous -> current - previous }
@@ -666,7 +666,7 @@ class AiDataToolService(
             LocalDate.parse(commonMasterService.getProductionDateRange(null, null)["toDate"].toString())
         }.getOrNull() ?: return emptyList()
         AiQuestionParser.defectTop(question, last)?.let { top ->
-            val mask = MaskingSupport(principal)
+            val mask = MaskingSupport(principal, strict = true)
             return aiFactRepository.topDefects(appProperties.defaultPlantCd, top.period, top.limit)
                 .mapIndexed { index, row ->
                     val qty = mask.on(DataField.QTY) { row["quantity"] as? BigDecimal }
@@ -677,7 +677,7 @@ class AiDataToolService(
                 }
         }
         val (main, compare) = resolvePeriods(question, last) ?: return emptyList()
-        val mask = MaskingSupport(principal)
+        val mask = MaskingSupport(principal, strict = true)
         val result = aggregate(main, compare, mask)
         val args = buildMap<String, Any?> {
             put("from", main.from.toString()); put("to", main.to.toString()); put("label", main.label)

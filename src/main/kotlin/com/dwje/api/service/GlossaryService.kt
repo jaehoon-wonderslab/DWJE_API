@@ -69,7 +69,7 @@ class GlossaryService(
 
     private fun hiddenKeysOf(principal: com.dwje.api.common.security.UserPrincipal): HiddenKeys {
         if (principal.superAdmin) return HiddenKeys(emptySet())
-        return HiddenKeys(glossaryRepository.findTermFieldKeys().filterNot { principal.canReadField(it) }.toSet())
+        return HiddenKeys(glossaryRepository.findTermFieldKeys().filterNot { principal.canReadFieldStrict(it) }.toSet())
     }
 
     /**

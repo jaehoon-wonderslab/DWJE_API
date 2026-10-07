@@ -43,7 +43,8 @@ class ExportService {
         if (principal.superAdmin) return BlindCells()
         val catalog = (dataFieldService?.attrFieldMap() ?: emptyMap()) + extra
         val names = dataFieldService?.appliedFieldsCached()?.associate { it["key"] as String to (it["name"] as String? ?: "") }.orEmpty()
-        return BlindCells(com.dwje.api.common.response.DataFieldMaskingAdvice.blindAttrs(catalog) { principal.canReadField(it) }, names)
+        // 기본 7종 key(파일 전용 extra 대응 등)는 엄격한 판정 — 그 묶음 항목을 모두 볼 수 있을 때만(V82)
+        return BlindCells(com.dwje.api.common.response.DataFieldMaskingAdvice.blindAttrs(catalog) { com.dwje.api.common.response.DataFieldMaskingAdvice.readableForMasking(principal, it) }, names)
     }
 
     companion object {

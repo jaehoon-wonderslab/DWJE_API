@@ -7,10 +7,11 @@ import com.dwje.api.common.exception.ResourceNotFoundException
 import com.dwje.api.common.security.UserPrincipal
 import com.dwje.api.common.util.DataField
 import com.dwje.api.common.util.MenuId
-import com.dwje.api.common.validation.CodeValidator
 import com.dwje.api.model.request.DataFieldAttrRequest
 import com.dwje.api.model.request.DataFieldSaveRequest
+import com.dwje.api.model.request.DataItemPermRequest
 import com.dwje.api.repository.DataFieldRepository
+import com.dwje.api.repository.SystemUserRepository
 import org.springframework.dao.DuplicateKeyException
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -34,7 +35,8 @@ class DataFieldService(
     private val dataFieldRepository: DataFieldRepository,
     private val authorizationService: AuthorizationService,
     private val auditLogService: AuditLogService,
-    private val codeValidator: CodeValidator
+    private val systemUserRepository: SystemUserRepository,
+    private val systemDeptGuard: SystemDeptGuard
 ) {
 
     companion object {
@@ -95,12 +97,12 @@ class DataFieldService(
         }
         // `mapping` 은 일괄 저장 경로(PUT /data-fields/mapping)와 겹쳐 그 항목을 고칠 수 없게 되므로 쓰지 않는다
         if (key == "mapping") throw InvalidParameterException("mapping 은 항목 key 로 쓸 수 없습니다.", "fieldKey")
-        val (name, desc, category) = validateFieldBody(request)
+        val (name, desc) = validateFieldBody(request)
         if (dataFieldRepository.findField(key) != null) {
             throw BusinessRuleException("이미 등록된 항목 key 입니다. [$key]")
         }
 
-        dataFieldRepository.insertField(key, name, desc, category, dataFieldRepository.nextSortSeq(), principal.userId)
+        dataFieldRepository.insertField(key, name, desc, dataFieldRepository.nextSortSeq(), principal.userId)
         audit(key, "데이터 항목 등록 [$key / $name] (미적용)", "데이터 항목 등록 [$key]")
         return requireField(key)
     }
@@ -109,16 +111,15 @@ class DataFieldService(
     fun update(fieldKey: String, request: DataFieldSaveRequest): Map<String, Any?> {
         val principal = authorizationService.requireWrite(MenuId.SYS_DATA)
         val before = requireField(fieldKey)
-        val (name, desc, category) = validateFieldBody(request)
+        val (name, desc) = validateFieldBody(request)
 
         // 바뀐 칸만 기록하고, 바뀐 것이 없으면 저장·기록하지 않는다 (04 DTP-11). 설명 원문은 길어 넣지 않는다
         val changes = buildList {
             if (before["name"] != name) add("이름 ${before["name"]} → $name")
             if ((before["desc"] as String?) != desc) add("설명 변경")
-            if ((before["category"] as String?) != category) add("분류 ${before["category"] ?: "없음"} → ${category ?: "없음"}")
         }
         if (changes.isEmpty()) return before + ("changed" to false)
-        dataFieldRepository.updateField(fieldKey, name, desc, category, principal.userId)
+        dataFieldRepository.updateField(fieldKey, name, desc, principal.userId)
         audit(fieldKey, "데이터 항목 수정 [$fieldKey / $name] ${changes.joinToString(", ")}", "데이터 항목 수정 [$fieldKey]")
         invalidate()
         return requireField(fieldKey) + ("changed" to true)
@@ -229,7 +230,7 @@ class DataFieldService(
             if (!FIELD_KEY_PATTERN.matches(key)) {
                 throw InvalidParameterException("항목 key 는 소문자로 시작하는 소문자·숫자·'_'·'-' 2~30자여야 합니다. [$key]", "fieldKey")
             }
-            validateFieldBody(DataFieldSaveRequest(key, nf.name, nf.desc, nf.category))
+            validateFieldBody(DataFieldSaveRequest(key, nf.name, nf.desc))
             if (dataFieldRepository.findField(key) != null) throw BusinessRuleException("이미 등록된 항목 key 입니다. [$key]")
             key
         }
@@ -245,8 +246,8 @@ class DataFieldService(
         // ---- 저장 ----
         newFields.forEach { nf ->
             val key = nf.fieldKey!!.trim()
-            val (name, desc, category) = validateFieldBody(DataFieldSaveRequest(key, nf.name, nf.desc, nf.category))
-            dataFieldRepository.insertField(key, name, desc, category, dataFieldRepository.nextSortSeq(), principal.userId)
+            val (name, desc) = validateFieldBody(DataFieldSaveRequest(key, nf.name, nf.desc))
+            dataFieldRepository.insertField(key, name, desc, dataFieldRepository.nextSortSeq(), principal.userId)
             if (nf.grantAllDepts) dataFieldRepository.grantFieldToDepts(key, unassignedDeptName, principal.userId)
         }
         val moved = mutableListOf<Map<String, Any?>>()
@@ -290,6 +291,102 @@ class DataFieldService(
             "created" to newKeys, "moved" to moved, "released" to released,
             "applied" to applied, "notApplied" to notApplied
         )
+    }
+
+    // =================================================================================
+    // 항목별 부서 열람 (V82, 2026-10-07)
+    // =================================================================================
+
+    /**
+     * 항목(같은 뜻의 응답 필드명 묶음) 하나의 부서별 열람을 저장한다 — 한 트랜잭션.
+     *
+     * 1. 필드명들이 이미 「이 필드명들만 가진 항목」 하나에 있으면 그 항목을 쓴다.
+     *    아니면 새 항목(key `i_…`, 이름 = name, 적용 켬)을 만들고 필드명을 옮긴다. 새 항목의 부서 권한은
+     *    「필드명이 있던 곳을 모두 볼 수 있던 부서」 만 허용으로 시작한다(어느 항목에도 없던 필드명은 모두에게 보였으므로 허용) —
+     *    옮기는 것만으로 누가 무엇을 보는지가 바뀌지 않게 한다.
+     * 2. 필드명이 빠져 비게 된 항목은 지운다 — 기본 7종(서버 코드가 key 를 직접 씀)과 참조가 있는 항목은 남긴다.
+     * 3. 요청의 부서별 허용 여부를 넣는다.
+     */
+    @Transactional
+    fun saveItemPerms(request: DataItemPermRequest): Map<String, Any?> {
+        val principal = authorizationService.requireWrite(MenuId.SYS_DATA)
+        val name = request.name?.trim().orEmpty()
+        if (name.isEmpty()) throw InvalidParameterException("항목 이름을 입력해 주세요.", "name")
+        if (name.length > 50) throw InvalidParameterException("항목 이름은 50자 이내여야 합니다.", "name")
+        val attrs = request.attrs.orEmpty().map { it.trim() }.distinct()
+        if (attrs.isEmpty()) throw InvalidParameterException("응답 필드명이 없습니다.", "attrs")
+        if (attrs.size > MAPPING_MAX) throw InvalidParameterException("한 항목에 ${MAPPING_MAX}개 필드명까지 넣을 수 있습니다.", "attrs")
+        attrs.forEach {
+            if (!ATTR_NAME_PATTERN.matches(it)) {
+                throw InvalidParameterException("응답 필드명은 영문자·'_'·'$' 로 시작하는 JSON 키 꼴 60자 이내여야 합니다. [$it]", "attrs")
+            }
+            assertNotReserved(it)
+        }
+        val depts = systemUserRepository.findDepts().associateBy { (it["deptId"] as Number).toInt() }
+        val perms = request.perms.orEmpty().map { (k, v) ->
+            val id = k.toIntOrNull() ?: throw InvalidParameterException("부서 ID 가 올바르지 않습니다. [$k]", "perms")
+            val dept = depts[id] ?: throw ResourceNotFoundException("부서를 찾을 수 없습니다. [$k]")
+            systemDeptGuard.assertNotSystemDeptDataPerm(dept)
+            id to v
+        }
+        val editable = depts.filterValues { systemDeptGuard.systemRoleOf(it) == null }.keys
+
+        // ---- 1. 대상 항목 ----
+        val owners: Map<String, String?> = attrs.associateWith { dataFieldRepository.findAttrOwner(it)?.get("fieldKey") as String? }
+        val ownerKeys = owners.values.filterNotNull().toSet()
+        val single = ownerKeys.singleOrNull()
+        val reuse = single != null && owners.values.none { it == null } && single !in DataField.ALL &&
+            dataFieldRepository.findFieldAttrs(single).toSet() == attrs.toSet()
+        val target: String
+        var created = false
+        if (reuse) {
+            target = single!!
+        } else {
+            target = newItemKey()
+            dataFieldRepository.insertField(target, name, null, dataFieldRepository.nextSortSeq(), principal.userId)
+            dataFieldRepository.updateApplyFlg(target, true, principal.userId)
+            // 옮기기 전 상태 그대로 — 필드명이 있던 항목을 모두 볼 수 있던 부서만 허용
+            val ownerFields = ownerKeys.associateWith { dataFieldRepository.findField(it) }
+            editable.forEach { deptId ->
+                val allowed = ownerKeys.all { k ->
+                    ownerFields[k]?.get("applyFlg") != "Y" || systemUserRepository.isDataPermAllowed(deptId, k)
+                }
+                systemUserRepository.upsertDataPerm(deptId, target, allowed, principal.userId)
+            }
+            attrs.forEach { dataFieldRepository.moveAttr(it, target, "항목 · $name".take(200), principal.userId) }
+            created = true
+        }
+
+        // ---- 2. 비게 된 항목 지우기 ----
+        val removed = mutableListOf<String>()
+        if (created) {
+            ownerKeys.filter { it !in DataField.ALL && dataFieldRepository.findFieldAttrs(it).isEmpty() }.forEach { k ->
+                val refs = dataFieldRepository.countReferences(k)
+                val referenced = listOf("alertCond", "metricStd", "reportFormField", "docTag").any { (refs[it] ?: 0L) > 0L }
+                if (!referenced) { dataFieldRepository.deleteField(k); removed += k }
+            }
+        }
+
+        // ---- 3. 부서별 열람 ----
+        perms.forEach { (deptId, allowed) -> systemUserRepository.upsertDataPerm(deptId, target, allowed, principal.userId) }
+
+        val detail = ("항목 [$target / $name] 필드명 ${attrs.joinToString(",")}" +
+            (if (created) " · 새 항목" else "") + (if (removed.isNotEmpty()) " · 빈 항목 삭제 ${removed.joinToString(",")}" else "") +
+            (if (perms.isNotEmpty()) " · 부서 " + perms.joinToString(", ") { (d, a) -> "${depts[d]?.get("deptNm")}=${if (a) "열람" else "비공개"}" } else "")).take(480)
+        val permAuditId = auditLogService.record(logType = AuditType.PERM_CHANGE, menuId = MenuId.SYS_DATA, fieldKey = target,
+            targetDesc = "항목별 데이터 권한 [$name]", remark = detail)
+        auditLogService.recordPermChange(actCd = "DATA_PERM", targetKindCd = TARGET_KIND, targetNm = target, detail = detail, auditId = permAuditId)
+        invalidate()
+        return mapOf("fieldKey" to target, "created" to created, "removed" to removed, "attrs" to attrs)
+    }
+
+    /** 새 항목 key — `i_` + 시각(36진) + 2자리 난수, 30자 이내 · FIELD_KEY_PATTERN */
+    private fun newItemKey(): String {
+        repeat(5) {
+            val key = "i_${java.lang.Long.toString(System.currentTimeMillis(), 36)}${(10..99).random()}"
+            if (dataFieldRepository.findField(key) == null) return key
+        }
+        throw BusinessRuleException("항목 key 를 만들지 못했습니다. 잠시 뒤 다시 시도해 주세요.")
     }
 
     // =================================================================================
@@ -340,7 +437,20 @@ class DataFieldService(
      */
     fun blindAttrNames(principal: UserPrincipal): Set<String> =
         if (principal.superAdmin) emptySet()
-        else attrFieldMap().filterValues { !principal.canReadField(it) }.keys
+        else attrFieldMap().filterValues { !com.dwje.api.common.response.DataFieldMaskingAdvice.readableForMasking(principal, it) }.keys
+
+    /**
+     * 응답 필드명 하나를 볼 수 있는지(V82) — 코드가 화면마다 뜻이 다른 이름(cnt · ratio …)으로 값을 낼 때,
+     * 그 값의 「뜻」에 해당하는 항목 필드명(예: 불량 수량 = ngQty)으로 판정한다. 그 필드명이 항목 표에 없으면
+     * 기본 묶음 key 의 엄격한 판정으로 돌아간다(묶음 항목을 모두 볼 수 있을 때만).
+     */
+    fun canReadAttr(principal: UserPrincipal, attrName: String, fallbackGroup: String): Boolean {
+        if (principal.superAdmin) return true
+        // 항목 권한을 모르는 principal(시험 · 옛 경로에서 기본 7종 key 만 넣어 만든 것 — dataPermsStrict 가 null)은 묶음으로 판정한다
+        if (principal.dataPermsStrict == null) return principal.canReadField(fallbackGroup)
+        val key = attrFieldMap()[attrName] ?: return principal.canReadFieldStrict(fallbackGroup)
+        return com.dwje.api.common.response.DataFieldMaskingAdvice.readableForMasking(principal, key)
+    }
 
     /** 응답 필드명이 속한 항목 key — 등록되지 않았거나 항목이 미적용이면 null */
     fun fieldOf(attrName: String): String? = attrFieldMap()[attrName]
@@ -354,7 +464,9 @@ class DataFieldService(
     /** 이 사용자가 열람할 수 없는 적용 중 항목 key — RAG 문서 제외 · 답변 문장 차단 판정용 */
     fun blindKeysFor(principal: UserPrincipal): Set<String> {
         if (principal.superAdmin) return emptySet()
-        return attrFieldMap().values.toSet().filterNot { principal.canReadField(it) }.toSet()
+        // 문서 태그(vec.tb_doc_data_field)는 기본 7종 key 를 쓴다 — V82 뒤 그 key 에는 필드명이 없으므로 엄격한 판정으로 더한다
+        return (attrFieldMap().values.toSet().filterNot { com.dwje.api.common.response.DataFieldMaskingAdvice.readableForMasking(principal, it) } +
+            DataField.ALL.filterNot { principal.canReadFieldStrict(it) }).toSet()
     }
 
     /**
@@ -373,7 +485,7 @@ class DataFieldService(
         var masked = 0
         columns.forEachIndexed { i, col ->
             val key = blindColumns.getOrNull(i) ?: return@forEachIndexed
-            if (principal.canReadField(key)) return@forEachIndexed
+            if (com.dwje.api.common.response.DataFieldMaskingAdvice.readableForMasking(principal, key)) return@forEachIndexed
             rows.forEach { row ->
                 val v = row[col] ?: return@forEach
                 maskedValues?.add(v.toString())
@@ -437,7 +549,7 @@ class DataFieldService(
         val (title, c2) = maskText(hit["title"] as? String, principal); hit["title"] = title; cnt += c2
         val (heading, c3) = maskText(hit["heading"] as? String, principal); hit["heading"] = heading; cnt += c3
         // 고객사 권한이 없으면 제목·소제목·발췌의 고객사 이름을 가린다 — 「[Cowell] …」 처럼 제목에 그대로 나왔다 (2026-10-03)
-        if (!principal.canReadField(com.dwje.api.common.util.DataField.CUSTOMER)) {
+        if (!principal.canReadFieldStrict(com.dwje.api.common.util.DataField.CUSTOMER)) {
             listOf("title", "heading", "snippet").forEach { key ->
                 val (out, c) = maskCustomerNames(hit[key] as? String)
                 if (c > 0) { hit[key] = out; cnt += c }
@@ -480,7 +592,7 @@ class DataFieldService(
     /** 이 사용자가 열람할 수 없는 적용 중 항목의 키워드 — 항목명 전체 · `·`/`,`/`()` 조각(2자 이상) · 응답 필드명. 공백으로는 나누지 않는다. 긴 것부터 */
     internal fun keywordsOfBlindFields(principal: UserPrincipal): List<String> {
         if (principal.superAdmin) return emptyList()
-        return appliedFieldsCached().filterNot { principal.canReadField(it["key"] as String) }.flatMap { f ->
+        return appliedFieldsCached().filterNot { com.dwje.api.common.response.DataFieldMaskingAdvice.readableForMasking(principal, it["key"] as String) }.flatMap { f ->
             val name = (f["name"] as? String).orEmpty().trim()
             @Suppress("UNCHECKED_CAST")
             val attrs = (f["attrs"] as? List<String>).orEmpty()
@@ -507,15 +619,14 @@ class DataFieldService(
     // 내부
     // ---------------------------------------------------------------------------------
 
-    private fun validateFieldBody(request: DataFieldSaveRequest): Triple<String, String?, String?> {
+    /** 항목명 50자 · 설명 300자. 분류(category)는 2026-10-07 에 없앴다 — 요청에 와도 검사·저장하지 않는다 */
+    private fun validateFieldBody(request: DataFieldSaveRequest): Pair<String, String?> {
         val name = request.name?.trim().orEmpty()
         if (name.isBlank()) throw InvalidParameterException("항목명을 입력해 주세요.", "name")
         if (name.length > 50) throw InvalidParameterException("항목명은 50자 이내여야 합니다.", "name")
         val desc = request.desc?.trim()?.takeIf { it.isNotBlank() }
         if (desc != null && desc.length > 300) throw InvalidParameterException("설명은 300자 이내여야 합니다.", "desc")
-        val category = request.category?.trim()?.takeIf { it.isNotBlank() }
-        codeValidator.require(DataFieldRepository.CATEGORY_GROUP, category, "category", "항목 분류")
-        return Triple(name, desc, category)
+        return name to desc
     }
 
     /** 예약어 필드명은 가릴 수 없다 (409, 04 DTP-01) */

@@ -89,13 +89,13 @@ class MiscP2DbTest {
     fun dataFieldAndAlertCnt() {
         clearInvocations(audit)
         val same = dataFields.update("qty", DataFieldSaveRequest(name = "생산·출하 수량", desc = jdbc.queryForObject(
-            "SELECT field_desc FROM ax.tb_sys_data_field WHERE field_key = 'qty'", MapSqlParameterSource(), String::class.java), category = "QTY"))
+            "SELECT field_desc FROM ax.tb_sys_data_field WHERE field_key = 'qty'", MapSqlParameterSource(), String::class.java), category = "COST"))
         assertEquals(false, same["changed"])
         assertEquals(0, mockingDetails(audit).invocations.size)
-        val changed = dataFields.update("qty", DataFieldSaveRequest(name = "ZT 수량", desc = null, category = "COST"))
+        val changed = dataFields.update("qty", DataFieldSaveRequest(name = "ZT 수량", desc = null, category = "QTY"))
         assertEquals(true, changed["changed"])
         val remark = mockingDetails(audit).invocations.first { it.method.name == "recordPermChange" }.arguments
-        assertTrue(remark.any { it is String && it.contains("이름 생산·출하 수량 → ZT 수량") && it.contains("분류 QTY → COST") && it.contains("설명 변경") }, remark.toList().toString())
+        assertTrue(remark.any { it is String && it.contains("이름 생산·출하 수량 → ZT 수량") && !it.contains("분류") && it.contains("설명 변경") }, remark.toList().toString())
 
         val (rows, _, _) = alerts.getConditions(null, null, null, 1, 0)
         val r6 = rows.single { it["condId"] == 6 }

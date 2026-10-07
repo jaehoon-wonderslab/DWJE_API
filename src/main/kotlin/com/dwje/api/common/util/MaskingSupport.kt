@@ -21,8 +21,14 @@ import com.dwje.api.common.security.UserPrincipal
  * ```
  *
  * @param principal 인증 사용자 (권한 판정 주체)
+ * @param strict    엄격한 판정(V82) — 기본 7종 key 를 그 묶음에서 온 항목을 **모두** 볼 수 있을 때만 통과시킨다.
+ *                  AI 프롬프트 · 메일 · 문장처럼 응답 키 단위로 다시 가릴 수 없는 출력에 쓴다.
+ *                  기본값(느슨한 판정)은 JSON 응답용이다 — 실제로 어느 키를 가릴지는 공통 마스킹이 항목 권한으로 정한다.
  */
-class MaskingSupport(private val principal: UserPrincipal?) {
+class MaskingSupport(private val principal: UserPrincipal?, private val strict: Boolean = false) {
+
+    private fun can(fieldKey: String): Boolean =
+        principal != null && (if (strict) principal.canReadFieldStrict(fieldKey) else principal.canReadField(fieldKey))
 
     /** 이번 응답에서 실제로 마스킹된 항목 key 집합 */
     private val masked = linkedSetOf<String>()
@@ -36,7 +42,7 @@ class MaskingSupport(private val principal: UserPrincipal?) {
      */
     fun <T> on(fieldKey: String, supplier: () -> T?): T? {
         // 1. 권한이 없으면 원본을 평가하지 않고 즉시 null 반환 — 값이 메모리에 실리지 않게 한다.
-        if (principal == null || !principal.canReadField(fieldKey)) {
+        if (!can(fieldKey)) {
             masked.add(fieldKey)
             return null
         }
@@ -46,7 +52,7 @@ class MaskingSupport(private val principal: UserPrincipal?) {
     /**
      * 권한 보유 여부만 판정한다. (조건부 SQL 컬럼 선택 등에 사용)
      */
-    fun allowed(fieldKey: String): Boolean = principal?.canReadField(fieldKey) ?: false
+    fun allowed(fieldKey: String): Boolean = can(fieldKey)
 
     /**
      * 권한이 없으면 마스킹 목록에 기록만 하고 판정 결과를 돌려준다.

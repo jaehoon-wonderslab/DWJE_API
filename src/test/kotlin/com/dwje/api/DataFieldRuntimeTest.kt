@@ -5,7 +5,6 @@ import com.dwje.api.common.exception.InvalidParameterException
 import com.dwje.api.common.exception.ResourceNotFoundException
 import com.dwje.api.common.security.UserPrincipal
 import com.dwje.api.common.util.MenuId
-import com.dwje.api.common.validation.CodeValidator
 import com.dwje.api.model.request.DataFieldAttrRequest
 import com.dwje.api.model.request.DataFieldSaveRequest
 import com.dwje.api.repository.AuditLogRepository
@@ -42,23 +41,23 @@ class DataFieldRuntimeTest {
         var refs = mutableMapOf<String, Long>()
 
         fun seed(key: String, name: String, apply: String, vararg attr: String) {
-            fields[key] = mutableMapOf("key" to key, "name" to name, "desc" to null, "category" to null, "categoryNm" to null,
+            fields[key] = mutableMapOf("key" to key, "name" to name, "desc" to null,
                 "applyFlg" to apply, "useFlg" to "Y", "sortSeq" to fields.size + 1)
             attr.forEach { attrs[it] = key }
         }
         override fun findField(fieldKey: String) = fields[fieldKey]?.toMap()
         override fun findActiveKeys() = fields.keys.toList()
         override fun findAppliedFields() = fields.values.filter { it["applyFlg"] == "Y" }.map { f ->
-            mapOf("key" to f["key"], "name" to f["name"], "category" to f["category"], "categoryNm" to f["categoryNm"],
+            mapOf("key" to f["key"], "name" to f["name"],
                 "attrs" to findFieldAttrs(f["key"] as String))
         }
         override fun findAppliedAttrMap() = attrs.filter { fields[it.value]?.get("applyFlg") == "Y" }
         override fun nextSortSeq() = fields.size + 1
-        override fun insertField(fieldKey: String, name: String, desc: String?, category: String?, sortSeq: Int, actor: String): Int {
-            seed(fieldKey, name, "N"); fields[fieldKey]!!["desc"] = desc; fields[fieldKey]!!["category"] = category; return 1
+        override fun insertField(fieldKey: String, name: String, desc: String?, sortSeq: Int, actor: String): Int {
+            seed(fieldKey, name, "N"); fields[fieldKey]!!["desc"] = desc; return 1
         }
-        override fun updateField(fieldKey: String, name: String, desc: String?, category: String?, actor: String): Int {
-            fields[fieldKey]!!.putAll(mapOf("name" to name, "desc" to desc, "category" to category)); return 1
+        override fun updateField(fieldKey: String, name: String, desc: String?, actor: String): Int {
+            fields[fieldKey]!!.putAll(mapOf("name" to name, "desc" to desc)); return 1
         }
         override fun deleteField(fieldKey: String): Int { fields.remove(fieldKey); attrs.entries.removeIf { it.value == fieldKey }; return 1 }
         override fun updateApplyFlg(fieldKey: String, on: Boolean, actor: String): Int { fields[fieldKey]!!["applyFlg"] = if (on) "Y" else "N"; return 1 }
@@ -101,13 +100,15 @@ class DataFieldRuntimeTest {
         `when`(it.requireMenu(MenuId.SYS_DATA)).thenReturn(admin)
         `when`(it.requireWrite(MenuId.SYS_DATA)).thenReturn(admin)
     }
-    private val service = DataFieldService(repo, auth, audit, mock(CodeValidator::class.java))
+    private val service = DataFieldService(repo, auth, audit, mock(com.dwje.api.repository.SystemUserRepository::class.java), com.dwje.api.service.SystemDeptGuard())
 
     @Test
     @DisplayName("등록 — 미적용(N)으로 시작하고, key 형식·이름은 400(field), 같은 key 는 409")
     fun create() {
-        val created = service.create(DataFieldSaveRequest(fieldKey = "lead_time", name = "리드타임", desc = " ", category = "PLAN"))
-        assertEquals("N", created["applyFlg"]); assertEquals("PLAN", created["category"]); assertNull(created["desc"], "공백 설명은 null")
+        // 분류(category)는 2026-10-07 에 없앴다 — 옛 화면처럼 보내도(없는 코드여도) 400 없이 버리고 응답에도 없다
+        val created = service.create(DataFieldSaveRequest(fieldKey = "lead_time", name = "리드타임", desc = " ", category = "NO_SUCH"))
+        assertEquals("N", created["applyFlg"]); assertNull(created["desc"], "공백 설명은 null")
+        assertFalse(created.containsKey("category")); assertFalse(created.containsKey("categoryNm"))
         assertEquals("fieldKey", assertThrows(InvalidParameterException::class.java) { service.create(DataFieldSaveRequest("LeadTime", "x")) }.field)
         assertEquals("fieldKey", assertThrows(InvalidParameterException::class.java) { service.create(DataFieldSaveRequest("a", "x")) }.field, "2자 미만")
         assertEquals("name", assertThrows(InvalidParameterException::class.java) { service.create(DataFieldSaveRequest("okkey", "  ")) }.field)
@@ -131,7 +132,7 @@ class DataFieldRuntimeTest {
             override fun findAttrOwner(attrName: String) = if (attrName == "amount") null else repo.findAttrOwner(attrName)
             override fun insertAttr(fieldKey: String, attrName: String, remark: String?, actor: String) = repo.insertAttr(fieldKey, attrName, remark, actor)
         }
-        val r = assertThrows(BusinessRuleException::class.java) { DataFieldService(racy, auth, audit, mock(CodeValidator::class.java)).addAttr("qty", DataFieldAttrRequest("amount")) }
+        val r = assertThrows(BusinessRuleException::class.java) { DataFieldService(racy, auth, audit, mock(com.dwje.api.repository.SystemUserRepository::class.java), com.dwje.api.service.SystemDeptGuard()).addAttr("qty", DataFieldAttrRequest("amount")) }
         assertTrue(r.message!!.contains("등록된 필드명입니다"), r.message)
 
         assertEquals("attrName", assertThrows(InvalidParameterException::class.java) { service.addAttr("qty", DataFieldAttrRequest("bad-name")) }.field)
@@ -180,7 +181,8 @@ class DataFieldRuntimeTest {
         val masked = service.maskRows(rows, columns, service.blindColumnsFor(columns), principal(setOf("qty")))
         assertEquals(1, masked, "null 이던 칸은 세지 않는다")
         assertEquals(10, rows[0]["okQty"]); assertNull(rows[0]["unitPrice"]); assertEquals(0.3, rows[0]["mixRatio"], "미적용 항목은 가리지 않는다")
-        assertEquals(setOf("price", "lot"), service.blindKeysFor(principal(setOf("qty"))), "적용 중 항목 중 못 보는 것 전부")
+        // V82 — 문서 태그가 쓰는 기본 7종 key 도 엄격한 판정으로 더한다(못 보는 yield · price · customer · plan · mold · worker)
+        assertEquals(setOf("price", "lot", "yield", "customer", "plan", "mold", "worker"), service.blindKeysFor(principal(setOf("qty"))), "적용 중 항목 중 못 보는 것 + 못 보는 기본 묶음")
         assertTrue(service.blindKeysFor(admin).isEmpty())
     }
 

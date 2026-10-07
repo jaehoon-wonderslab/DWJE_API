@@ -55,7 +55,7 @@ class AiChatService(
     companion object {
         /** 치환 내역 중 열람자가 볼 수 있는 분류의 것만 — 분류 데이터 항목(fieldKey)은 응답에 싣지 않는다 (R-18) */
         fun visibleReplacements(replacements: List<Map<String, Any?>>, principal: UserPrincipal): List<Map<String, Any?>> =
-            replacements.filter { r -> (r["fieldKey"] as String?)?.let { principal.canReadField(it) } ?: true }.map { it - "fieldKey" }
+            replacements.filter { r -> (r["fieldKey"] as String?)?.let { principal.canReadFieldStrict(it) } ?: true }.map { it - "fieldKey" }
 
         /** 의도 = 원문 판정, unknown 이면 정규화 문장 판정 (07 GLS-04) */
         fun intentOf(question: String, normalizedText: String): String =
@@ -467,7 +467,8 @@ class AiChatService(
         principal: UserPrincipal
     ): List<MutableMap<String, Any?>> {
         val blocks = mutableListOf<MutableMap<String, Any?>>()
-        val mask = MaskingSupport(principal)
+        // 표 블록 칸 문자열 · 문장 — 응답 키가 없어 엄격한 판정(V82)
+        val mask = MaskingSupport(principal, strict = true)
 
         if (toolResult.executionCode == "OK" && toolResult.rawRows.isNotEmpty()) {
             if (toolResult.route == "PRODUCTION_COMPARE") {

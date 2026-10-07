@@ -68,7 +68,7 @@ class DataFieldMaskingAdvice(
         val principal = UserContext.currentOrNull() ?: return body
         if (principal.superAdmin) return body
 
-        val blind = blindAttrs(dataFieldService.attrFieldMap()) { principal.canReadField(it) }
+        val blind = blindAttrs(dataFieldService.attrFieldMap()) { readableForMasking(principal, it) }
         if (blind.isEmpty()) return body
 
         val tree: JsonNode = objectMapper.valueToTree(body.data)
@@ -90,6 +90,13 @@ class DataFieldMaskingAdvice(
             "/api/v1/auth/", "/api/v1/system/menu-perms", "/api/v1/system/data-perms", "/api/v1/system/data-fields",
             "/api/v1/system/users", "/api/v1/system/depts", "/api/v1/system/perm-logs"
         )
+
+        /**
+         * 필드명 단위로 가릴 때의 열람 판정(V82) — 항목 key 는 그 항목 권한, 필드명이 아직 기본 7종 key 에 직접 붙어 있으면
+         * 엄격한 판정(그 묶음 항목을 모두 볼 수 있을 때만). 느슨한 판정을 쓰면 같은 묶음의 다른 항목을 볼 수 있다는 이유로 새어 나간다.
+         */
+        fun readableForMasking(principal: com.dwje.api.common.security.UserPrincipal, fieldKey: String): Boolean =
+            if (fieldKey in com.dwje.api.common.util.DataField.ALL) principal.canReadFieldStrict(fieldKey) else principal.canReadField(fieldKey)
 
         /** 「응답 필드명 → 항목 key」 중 조회자가 열람할 수 없는 것만 */
         fun blindAttrs(attrFieldMap: Map<String, String>, canRead: (String) -> Boolean): Map<String, String> {

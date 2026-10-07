@@ -14,7 +14,8 @@ package com.dwje.api.common.security
  * @param plantCd      사업장 코드
  * @param superAdmin   통합관리자 여부 (ax.tb_sys_dept.is_super_admin)
  * @param menuPerms    접근 가능한 메뉴 ID 집합
- * @param dataPerms    허용된 데이터 항목 key 집합 (qty/yield/price/customer/plan/mold/worker)
+ * @param dataPerms    허용된 데이터 항목 key 집합. 기본 7종(qty/yield/…)은 「느슨한」 판정 — 그 묶음에서 온 항목 중 하나라도 볼 수 있으면 들어 있다(V82)
+ * @param dataPermsStrict 엄격한 판정 — 기본 7종은 그 묶음에서 온 항목을 모두 볼 수 있을 때만 들어 있다. 문장 · 프롬프트 출력용(V82)
  * @param impersonated 계정 전환(대행 로그인) 여부
  * @param pwdChangeRequired 초기 비밀번호 변경 전 여부 (`pwd_change_req_yn='Y'`, R-04) — true 면 허용 목록 밖 API 를 막는다
  * @param unassigned   미배정 부서 소속 여부 — 화면 권한을 고정 5개로 자르고 데이터 권한을 비운다 (R-01·R-11)
@@ -30,6 +31,8 @@ data class UserPrincipal(
     val superAdmin: Boolean,
     val menuPerms: Set<String> = emptySet(),
     val dataPerms: Set<String> = emptySet(),
+    /** null 이면 [dataPerms] 와 같다 — copy(dataPerms = …) 로 만든 시험용 · 대행 principal 도 두 판정이 어긋나지 않게 */
+    val dataPermsStrict: Set<String>? = null,
     val impersonated: Boolean = false,
     val pwdChangeRequired: Boolean = false,
     val unassigned: Boolean = false,
@@ -44,6 +47,12 @@ data class UserPrincipal(
      */
     fun canWriteMenu(menuId: String): Boolean = superAdmin || (menuPerms.contains(menuId) && !unassigned)
 
-    /** 통합관리자·경영진은 전 데이터 항목을 열람한다. */
+    /** 통합관리자·경영진은 전 데이터 항목을 열람한다. 기본 7종 key 는 느슨한 판정이다 — JSON 응답을 만드는 코드용(V82) */
     fun canReadField(fieldKey: String): Boolean = superAdmin || dataPerms.contains(fieldKey)
+
+    /**
+     * 엄격한 판정 — 기본 7종 key 는 그 묶음에서 온 항목을 모두 볼 수 있을 때만 true(V82).
+     * 키 단위로 가릴 수 없는 출력(AI 프롬프트 · 메일 본문 · 문장 · 엑셀 보조 열)에 쓴다. 항목 key 는 canReadField 와 같다.
+     */
+    fun canReadFieldStrict(fieldKey: String): Boolean = superAdmin || (dataPermsStrict ?: dataPerms).contains(fieldKey)
 }
