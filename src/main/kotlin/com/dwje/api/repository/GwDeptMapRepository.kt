@@ -336,7 +336,8 @@ class GwDeptMapRepository(
                         WHEN (SELECT pl.detail FROM ax.tb_sys_perm_log pl WHERE pl.target_user_id = u.user_id
                                ORDER BY pl.log_at DESC LIMIT 1) LIKE '회원가입 반려%' THEN 'REJECTED'
                         ELSE 'ADMIN' END AS state_reason,
-                   to_char(u.ins_date AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD HH24:MI') AS joined_at,
+                   -- 가입 일시는 초까지(2026-10-07 디자인 피드백)
+                   to_char(u.ins_date AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD HH24:MI:SS') AS joined_at,
                    to_char(u.last_login_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD HH24:MI') AS last_login_at,
                    sd.dept_id AS suggest_dept_id, sd.dept_nm AS suggest_dept_nm
               FROM ax.tb_sys_user u
