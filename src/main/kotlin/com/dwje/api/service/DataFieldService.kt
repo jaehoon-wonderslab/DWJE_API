@@ -36,7 +36,9 @@ class DataFieldService(
     private val authorizationService: AuthorizationService,
     private val auditLogService: AuditLogService,
     private val systemUserRepository: SystemUserRepository,
-    private val systemDeptGuard: SystemDeptGuard
+    private val systemDeptGuard: SystemDeptGuard,
+    /** 새로 발견된 응답 데이터(V83) — 항목 표가 바뀌면 등록 목록 캐시를 비운다 */
+    private val discovery: DataAttrDiscoveryService? = null
 ) {
 
     companion object {
@@ -380,6 +382,37 @@ class DataFieldService(
         return mapOf("fieldKey" to target, "created" to created, "removed" to removed, "attrs" to attrs)
     }
 
+    // =================================================================================
+    // 새로 발견된 응답 데이터 (V83, 2026-10-08)
+    // =================================================================================
+
+    /** 발견 목록 — 항목 표에 등록된 이름은 빠진다. 처리 전(NEW) · 가리지 않음(IGNORED) 모두 */
+    @Transactional(readOnly = true)
+    fun listDiscovered(): Map<String, Any?> {
+        authorizationService.requireMenu(MenuId.SYS_DATA)
+        if (!dataFieldRepository.hasSeenTable()) return mapOf("items" to emptyList<Any>(), "ready" to false)
+        return mapOf("items" to dataFieldRepository.findSeen(), "ready" to true)
+    }
+
+    /** 가리지 않음으로 두기 / 처리 전으로 되돌리기 — 감사 · 변경 이력에 남긴다 */
+    @Transactional
+    fun setDiscoveredIgnored(request: com.dwje.api.model.request.DataAttrIgnoreRequest): Map<String, Any?> {
+        val principal = authorizationService.requireWrite(MenuId.SYS_DATA)
+        val names = request.attrNames.orEmpty().map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (names.isEmpty()) throw InvalidParameterException("응답 데이터 이름이 없습니다.", "attrNames")
+        if (names.size > 200) throw InvalidParameterException("한 번에 200개까지 처리할 수 있습니다.", "attrNames")
+        names.forEach {
+            if (!ATTR_NAME_PATTERN.matches(it)) throw InvalidParameterException("응답 데이터 이름 꼴이 아닙니다. [$it]", "attrNames")
+        }
+        if (!dataFieldRepository.hasSeenTable()) throw BusinessRuleException("발견 기록표(V83)가 없습니다. DB 마이그레이션을 먼저 적용하세요.")
+        val status = if (request.ignore) "IGNORED" else "NEW"
+        dataFieldRepository.setSeenStatus(names, status, principal.userId)
+        val detail = "새로 발견된 응답 데이터 ${if (request.ignore) "가리지 않음" else "처리 전으로 되돌림"} ${names.size}개: ${names.joinToString(",")}".take(480)
+        val permAuditId = auditLogService.record(logType = AuditType.PERM_CHANGE, menuId = MenuId.SYS_DATA, targetDesc = "새로 발견된 응답 데이터", remark = detail)
+        auditLogService.recordPermChange(actCd = "DATA_PERM", targetKindCd = TARGET_KIND, targetNm = "발견된 응답 데이터", detail = detail, auditId = permAuditId)
+        return mapOf("attrNames" to names, "status" to status)
+    }
+
     /** 새 항목 key — `i_` + 시각(36진) + 2자리 난수, 30자 이내 · FIELD_KEY_PATTERN */
     private fun newItemKey(): String {
         repeat(5) {
@@ -613,7 +646,7 @@ class DataFieldService(
     }
 
     /** 카탈로그를 비운다 — 항목·필드명·적용 스위치가 바뀐 뒤 */
-    fun invalidate() { attrCache = null; fieldsCache = null }
+    fun invalidate() { attrCache = null; fieldsCache = null; discovery?.invalidate() }
 
     // ---------------------------------------------------------------------------------
     // 내부

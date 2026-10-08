@@ -5,12 +5,14 @@ import com.dwje.api.model.request.DataFieldApplyRequest
 import com.dwje.api.model.request.DataFieldAttrRequest
 import com.dwje.api.model.request.DataFieldMappingRequest
 import com.dwje.api.model.request.DataItemPermRequest
+import com.dwje.api.model.request.DataAttrIgnoreRequest
 import com.dwje.api.model.request.DataFieldSaveRequest
 import com.dwje.api.service.DataFieldService
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.tags.Tag
 import jakarta.validation.Valid
 import org.springframework.web.bind.annotation.DeleteMapping
+import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PatchMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
@@ -39,6 +41,15 @@ class DataFieldController(
         summary = "화면 열 매핑 일괄 저장",
         description = "새 종류 만들기·열 옮기기·풀기·적용 켜기를 한 트랜잭션으로 저장한다. 하나라도 틀리면 아무것도 바뀌지 않는다(04 DTP-02)."
     )
+    /** 새로 발견된 응답 데이터 목록 (V83, 2026-10-08) — 항목 표에 등록되지 않은 응답 값 이름 */
+    @GetMapping("/discovered")
+    fun discovered(): ApiResponse<Map<String, Any?>> = ApiResponse.ok(dataFieldService.listDiscovered())
+
+    /** 새로 발견된 응답 데이터 — 가리지 않음 / 되돌리기 (V83) */
+    @PutMapping("/discovered/ignore")
+    fun ignoreDiscovered(@Valid @RequestBody request: DataAttrIgnoreRequest): ApiResponse<Map<String, Any?>> =
+        ApiResponse.ok(dataFieldService.setDiscoveredIgnored(request), if (request.ignore) "가리지 않음으로 처리했습니다." else "처리 전으로 되돌렸습니다.")
+
     /** 항목별 부서 열람 저장 (V82, 2026-10-07) — 필드명들을 항목 하나로 모으고 부서별 열람을 정한다 */
     @PutMapping("/item-perms")
     fun saveItemPerms(@Valid @RequestBody request: DataItemPermRequest): ApiResponse<Map<String, Any?>> =

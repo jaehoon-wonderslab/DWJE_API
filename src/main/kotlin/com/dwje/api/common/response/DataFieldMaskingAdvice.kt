@@ -45,7 +45,9 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyAdvice
 @RestControllerAdvice
 class DataFieldMaskingAdvice(
     private val dataFieldService: DataFieldService,
-    private val objectMapper: ObjectMapper
+    private val objectMapper: ObjectMapper,
+    /** 새로 발견된 응답 데이터 이름 기록(V83) — 경로마다 일정 간격으로 표본만 본다 */
+    private val discovery: com.dwje.api.service.DataAttrDiscoveryService? = null
 ) : ResponseBodyAdvice<Any> {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -66,6 +68,8 @@ class DataFieldMaskingAdvice(
         val path = request.uri.path
         if (EXCLUDED_PATHS.any { path == it || path.startsWith("$it/") || (it.endsWith("/") && path.startsWith(it)) }) return body
         val principal = UserContext.currentOrNull() ?: return body
+        // 등록되지 않은 값 이름 찾기(V83) — 통합관리자 응답도 본다(가리기보다 먼저)
+        discovery?.observe(path, body.data)
         if (principal.superAdmin) return body
 
         val blind = blindAttrs(dataFieldService.attrFieldMap()) { readableForMasking(principal, it) }

@@ -162,6 +162,74 @@ class DataFieldRepository(
     }
 
     /** 항목의 응답 필드명 전체 — 이름순 */
+    // ---- 새로 발견된 응답 데이터 이름 (V83) ----
+
+    /** 항목 표에 등록된 응답 필드명 전부 — 적용 여부 · 사용 여부와 관계없이 */
+    fun findAllAttrNames(): Set<String> =
+        jdbcTemplate.query("SELECT attr_name FROM ax.tb_sys_data_field_attr", MapSqlParameterSource()) { rs, _ -> rs.getString("attr_name") }.toSet()
+
+    /** 기록표가 있는지 — V83 을 아직 적용하지 않은 DB 에서는 기록하지 않는다 */
+    fun hasSeenTable(): Boolean =
+        jdbcTemplate.queryForObject("SELECT to_regclass('ax.tb_sys_data_attr_seen') IS NOT NULL", MapSqlParameterSource(), Boolean::class.java) == true
+
+    /**
+     * 발견 기록 — 처음이면 넣고, 있으면 마지막 시각 · 횟수 · 경로(없던 것만, 1000자까지)를 고친다. 상태는 건드리지 않는다.
+     */
+    fun upsertSeen(attrNames: Collection<String>, apiPath: String): Int {
+        if (attrNames.isEmpty()) return 0
+        val sql = """
+            INSERT INTO ax.tb_sys_data_attr_seen (attr_name, api_paths)
+            VALUES (:attrName, :path)
+            ON CONFLICT (attr_name) DO UPDATE SET
+                last_seen_at = now(),
+                seen_cnt = ax.tb_sys_data_attr_seen.seen_cnt + 1,
+                api_paths = CASE
+                    WHEN ax.tb_sys_data_attr_seen.api_paths IS NULL THEN :path
+                    WHEN position(:path IN ax.tb_sys_data_attr_seen.api_paths) > 0 THEN ax.tb_sys_data_attr_seen.api_paths
+                    WHEN length(ax.tb_sys_data_attr_seen.api_paths) + length(:path) + 1 > 1000 THEN ax.tb_sys_data_attr_seen.api_paths
+                    ELSE ax.tb_sys_data_attr_seen.api_paths || ',' || :path
+                END
+        """.trimIndent()
+        val batch = attrNames.map { MapSqlParameterSource().addValue("attrName", it).addValue("path", apiPath) }.toTypedArray()
+        return jdbcTemplate.batchUpdate(sql, batch).sum()
+    }
+
+    /** 발견 기록 목록 — 항목 표에 등록된 이름은 뺀다 */
+    fun findSeen(): List<Map<String, Any?>> {
+        val sql = """
+            SELECT s.attr_name, s.seen_cnt, s.api_paths, s.status_cd, s.upd_user,
+                   to_char(s.first_seen_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD"T"HH24:MI:SS') AS first_seen,
+                   to_char(s.last_seen_at  AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD"T"HH24:MI:SS') AS last_seen
+              FROM ax.tb_sys_data_attr_seen s
+             WHERE NOT EXISTS (SELECT 1 FROM ax.tb_sys_data_field_attr a WHERE a.attr_name = s.attr_name)
+             ORDER BY s.status_cd, s.first_seen_at DESC, s.attr_name
+        """.trimIndent()
+        return jdbcTemplate.query(sql, MapSqlParameterSource()) { rs, _ ->
+            mapOf(
+                "attrName" to rs.getString("attr_name"),
+                // 화면 시각은 한국 시각(DB 는 timestamptz)
+                "firstSeenAt" to rs.getString("first_seen"),
+                "lastSeenAt" to rs.getString("last_seen"),
+                "seenCnt" to rs.getLong("seen_cnt"),
+                "apiPaths" to (rs.getString("api_paths")?.split(',')?.filter { it.isNotBlank() } ?: emptyList()),
+                "status" to rs.getString("status_cd"),
+                "updUser" to rs.getString("upd_user")
+            )
+        }
+    }
+
+    /** 상태 바꾸기 — NEW · IGNORED. 기록이 없던 이름이면 넣는다(화면에서 미리 가리지 않음으로 둘 때) */
+    fun setSeenStatus(attrNames: Collection<String>, status: String, actor: String): Int {
+        if (attrNames.isEmpty()) return 0
+        val sql = """
+            INSERT INTO ax.tb_sys_data_attr_seen (attr_name, status_cd, upd_user)
+            VALUES (:attrName, :status, :actor)
+            ON CONFLICT (attr_name) DO UPDATE SET status_cd = :status, upd_date = now(), upd_user = :actor
+        """.trimIndent()
+        val batch = attrNames.map { MapSqlParameterSource().addValue("attrName", it).addValue("status", status).addValue("actor", actor) }.toTypedArray()
+        return jdbcTemplate.batchUpdate(sql, batch).sum()
+    }
+
     fun findFieldAttrs(fieldKey: String): List<String> =
         jdbcTemplate.query(
             "SELECT attr_name FROM ax.tb_sys_data_field_attr WHERE field_key = :fieldKey ORDER BY attr_name",

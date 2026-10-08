@@ -90,3 +90,14 @@ data class DataItemPermRequest(
     val attrs: List<String>? = null,
     val perms: Map<String, Boolean>? = null
 )
+
+/**
+ * 새로 발견된 응답 데이터 — 가리지 않음으로 두기 / 되돌리기 — `PUT /api/v1/system/data-fields/discovered/ignore` (V83, 2026-10-08)
+ *
+ * @param attrNames 응답 데이터 이름(1~200개)
+ * @param ignore    true = 가리지 않음(다시 알리지 않음), false = 처리 전으로 되돌림
+ */
+data class DataAttrIgnoreRequest(
+    val attrNames: List<String>? = null,
+    val ignore: Boolean = true
+)

@@ -289,6 +289,14 @@
 
 - `PUT /api/v1/system/data-fields/item-perms`
 
+### `DataAttrIgnoreRequest`
+
+허용 키 — `attrNames`, `ignore`
+
+> 새로 발견된 응답 데이터(V83, 2026-10-08). `ignore` true = 가리지 않음(다시 알리지 않음), false = 처리 전으로 되돌림. 200개까지.
+
+- `PUT /api/v1/system/data-fields/discovered/ignore`
+
 ### `DataFieldSaveRequest`
 
 허용 키 — `fieldKey`, `name`, `desc`, `category`

@@ -154,3 +154,28 @@ WEB 데이터 접근 권한 화면을 「항목 × 부서」 표 하나로 바�
   필드명들이 이미 「그 필드명만 가진 항목」 하나에 있으면 재사용, 아니면 새 항목(`i_<시각36진><난수>`, 적용 켬)을 만들고 옮긴다(새 항목의 부서 권한 = 필드명이 있던 곳을 모두 볼 수 있던 부서만 허용). 비게 된 항목은 지운다(기본 7종 · 참조 있음 제외). 그다음 perms 반영. 감사 `PERM_CHANGE` · `tb_sys_perm_log DATA_PERM`.
 - 시험: `./gradlew test` 556건 통과(DataFieldRuntimeTest blindKeysFor 기대값 · WritePermissionTest 목 갱신). 실측: WEB `tests/system/data-item-perm-live.cjs` — 전산팀에게 불량 수량만 숨기면 /auth/me 의 qty 는 남고, /dashboard/ai/summary 의 ngQty 만 null(okQty · todayQty 값 그대로), 되돌림.
 - 되돌리기: `rollback/V82__down.sql` (필드명을 원래 묶음으로 돌리고 V82 항목 · 기록표 삭제).
+
+## 10. 새로 발견된 응답 데이터 (V83, 2026-10-08)
+
+등록되지 않은 응답 값 이름은 모든 부서에 보인다. 등록할 이름을 사람이 찾지 않아도 되게 서버가 찾아 남긴다(사용자 결정 2026-10-08 — 처리 전 기본은 「모두 열람」, 알림은 데이터 접근 권한 화면에서만, 기록은 DB).
+
+- 표 `ax.tb_sys_data_attr_seen(attr_name PK, first_seen_at, last_seen_at, seen_cnt, api_paths, status_cd NEW|IGNORED)` — **값은 저장하지 않는다.**
+- 수집: `DataFieldMaskingAdvice` → `DataAttrDiscoveryService.observe`.
+  - 업무 데이터 API 만(`/dashboard/` · `/production/` · `/quality/` · `/reports/` · `/alerts` · `/common/masters`, 업로드 · 발송 이력 제외).
+  - 같은 경로는 5분에 한 번만 표본으로 본다. 통합관리자 응답도 본다.
+  - 숫자 · 글자 · null 값을 담은 이름만(목록 · 묶음 이름은 안으로 들어감), 예약어 · 이미 항목 표에 있는 이름은 뺀다. 경로의 숫자 조각은 `{id}`.
+  - 값이 키 자리에 들어간 묶음(키 절반 이상이 한글 · 기호 · 대문자 코드꼴, 예: 제품별 수율 `loss: {품질검사, BURR …}`)은 묶음 이름(`loss`) 하나로 남긴다(2026-10-08).
+  - 기록 실패는 응답에 영향을 주지 않는다(로그만). V83 이 없으면 기록하지 않는다.
+- API
+  - `GET /api/v1/system/data-fields/discovered` → `{ready, items[{attrName, firstSeenAt, lastSeenAt(한국 시각), seenCnt, apiPaths[], status}]}` — 항목 표에 등록된 이름은 빠진다.
+  - `PUT /api/v1/system/data-fields/discovered/ignore {attrNames[], ignore}` — 가리지 않음 / 처리 전으로(200개까지, 감사 · 변경 이력).
+  - 「기존 항목에 넣기 · 새 항목」 은 9절 `item-perms` 를 그대로 쓴다(넣기 = 그 항목의 키 + 새 이름, perms {} — 그 항목 부서 설정을 따름).
+- 한계: 실제로 호출된 응답만 본다. 아무도 열지 않은 화면 · 특정 조건에서만 나오는 이름은 발견되지 않는다 → 아래 배포 점검.
+- 시험: `DataAttrDiscoveryTest`(값 이름 고르기 · 경로 묶기 · 보는 API), WEB `tests/system/data-attr-discovery-live.cjs`.
+
+### 배포 점검 절차 (새 응답 값을 넣는 배포마다)
+
+1. 배포 후 바뀐 화면을 관리자 계정으로 한 번씩 연다(조회 조건 · 탭 · 상세 창 포함). 화면이 부르는 API 가 표본으로 기록된다.
+2. 데이터 접근 권한 → 「새로 발견된 응답 데이터」 탭에서 새 이름을 확인하고 처리한다(항목에 넣기 · 새 항목 · 가리지 않음).
+3. 가려야 하는 값을 「새 항목」 으로 만들었으면 항목 × 부서 표에서 숨길 부서의 체크를 끈다.
+4. 공용 키(value · rate · total …)로 나간 값을 가려야 하면 서버 응답 키 이름을 바꾸는 작업을 따로 잡는다.
